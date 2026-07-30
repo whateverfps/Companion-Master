@@ -86,6 +86,23 @@ function clonePlainObject(value) {
         : JSON.parse(JSON.stringify(value));
 }
 
+function normalizeIndexValue(value) {
+    if (value == null) {
+        return null;
+    }
+
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        return trimmed === "" ? null : trimmed;
+    }
+
+    if (typeof value === "number" || typeof value === "boolean") {
+        return String(value);
+    }
+
+    return null;
+}
+
 export class ConflictNode {
     constructor(data = {}) {
         this.id = data.id || uuid("N");
@@ -1158,6 +1175,96 @@ export class ConflictGraph {
         this.outgoing = new Map();
         this.incoming = new Map();
         this.byType = new Map();
+        this.byDocument = new Map();
+        this.bySection = new Map();
+        this.bySource = new Map();
+        this.bySpecification = new Map();
+        this.byResponsibility = new Map();
+        this.byEvidence = new Map();
+    }
+
+    indexNode(node) {
+        if (!(node instanceof ConflictNode)) {
+            node = new ConflictNode(node);
+        }
+
+        this.#addIndex(this.byDocument, node.document, node.id);
+        this.#addIndex(this.bySection, node.section, node.id);
+        this.#addIndex(this.bySource, node.source, node.id);
+        this.#addIndex(this.bySpecification, node.metadata?.specification, node.id);
+        this.#addIndex(this.byResponsibility, node.metadata?.responsibility, node.id);
+
+        if (Array.isArray(node.evidence)) {
+            for (const evidence of node.evidence) {
+                if (!evidence || typeof evidence !== "object") {
+                    continue;
+                }
+
+                for (const key of ["id", "reference", "title", "name"]) {
+                    this.#addIndex(this.byEvidence, evidence[key], node.id);
+                }
+            }
+        }
+
+        return node;
+    }
+
+    removeIndexes(node) {
+        if (!node) {
+            return;
+        }
+
+        this.#removeIndex(this.byDocument, node.document, node.id);
+        this.#removeIndex(this.bySection, node.section, node.id);
+        this.#removeIndex(this.bySource, node.source, node.id);
+        this.#removeIndex(this.bySpecification, node.metadata?.specification, node.id);
+        this.#removeIndex(this.byResponsibility, node.metadata?.responsibility, node.id);
+
+        if (Array.isArray(node.evidence)) {
+            for (const evidence of node.evidence) {
+                if (!evidence || typeof evidence !== "object") {
+                    continue;
+                }
+
+                for (const key of ["id", "reference", "title", "name"]) {
+                    this.#removeIndex(this.byEvidence, evidence[key], node.id);
+                }
+            }
+        }
+    }
+
+    #addIndex(indexMap, value, id) {
+        const normalized = normalizeIndexValue(value);
+
+        if (normalized === null) {
+            return;
+        }
+
+        if (!indexMap.has(normalized)) {
+            indexMap.set(normalized, new Set());
+        }
+
+        indexMap.get(normalized).add(id);
+    }
+
+    #removeIndex(indexMap, value, id) {
+        const normalized = normalizeIndexValue(value);
+
+        if (normalized === null) {
+            return;
+        }
+
+        const bucket = indexMap.get(normalized);
+
+        if (!bucket) {
+            return;
+        }
+
+        bucket.delete(id);
+
+        if (bucket.size === 0) {
+            indexMap.delete(normalized);
+        }
     }
 
     clear() {
@@ -1166,6 +1273,12 @@ export class ConflictGraph {
         this.outgoing.clear();
         this.incoming.clear();
         this.byType.clear();
+        this.byDocument.clear();
+        this.bySection.clear();
+        this.bySource.clear();
+        this.bySpecification.clear();
+        this.byResponsibility.clear();
+        this.byEvidence.clear();
     }
 
     addNode(node) {
@@ -1175,8 +1288,12 @@ export class ConflictGraph {
 
         const existing = this.nodes.get(node.id);
 
-        if (existing && existing.type !== node.type) {
-            this.byType.get(existing.type)?.delete(existing.id);
+        if (existing) {
+            this.removeIndexes(existing);
+
+            if (existing.type !== node.type) {
+                this.byType.get(existing.type)?.delete(existing.id);
+            }
         }
 
         this.nodes.set(node.id, node);
@@ -1194,6 +1311,7 @@ export class ConflictGraph {
         }
 
         this.byType.get(node.type).add(node.id);
+        this.indexNode(node);
 
         return node;
     }
@@ -1223,6 +1341,7 @@ export class ConflictGraph {
         }
 
         const node = this.nodes.get(id);
+        this.removeIndexes(node);
         this.byType.get(node.type)?.delete(id);
 
         if (this.byType.get(node.type)?.size === 0) {
@@ -1372,6 +1491,192 @@ export class ConflictGraph {
         return [...(this.byType.get(type) || [])]
             .map(id => this.nodes.get(id))
             .filter(Boolean);
+    }
+
+    getNodesByDocument(document) {
+        const normalized = normalizeIndexValue(document);
+
+        if (normalized === null) {
+            return [];
+        }
+
+        return [...(this.byDocument.get(normalized) || [])]
+            .map(id => this.nodes.get(id))
+            .filter(Boolean);
+    }
+
+    getNodesBySection(section) {
+        const normalized = normalizeIndexValue(section);
+
+        if (normalized === null) {
+            return [];
+        }
+
+        return [...(this.bySection.get(normalized) || [])]
+            .map(id => this.nodes.get(id))
+            .filter(Boolean);
+    }
+
+    getNodesBySource(source) {
+        const normalized = normalizeIndexValue(source);
+
+        if (normalized === null) {
+            return [];
+        }
+
+        return [...(this.bySource.get(normalized) || [])]
+            .map(id => this.nodes.get(id))
+            .filter(Boolean);
+    }
+
+    getNodesBySpecification(specification) {
+        const normalized = normalizeIndexValue(specification);
+
+        if (normalized === null) {
+            return [];
+        }
+
+        return [...(this.bySpecification.get(normalized) || [])]
+            .map(id => this.nodes.get(id))
+            .filter(Boolean);
+    }
+
+    getNodesByResponsibility(responsibility) {
+        const normalized = normalizeIndexValue(responsibility);
+
+        if (normalized === null) {
+            return [];
+        }
+
+        return [...(this.byResponsibility.get(normalized) || [])]
+            .map(id => this.nodes.get(id))
+            .filter(Boolean);
+    }
+
+    getEvidence(value) {
+        const normalized = normalizeIndexValue(value);
+
+        if (normalized === null) {
+            return [];
+        }
+
+        return [...(this.byEvidence.get(normalized) || [])]
+            .map(id => this.nodes.get(id))
+            .filter(Boolean);
+    }
+
+    query(criteria = {}) {
+        if (!criteria || typeof criteria !== "object") {
+            throw new TypeError("criteria must be an object.");
+        }
+
+        const {
+            document = null,
+            section = null,
+            source = null,
+            specification = null,
+            responsibility = null,
+            evidence = null,
+            type = null,
+            id = null,
+            title = null,
+            text = null
+        } = criteria;
+
+        const indexedCriteria = [
+            { value: document, index: this.byDocument },
+            { value: section, index: this.bySection },
+            { value: source, index: this.bySource },
+            { value: specification, index: this.bySpecification },
+            { value: responsibility, index: this.byResponsibility },
+            { value: evidence, index: this.byEvidence }
+        ];
+
+        let candidates = null;
+
+        for (const criterion of indexedCriteria) {
+            if (criterion.value == null) {
+                continue;
+            }
+
+            const normalized = normalizeIndexValue(criterion.value);
+
+            if (normalized === null) {
+                continue;
+            }
+
+            const matchingNodes = [...(criterion.index.get(normalized) || [])]
+                .map(nodeId => this.nodes.get(nodeId))
+                .filter(Boolean);
+
+            if (candidates === null) {
+                candidates = matchingNodes;
+            } else {
+                const candidateIds = new Set(candidates.map(node => node.id));
+                candidates = matchingNodes.filter(node => candidateIds.has(node.id));
+            }
+
+            if (candidates.length === 0) {
+                return [];
+            }
+        }
+
+        const baseNodes = candidates === null
+            ? [...this.nodes.values()]
+            : candidates;
+
+        return baseNodes.filter(node => {
+            if (type !== null && node.type !== type) {
+                return false;
+            }
+
+            if (id !== null && node.id !== id) {
+                return false;
+            }
+
+            if (title !== null) {
+                const searchText = String(title).toLowerCase();
+                const haystack = [node.title, node.text, node.source, node.document, node.section]
+                    .join(" ")
+                    .toLowerCase();
+
+                if (!haystack.includes(searchText)) {
+                    return false;
+                }
+            }
+
+            if (text !== null) {
+                const searchText = String(text).toLowerCase();
+                const haystack = [node.title, node.text, node.source, node.document, node.section]
+                    .join(" ")
+                    .toLowerCase();
+
+                if (!haystack.includes(searchText)) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+    }
+
+    rebuildIndexes() {
+        for (const index of [
+            this.byDocument,
+            this.bySection,
+            this.bySource,
+            this.bySpecification,
+            this.byResponsibility,
+            this.byEvidence
+        ]) {
+            index.clear();
+        }
+
+        for (const node of this.nodes.values()) {
+            this.indexNode(node);
+        }
+
+        return this;
     }
 
     nodeCount() {
