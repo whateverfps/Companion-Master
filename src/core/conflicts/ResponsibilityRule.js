@@ -173,6 +173,14 @@ function normalizeText(value) {
         .trim();
 }
 
+function normalizeNodeValue(value) {
+    if (value === undefined || value === null || value === "") {
+        return null;
+    }
+
+    return normalizeText(value).toLowerCase();
+}
+
 function lower(value) {
     return normalizeText(value).toLowerCase();
 }
@@ -404,6 +412,284 @@ function deduplicateStatements(statements) {
     }
 
     return result;
+}
+
+function stableNodeArray(nodes) {
+    const result = [];
+    const seen = new Set();
+
+    for (const node of nodes || []) {
+        if (!node) {
+            continue;
+        }
+
+        const marker = node?.id != null
+            ? `id:${node.id}`
+            : `title:${normalizeText(node?.title || node?.name || "")}`;
+
+        if (seen.has(marker)) {
+            continue;
+        }
+
+        seen.add(marker);
+        result.push(node);
+    }
+
+    return result;
+}
+
+function resolveCandidateNodes(graph, context = {}, nodeTypes = []) {
+    const allowedTypes = (nodeTypes || [])
+        .map(value => normalizeNodeValue(value))
+        .filter(Boolean);
+
+    const filterByType = nodes => {
+        if (!allowedTypes.length) {
+            return stableNodeArray(nodes);
+        }
+
+        return stableNodeArray(nodes.filter(node => allowedTypes.includes(normalizeNodeValue(node?.type))));
+    };
+
+    if (graph && Array.isArray(context?.nodes) && context.nodes.length > 0) {
+        return filterByType(context.nodes);
+    }
+
+    const nodeIds = Array.isArray(context?.nodeIds)
+        ? context.nodeIds
+        : (context?.nodeId ? [context.nodeId] : []);
+
+    if (nodeIds.length > 0 && graph) {
+        const resolved = [];
+        const seen = new Set();
+
+        for (const nodeId of nodeIds) {
+            if (!nodeId) {
+                continue;
+            }
+
+            const node = typeof graph.getNode === "function"
+                ? graph.getNode(nodeId)
+                : null;
+            const fallbackNode = graph.nodes instanceof Map
+                ? graph.nodes.get(nodeId)
+                : null;
+            const candidate = node || fallbackNode || null;
+
+            if (!candidate || seen.has(candidate.id)) {
+                continue;
+            }
+
+            seen.add(candidate.id);
+            resolved.push(candidate);
+        }
+
+        if (resolved.length > 0) {
+            return filterByType(resolved);
+        }
+    }
+
+    const criteria = context?.criteria && typeof context.criteria === "object"
+        ? { ...context.criteria }
+        : {};
+
+    for (const key of ["document", "section", "source", "specification", "responsibility", "type", "nodeId"]) {
+        if (context?.[key] !== undefined && context?.[key] !== null && context?.[key] !== "") {
+            criteria[key] = context[key];
+        }
+    }
+
+    if (Object.keys(criteria).length > 0 && graph) {
+        if (typeof graph.query === "function") {
+            try {
+                const queryCriteria = { ...criteria };
+                if (queryCriteria.nodeId !== undefined) {
+                    queryCriteria.id = queryCriteria.nodeId;
+                    delete queryCriteria.nodeId;
+                }
+                const matched = graph.query(queryCriteria);
+                if (matched) {
+                    return filterByType(Array.isArray(matched) ? matched : [...matched]);
+                }
+            } catch {
+                // Fall through to the compatible fallback below.
+            }
+        }
+
+        const indexedCriteria = [];
+
+        if (criteria.document !== undefined && criteria.document !== null && criteria.document !== "") {
+            indexedCriteria.push([criteria.document, graph.getNodesByDocument]);
+        }
+
+        if (criteria.section !== undefined && criteria.section !== null && criteria.section !== "") {
+            indexedCriteria.push([criteria.section, graph.getNodesBySection]);
+        }
+
+        if (criteria.source !== undefined && criteria.source !== null && criteria.source !== "") {
+            indexedCriteria.push([criteria.source, graph.getNodesBySource]);
+        }
+
+        if (criteria.specification !== undefined && criteria.specification !== null && criteria.specification !== "") {
+            indexedCriteria.push([criteria.specification, graph.getNodesBySpecification]);
+        }
+
+        if (criteria.responsibility !== undefined && criteria.responsibility !== null && criteria.responsibility !== "") {
+            indexedCriteria.push([criteria.responsibility, graph.getNodesByResponsibility]);
+        }
+
+        if (indexedCriteria.length > 0) {
+            let matched = null;
+            for (const [, lookup] of indexedCriteria) {
+                if (typeof lookup !== "function") {
+                    continue;
+                }
+
+                const current = lookup.call(graph, criteria.document ?? criteria.section ?? criteria.source ?? criteria.specification ?? criteria.responsibility);
+                const nodes = Array.isArray(current) ? current : [...(current || [])];
+                if (!matched) {
+                    matched = nodes;
+                } else {
+                    const matchedIds = new Set(matched.map(node => node?.id).filter(Boolean));
+                    matched = nodes.filter(node => matchedIds.has(node?.id));
+                }
+            }
+
+            if (matched) {
+                return filterByType(matched);
+            }
+        }
+    }
+
+    if (graph && typeof graph.findNodes === "function") {
+        return filterByType(graph.findNodes({
+            types: nodeTypes
+        }));
+    }
+
+    return [];
+}
+
+function buildCandidateFilter(context = {}) {
+    const filter = {};
+    const criteria = context?.criteria && typeof context.criteria === "object"
+        ? context.criteria
+        : {};
+
+    for (const key of ["document", "section", "source", "specification", "responsibility", "type", "nodeId"]) {
+        if (criteria[key] !== undefined && criteria[key] !== null && criteria[key] !== "") {
+            filter[key] = criteria[key];
+        }
+    }
+
+    if (Array.isArray(context?.nodes) && context.nodes.length > 0) {
+        filter.nodeIds = context.nodes.map(node => node?.id).filter(Boolean);
+    } else if (Array.isArray(context?.nodeIds) && context.nodeIds.length > 0) {
+        filter.nodeIds = context.nodeIds.filter(Boolean);
+    }
+
+    return filter;
+}
+
+function collectGraphEvidence(graph, node) {
+    const evidenceIds = [];
+    const seen = new Set();
+
+    const pushValue = value => {
+        if (value === undefined || value === null || value === "") {
+            return;
+        }
+
+        const normalized = normalizeText(value).toLowerCase();
+        if (seen.has(normalized)) {
+            return;
+        }
+
+        seen.add(normalized);
+        evidenceIds.push(normalizeText(value));
+    };
+
+    for (const entry of Array.isArray(node?.evidence) ? node.evidence : []) {
+        if (!entry) {
+            continue;
+        }
+
+        pushValue(entry.id || entry.reference || entry.title || entry.name || entry.type);
+    }
+
+    for (const value of [node?.id, node?.title, node?.text, node?.document, node?.section, node?.source]) {
+        pushValue(value);
+    }
+
+    if (graph && typeof graph.getEvidence === "function") {
+        for (const value of [node?.id, node?.title, node?.text, node?.document, node?.section, node?.source]) {
+            if (!value) {
+                continue;
+            }
+
+            try {
+                const matches = graph.getEvidence(value) || [];
+                for (const match of matches) {
+                    pushValue(match?.id || match?.reference || match?.title || match?.name || match?.text);
+                }
+            } catch {
+                // Ignore lookup failures.
+            }
+        }
+    }
+
+    return evidenceIds;
+}
+
+function applyFindingMetadata(finding, rule, context = {}, candidateNodes = []) {
+    if (!finding) {
+        return finding;
+    }
+
+    const ruleName = rule?.name || rule?.constructor?.name || "ResponsibilityRule";
+    const candidateFilter = buildCandidateFilter(context);
+    const isFiltered = Boolean(context?.filtered || context?.nodes || context?.nodeIds || Object.keys(candidateFilter).length > 0);
+
+    finding.rule = finding.rule || ruleName;
+    finding.ruleVersion = finding.ruleVersion || "5";
+    finding.executionContext = {
+        filtered: isFiltered,
+        criteria: candidateFilter,
+        candidateNodeCount: (candidateNodes || []).length,
+        candidateNodeIds: (candidateNodes || []).map(node => node?.id).filter(Boolean)
+    };
+    finding.metadata = {
+        ...(finding.metadata || {}),
+        candidateFilter,
+        graphEvidenceIds: finding.graphEvidenceIds || [],
+        filtered: isFiltered,
+        candidateNodeCount: (candidateNodes || []).length
+    };
+    finding.trace = Array.isArray(finding.trace) ? [...finding.trace] : [];
+    finding.trace.push({
+        rule: ruleName,
+        filtered: isFiltered,
+        candidateNodeCount: (candidateNodes || []).length,
+        candidateFilter
+    });
+
+    return finding;
+}
+
+function normalizeFindingIdentity(finding) {
+    const parties = unique((finding?.parties || []).map(value => lower(value))).sort();
+    const actions = unique((finding?.actions || []).map(value => lower(value))).sort();
+    const objectValue = lower(finding?.object);
+    const nodeIds = unique((finding?.nodeIds || []).map(value => normalizeText(value))).sort();
+
+    return [
+        normalizeText(finding?.subtype),
+        nodeIds.join("|"),
+        parties.join(","),
+        actions.join(","),
+        objectValue,
+        normalizeText(finding?.rule || finding?.ruleName)
+    ].join("::");
 }
 
 export function compareResponsibilityStatements(left, right, options = {}) {
@@ -765,20 +1051,29 @@ export class ResponsibilityRule extends ReasoningRule {
     }
 
     appliesTo(graph) {
-        return (
-            graph &&
-            typeof graph.findNodes === "function" &&
-            typeof graph.getNodesByType === "function"
+        return Boolean(
+            graph && (
+                typeof graph.findNodes === "function" ||
+                typeof graph.query === "function" ||
+                typeof graph.getNodesByType === "function" ||
+                typeof graph.getNodesByDocument === "function" ||
+                typeof graph.getNodesBySection === "function" ||
+                typeof graph.getNodesBySource === "function" ||
+                typeof graph.getNodesBySpecification === "function" ||
+                typeof graph.getNodesByResponsibility === "function"
+            )
         );
     }
 
-    execute(graph, result) {
-        const nodes = graph.findNodes({
-            types: this.options.nodeTypes
-        });
+    execute(graph, result, context = {}) {
+        const candidateNodes = resolveCandidateNodes(
+            graph,
+            context,
+            this.options.nodeTypes
+        );
 
-        const statements = nodes.flatMap(
-            extractResponsibilityStatements
+        const statements = candidateNodes.flatMap(
+            node => extractResponsibilityStatements(node)
         );
 
         const seenPairs = new Set();
@@ -844,6 +1139,25 @@ export class ResponsibilityRule extends ReasoningRule {
                     comparison
                 );
 
+                const evidence = [
+                    {
+                        nodeId: left.nodeId,
+                        text: left.text,
+                        parties: left.parties,
+                        action: left.action,
+                        object: left.object,
+                        confidence: left.confidence
+                    },
+                    {
+                        nodeId: right.nodeId,
+                        text: right.text,
+                        parties: right.parties,
+                        action: right.action,
+                        object: right.object,
+                        confidence: right.confidence
+                    }
+                ];
+
                 const finding = {
                     id:
                         `RESP-${left.nodeId}-${right.nodeId}-` +
@@ -863,6 +1177,16 @@ export class ResponsibilityRule extends ReasoningRule {
                             : "informational",
                     confidence: comparison.confidence,
                     nodeIds: [left.nodeId, right.nodeId],
+                    document: left.node?.document || right.node?.document,
+                    documents: unique([left.node?.document, right.node?.document].filter(Boolean)),
+                    section: left.node?.section || right.node?.section,
+                    sections: unique([left.node?.section, right.node?.section].filter(Boolean)),
+                    source: left.node?.source || right.node?.source,
+                    sources: unique([left.node?.source, right.node?.source].filter(Boolean)),
+                    specification: left.node?.metadata?.specification || right.node?.metadata?.specification,
+                    specifications: unique([left.node?.metadata?.specification, right.node?.metadata?.specification].filter(Boolean)),
+                    responsibility: left.node?.metadata?.responsibility || right.node?.metadata?.responsibility,
+                    responsibilities: unique([left.node?.metadata?.responsibility, right.node?.metadata?.responsibility].filter(Boolean)),
                     parties: unique([
                         ...left.parties,
                         ...right.parties
@@ -876,24 +1200,11 @@ export class ResponsibilityRule extends ReasoningRule {
                         right.object ||
                         "unspecified",
                     conflict: comparison.conflict,
-                    evidence: [
-                        {
-                            nodeId: left.nodeId,
-                            text: left.text,
-                            parties: left.parties,
-                            action: left.action,
-                            object: left.object,
-                            confidence: left.confidence
-                        },
-                        {
-                            nodeId: right.nodeId,
-                            text: right.text,
-                            parties: right.parties,
-                            action: right.action,
-                            object: right.object,
-                            confidence: right.confidence
-                        }
-                    ],
+                    evidence,
+                    graphEvidenceIds: unique([
+                        ...collectGraphEvidence(graph, left.node),
+                        ...collectGraphEvidence(graph, right.node)
+                    ]),
                     resolution,
                     explanation: buildExplanation(
                         left,
@@ -903,6 +1214,15 @@ export class ResponsibilityRule extends ReasoningRule {
                     )
                 };
 
+                const duplicateIdentity = normalizeFindingIdentity(finding);
+                const duplicate = result.findings.some(existing => normalizeFindingIdentity(existing) === duplicateIdentity);
+
+                if (duplicate) {
+                    result.metrics.duplicateFindingsRemoved += 1;
+                    continue;
+                }
+
+                applyFindingMetadata(finding, this, context, candidateNodes);
                 result.addFinding(finding);
                 result.addExplanation({
                     findingId: finding.id,
@@ -918,13 +1238,16 @@ export class ResponsibilityRule extends ReasoningRule {
         }
 
         this.detectUnassignedResponsibilities(
-            nodes,
+            candidateNodes,
             statements,
-            result
+            result,
+            graph,
+            context,
+            candidateNodes
         );
     }
 
-    detectUnassignedResponsibilities(nodes, statements, result) {
+    detectUnassignedResponsibilities(nodes, statements, result, graph, context = {}, candidateNodes = []) {
         const statementsByNode = new Map();
 
         for (const statement of statements) {
@@ -975,6 +1298,16 @@ export class ResponsibilityRule extends ReasoningRule {
                 severity: "medium",
                 confidence: 0.68,
                 nodeIds: [node.id],
+                document: node.document,
+                documents: [node.document].filter(Boolean),
+                section: node.section,
+                sections: [node.section].filter(Boolean),
+                source: node.source,
+                sources: [node.source].filter(Boolean),
+                specification: node.metadata?.specification,
+                specifications: [node.metadata?.specification].filter(Boolean),
+                responsibility: node.metadata?.responsibility,
+                responsibilities: [node.metadata?.responsibility].filter(Boolean),
                 parties: [ResponsibilityParty.UNKNOWN],
                 actions: identifyActions(text),
                 object: "",
@@ -985,6 +1318,7 @@ export class ResponsibilityRule extends ReasoningRule {
                         text
                     }
                 ],
+                graphEvidenceIds: collectGraphEvidence(graph, node),
                 resolution: {
                     status: "unresolved",
                     governingNodeId: null,
@@ -995,6 +1329,15 @@ export class ResponsibilityRule extends ReasoningRule {
                     "The text contains mandatory language, but no responsible party could be identified."
             };
 
+            const duplicateIdentity = normalizeFindingIdentity(finding);
+            const duplicate = result.findings.some(existing => normalizeFindingIdentity(existing) === duplicateIdentity);
+
+            if (duplicate) {
+                result.metrics.duplicateFindingsRemoved += 1;
+                continue;
+            }
+
+            applyFindingMetadata(finding, this, context, candidateNodes);
             result.addFinding(finding);
             result.addExplanation({
                 findingId: finding.id,
