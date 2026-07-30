@@ -4581,6 +4581,96 @@ function buildHierarchyNeighbors(
   return neighbors;
 }
 
+const hierarchyIndexCache = new WeakMap();
+
+function hierarchySearchIndex(sections) {
+  if (hierarchyIndexCache.has(sections)) return hierarchyIndexCache.get(sections);
+
+  const byTerm = new Map();
+  const byId = new Map();
+  const children = new Map();
+  const bySectionNumber = new Map();
+
+  for (const section of sections) {
+    byId.set(section.id, section);
+    if (section.parentId) {
+      if (!children.has(section.parentId)) children.set(section.parentId, []);
+      children.get(section.parentId).push(section);
+    }
+    const number = String(section.sectionNumber || section.metadata?.sectionNumber || '').replace(/\D/g, '');
+    if (number) bySectionNumber.set(number, section);
+    const hierarchyText = [
+      section.heading,
+      ...(Array.isArray(section.path) ? section.path : []),
+      section.division,
+      section.sectionNumber,
+      section.sectionTitle,
+      section.metadata?.trade,
+      section.metadata?.discipline,
+      ...(Array.isArray(section.metadata?.keywords) ? section.metadata.keywords : []),
+      ...(Array.isArray(section.metadata?.buildingSystems) ? section.metadata.buildingSystems : [])
+    ].filter(value => value != null).join(' ');
+    for (const term of new Set(tokens(hierarchyText).map(stem))) {
+      if (!byTerm.has(term)) byTerm.set(term, new Set());
+      byTerm.get(term).add(section);
+    }
+  }
+
+  const index = { byTerm, byId, children, bySectionNumber };
+  hierarchyIndexCache.set(sections, index);
+  return index;
+}
+
+function hierarchyCandidates(query, sections, limit) {
+  if (!sections.some(section => section.hierarchyVersion || section.parentId || section.sectionNumber)) {
+    return sections;
+  }
+
+  const index = hierarchySearchIndex(sections);
+  const queryTerms = tokens(query).map(stem);
+  const direct = new Map();
+  for (const term of queryTerms) {
+    for (const section of index.byTerm.get(term) || []) {
+      direct.set(section.id, (direct.get(section.id) || 0) + 1);
+    }
+  }
+  for (const reference of String(query || '').match(/\b\d{2}[\s.\-]*\d{2}[\s.\-]*\d{2}\b/g) || []) {
+    const section = index.bySectionNumber.get(reference.replace(/\D/g, ''));
+    if (section) direct.set(section.id, Number.MAX_SAFE_INTEGER);
+  }
+
+  const seeds = [...direct.entries()]
+    .sort((first, second) => second[1] - first[1])
+    .slice(0, Math.max(limit * 4, 24))
+    .map(([id]) => index.byId.get(id));
+  if (!seeds.length) return sections;
+
+  const selected = new Map();
+  const add = section => {
+    if (section?.id) selected.set(section.id, section);
+  };
+  for (const seed of seeds) {
+    add(seed);
+    let parent = index.byId.get(seed.parentId);
+    while (parent) {
+      add(parent);
+      parent = index.byId.get(parent.parentId);
+    }
+    const queue = [...(index.children.get(seed.id) || [])];
+    while (queue.length && selected.size < Math.max(limit * 30, 300)) {
+      const child = queue.shift();
+      add(child);
+      queue.push(...(index.children.get(child.id) || []));
+    }
+    for (const sibling of index.children.get(seed.parentId) || []) add(sibling);
+    for (const referenceId of seed.crossReferenceIds || []) add(index.byId.get(referenceId));
+    for (const reference of seed.crossReferences || []) {
+      add(index.bySectionNumber.get(String(reference).replace(/\D/g, '')));
+    }
+  }
+  return [...selected.values()];
+}
+
 export function retrieve(
   query,
   sections,
@@ -4597,9 +4687,10 @@ export function retrieve(
   );
 
   const expandedQuery = expandQuery(query);
-  const corpus = buildCorpusStats(safeSections);
+  const hierarchySections = hierarchyCandidates(query, safeSections, safeTopK);
+  const corpus = buildCorpusStats(hierarchySections);
 
-  const scored = safeSections
+  let scored = hierarchySections
     .map(section => ({
       ...section,
       ...scoreSection(
@@ -4621,6 +4712,20 @@ export function retrieve(
         50
       )
     );
+
+  if (scored.length < safeTopK && hierarchySections.length < safeSections.length) {
+    const existingIds = new Set(scored.map(section => section.id));
+    const fallbackCorpus = buildCorpusStats(safeSections);
+    scored = [
+      ...scored,
+      ...safeSections
+        .filter(section => !existingIds.has(section.id))
+        .map(section => ({ ...section, ...scoreSection(section, expandedQuery, fallbackCorpus) }))
+        .filter(section => section.score > 0)
+        .sort((first, second) => second.score - first.score)
+        .slice(0, Math.max(safeTopK * 8, 50) - scored.length)
+    ].sort((first, second) => second.score - first.score);
+  }
 
   const ranked = rerank(
     scored,
@@ -4654,9 +4759,11 @@ export function retrieve(
         queryExpansion: expandedQuery,
         conflicts,
         totalCandidates: scored.length,
-        totalSectionsSearched: safeSections.length,
+        totalSectionsSearched: hierarchySections.length,
+        totalSectionsAvailable: safeSections.length,
+        hierarchyFirst: hierarchySections.length < safeSections.length,
         hierarchyNeighbors,
-        retrievalVersion: '2.0'
+        retrievalVersion: '3.0'
       }
     }
   );
@@ -4697,8 +4804,13 @@ ${hits.meta.conflicts
       return `[S${hit.sourceNumber}]
 DOCUMENT: ${hit.documentName || 'Unknown document'}
 SECTION: ${hit.heading || 'Unheaded section'}
+CSI DIVISION: ${hit.division || hit.metadata?.division || 'Not specified'}
+CSI SECTION NUMBER: ${hit.sectionNumber || hit.metadata?.sectionNumber || 'Not specified'}
 PATH: ${(hit.path || []).join(' > ') || 'Not specified'}
 LOCATION: ${hit.location || 'Not specified'}
+PAGE RANGE: ${hit.pageStart || hit.pageRange?.start || hit.metadata?.pageRange?.start || 'Not specified'}-${hit.pageEnd || hit.pageRange?.end || hit.metadata?.pageRange?.end || 'Not specified'}
+TRADE/DISCIPLINE: ${hit.metadata?.trade || hit.metadata?.discipline || 'Not specified'}
+BUILDING SYSTEMS: ${Array.isArray(hit.metadata?.buildingSystems) ? hit.metadata.buildingSystems.join(', ') || 'Not specified' : hit.metadata?.buildingSystems || 'Not specified'}
 LEVEL: ${hit.level || 1}
 MATCHED INTENT: ${(hit.matchedIntents || []).join(', ') || 'general'}
 RETRIEVAL TERMS: ${matched}

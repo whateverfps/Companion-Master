@@ -1,34 +1,378 @@
-function uid(){return crypto.randomUUID()}
-function clean(s){return String(s||'').replace(/\r/g,'').replace(/[ \t]+\n/g,'\n').replace(/\n{4,}/g,'\n\n\n').trim()}
-function headingInfo(raw){
-  const text=String(raw||'').trim().replace(/^#{1,6}\s*/, '');
-  const markdown=(String(raw||'').match(/^(#{1,6})\s+/)||[])[1];
-  if(markdown)return {title:text,level:markdown.length,kind:'markdown'};
-  if(/^(CHAPTER|PART|DIVISION)\s+/i.test(text))return {title:text,level:1,kind:'chapter'};
-  if(/^(SECTION|ARTICLE|APPENDIX)\s+/i.test(text))return {title:text,level:2,kind:'section'};
-  const numbered=text.match(/^(\d+(?:\.\d+){0,5})\s+(.+)/);
-  if(numbered)return {title:text,level:Math.min(6,numbered[1].split('.').length),kind:'numbered'};
-  return {title:text,level:2,kind:'caps'};
+const HIERARCHY_VERSION = 1;
+
+function uid() {
+  return crypto.randomUUID();
 }
-function splitSections(text,name){
-  const lines=clean(text).split('\n');
-  const out=[];let current={title:'Document beginning',level:1,kind:'root'},buf=[],start=1,path=[];
-  const push=(end)=>{const t=clean(buf.join('\n'));if(t)out.push({heading:current.title,level:current.level,kind:current.kind,path:[...path],text:t,location:`Lines ${start}-${end}`,startLine:start,endLine:end});buf=[]};
-  lines.forEach((line,i)=>{
-    const h=line.trim();
-    const isHeading=/^(#{1,6}\s+|(?:SECTION|CHAPTER|PART|DIVISION|ARTICLE|APPENDIX)\s+[A-Z0-9]|\d+(?:\.\d+){0,5}\s+[A-Z]|[A-Z][A-Z0-9 /&(),'-]{5,80})$/.test(h)&&h.length<140;
-    if(isHeading&&buf.join(' ').length>120){
-      push(i);current=headingInfo(h);path=path.slice(0,current.level-1);path[current.level-1]=current.title;start=i+1;
-    }else buf.push(line)
+
+function clean(value) {
+  return String(value ?? '')
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trim();
+}
+
+function normalizeSectionNumber(value) {
+  const digits = String(value ?? '').replace(/\D/g, '');
+  return digits.length === 6
+    ? `${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4)}`
+    : '';
+}
+
+function csiHeading(raw) {
+  const text = clean(raw).replace(/^#{1,6}\s*/, '');
+  const division = text.match(/^DIVISION\s+(\d{1,2})\s*(?:[-–—:]\s*)?(.*)$/i);
+
+  if (division) {
+    const number = division[1].padStart(2, '0');
+    return {
+      title: `Division ${number}${division[2] ? ` — ${division[2].trim()}` : ''}`,
+      hierarchyType: 'division',
+      hierarchyLevel: 1,
+      division: number,
+      sectionNumber: ''
+    };
+  }
+
+  const section = text.match(/^(?:SECTION\s+)?(\d{2})[\s.\-]*(\d{2})[\s.\-]*(\d{2})\b\s*(?:[-–—:]\s*)?(.*)$/i);
+
+  if (section) {
+    const sectionNumber = normalizeSectionNumber(section.slice(1, 4).join(''));
+    return {
+      title: `${sectionNumber}${section[4] ? ` ${section[4].trim()}` : ''}`,
+      hierarchyType: 'spec-section',
+      hierarchyLevel: 2,
+      division: section[1],
+      sectionNumber,
+      sectionTitle: section[4]?.trim() || ''
+    };
+  }
+
+  return null;
+}
+
+function headingInfo(raw) {
+  const text = clean(raw).replace(/^#{1,6}\s*/, '');
+  const csi = csiHeading(text);
+  if (csi) return csi;
+
+  const markdown = (String(raw ?? '').match(/^(#{1,6})\s+/) || [])[1];
+  if (markdown) return { title: text, hierarchyType: 'heading', hierarchyLevel: Math.min(6, markdown.length + 2) };
+
+  const part = text.match(/^PART\s+(\d+)\s*(?:[-–—:]\s*)?(.*)$/i);
+  if (part) return { title: text, hierarchyType: 'part', hierarchyLevel: 3 };
+
+  const paragraph = text.match(/^(\d+(?:\.\d+){1,5})[.)]?\s+(.+)/);
+  if (paragraph) return {
+    title: text,
+    hierarchyType: 'heading',
+    hierarchyLevel: Math.min(6, paragraph[1].split('.').length + 2)
+  };
+
+  if (/^(ARTICLE|APPENDIX|CHAPTER)\s+/i.test(text)) {
+    return { title: text, hierarchyType: 'heading', hierarchyLevel: 3 };
+  }
+
+  return { title: text, hierarchyType: 'heading', hierarchyLevel: 4 };
+}
+
+function isHeading(line) {
+  const value = clean(line);
+  if (!value || value.length > 180 || /^PAGE\s+\d+$/i.test(value)) return false;
+  if (csiHeading(value)) return true;
+  if (/^#{1,6}\s+/.test(value)) return true;
+  if (/^(PART|ARTICLE|APPENDIX|CHAPTER)\s+[A-Z0-9]/i.test(value)) return true;
+  if (/^\d+(?:\.\d+){1,5}[.)]?\s+[A-Z]/.test(value)) return true;
+  if (value.length <= 80 && /^(?:[A-Z][A-Za-z0-9/&'\-]*)(?:\s+[A-Z][A-Za-z0-9/&'\-]*){1,7}$/.test(value)) return true;
+  return value.length >= 5 && value.length <= 100 &&
+    /^[A-Z][A-Z0-9 /&(),'.\-–—]+$/.test(value) &&
+    /[A-Z]{3}/.test(value);
+}
+
+function semanticMetadata(node, documentName, pageStart, pageEnd) {
+  const source = `${node.title} ${node.text}`.toLowerCase();
+  const tradeRules = [
+    ['electrical', /\belectri|\bpower|\blighting|\b26\s/],
+    ['communications', /\btelecom|\bdata cabl|\bcommunications|\b27\s/],
+    ['mechanical', /\bhvac|\bmechanical|\bduct|\b23\s/],
+    ['plumbing', /\bplumb|\bpiping|\b22\s/],
+    ['fire protection', /\bfire suppress|\bsprinkler|\b21\s/],
+    ['concrete', /\bconcrete|\b03\s/],
+    ['masonry', /\bmasonry|\b04\s/],
+    ['metals', /\bstructural steel|\bmetal|\b05\s/],
+    ['finishes', /\bfinish|\bpaint|\bflooring|\b09\s/],
+    ['general requirements', /\bquality control|\bsubmittal|\b01\s/]
+  ];
+  const systemRules = [
+    ['quality control', /quality control|\bqc\b|testing|deficien/],
+    ['commissioning', /commission/],
+    ['life safety', /life safety|fire alarm|egress/],
+    ['building envelope', /envelope|roof|waterproof|air barrier/],
+    ['controls', /control system|automation|\bbas\b/]
+  ];
+  const trades = tradeRules.filter(([, rule]) => rule.test(source)).map(([name]) => name);
+  const buildingSystems = systemRules.filter(([, rule]) => rule.test(source)).map(([name]) => name);
+  const keywords = [...new Set(source.match(/[a-z][a-z-]{3,}/g) || [])]
+    .filter(word => !/^(that|this|with|from|shall|will|section|page|have|into|their)$/.test(word))
+    .slice(0, 24);
+
+  return {
+    division: node.division || '',
+    sectionNumber: node.sectionNumber || '',
+    sectionTitle: node.sectionTitle || (node.hierarchyType === 'spec-section' ? node.title : ''),
+    parent: node.parentKey || null,
+    keywords,
+    trade: trades[0] || '',
+    discipline: trades[0] || '',
+    buildingSystems,
+    document: documentName,
+    pageRange: pageStart ? { start: pageStart, end: pageEnd || pageStart } : null
+  };
+}
+
+function crossReferences(text) {
+  const found = new Set();
+  const pattern = /\b(?:see|reference|refer\s+to|per|under|in)\s+(?:specification\s+)?(?:section\s+)?(\d{2})[\s.\-]*(\d{2})[\s.\-]*(\d{2})\b/gi;
+  for (const match of String(text ?? '').matchAll(pattern)) {
+    found.add(normalizeSectionNumber(match.slice(1, 4).join('')));
+  }
+  return [...found];
+}
+
+export function buildSpecificationHierarchy(text, name = 'Unknown document') {
+  const lines = String(text ?? '').replace(/\r/g, '').split('\n');
+  const nodes = [];
+  const stack = [];
+  let page = null;
+  let lastContentPage = null;
+  let current = null;
+
+  const close = endLine => {
+    if (!current) return;
+    current.text = clean(current.buffer.join('\n'));
+    current.endLine = Math.max(current.startLine, endLine);
+    current.pageEnd = lastContentPage || current.pageStart;
+    current.location = current.pageStart
+      ? `Pages ${current.pageStart}-${current.pageEnd}`
+      : `Lines ${current.startLine}-${current.endLine}`;
+    delete current.buffer;
+    nodes.push(current);
+    current = null;
+  };
+
+  const begin = (heading, lineNumber) => {
+    close(lineNumber - 1);
+    lastContentPage = page;
+    const info = headingInfo(heading);
+    const level = info.hierarchyLevel;
+    const parent = [...stack].reverse().find(item => item.level < level) || null;
+    const inheritedDivision = [...stack].reverse().find(item => item.division)?.division || '';
+    const inheritedSection = [...stack].reverse().find(item => item.sectionNumber) || null;
+    const key = `node-${nodes.length}-${lineNumber}`;
+    current = {
+      ...info,
+      division: info.division || inheritedDivision,
+      sectionNumber: info.sectionNumber || inheritedSection?.sectionNumber || '',
+      sectionTitle: info.sectionTitle || inheritedSection?.sectionTitle || '',
+      key,
+      parentKey: parent?.key || null,
+      path: [...stack.filter(item => item.level < level).map(item => item.title), info.title],
+      pageStart: page,
+      startLine: lineNumber + 1,
+      buffer: []
+    };
+    while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
+    stack.push({
+      key,
+      title: info.title,
+      level,
+      division: current.division,
+      sectionNumber: current.sectionNumber,
+      sectionTitle: current.sectionTitle
+    });
+  };
+
+  lines.forEach((line, index) => {
+    const pageMarker = line.trim().match(/^PAGE\s+(\d+)$/i);
+    if (pageMarker) {
+      page = Number(pageMarker[1]);
+      return;
+    }
+    if (isHeading(line)) {
+      begin(line, index + 1);
+      return;
+    }
+    if (!current && clean(line)) begin('Document beginning', index + 1);
+    if (current) {
+      current.buffer.push(line);
+      if (clean(line)) lastContentPage = page || lastContentPage;
+    }
   });
-  push(lines.length);
-  return out.flatMap(s=>s.text.length>7000?chunkLong(s):[s]);
+  close(lines.length);
+
+  return nodes.flatMap(node => node.text.length > 7000 ? chunkLong(node) : [node])
+    .map(node => ({
+      ...node,
+      crossReferences: crossReferences(`${node.title}\n${node.text}`),
+      metadata: semanticMetadata(node, name, node.pageStart, node.pageEnd)
+    }));
 }
-function chunkLong(s){const paras=s.text.split(/\n\s*\n/);const out=[];let buf='';let n=1;for(const p of paras){if((buf+'\n\n'+p).length>6500&&buf){out.push({...s,heading:`${s.heading} — Part ${n++}`,text:buf});buf=p}else buf+=(buf?'\n\n':'')+p}if(buf)out.push({...s,heading:n>1?`${s.heading} — Part ${n}`:s.heading,text:buf});return out}
-async function loadScript(src,test){if(test())return;await new Promise((res,rej)=>{const s=document.createElement('script');s.src=src;s.onload=res;s.onerror=()=>rej(new Error(`Could not load parser: ${src}`));document.head.appendChild(s)})}
-async function parsePDF(file){const pdfjs=await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');pdfjs.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';const pdf=await pdfjs.getDocument({data:await file.arrayBuffer()}).promise;const pages=[];for(let i=1;i<=pdf.numPages;i++){const page=await pdf.getPage(i);const c=await page.getTextContent();pages.push(`PAGE ${i}\n${c.items.map(x=>x.str).join(' ')}`)}return pages.join('\n\n')}
-async function parseDocx(file){await loadScript('https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js',()=>window.mammoth);const r=await window.mammoth.extractRawText({arrayBuffer:await file.arrayBuffer()});return r.value}
-async function parseXlsx(file){await loadScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',()=>window.XLSX);const wb=window.XLSX.read(await file.arrayBuffer(),{type:'array'});return wb.SheetNames.map(n=>`SHEET: ${n}\n${window.XLSX.utils.sheet_to_csv(wb.Sheets[n])}`).join('\n\n')}
-async function parseFile(file){const ext=file.name.split('.').pop().toLowerCase();if(['txt','md','csv','json','html','htm','xml','log'].includes(ext))return file.text();if(ext==='docx')return parseDocx(file);if(['xlsx','xls'].includes(ext))return parseXlsx(file);if(ext==='pdf')return parsePDF(file);throw new Error(`Unsupported file type: .${ext}`)}
-function categoryFor(name){const n=name.toLowerCase();if(/spec|section|division/.test(n))return 'Specifications';if(/drawing|plan|sheet/.test(n))return 'Drawings';if(/sop|procedure|manual/.test(n))return 'SOPs';if(/report|assessment|inspection/.test(n))return 'Reports';if(/photo|image/.test(n))return 'Photos';return 'General'}
-export async function parseFiles(files,projectId,onProgress=()=>{},libraryId=null){const documents=[],sections=[];let i=0;for(const file of files){onProgress({current:++i,total:files.length,name:file.name});try{const text=clean(await parseFile(file));const documentId=uid();const parts=splitSections(text,file.name);const extension=(file.name.split('.').pop()||'').toLowerCase();documents.push({id:documentId,projectId,libraryId,name:file.name,title:file.name.replace(/\.[^.]+$/,''),type:file.type||extension,extension,size:file.size,lastModified:file.lastModified||null,category:categoryFor(file.name),tags:[],sectionCount:parts.length,characterCount:text.length,lineCount:text?text.split('\n').length:0,headingCount:parts.filter(p=>p.heading!=='Document beginning').length,largestSection:Math.max(0,...parts.map(p=>p.text.length)),averageSection:parts.length?Math.round(text.length/parts.length):0,indexedAt:new Date().toISOString(),status:'verified',health:text.length<100?'warning':'healthy',healthDetail:text.length<100?'Very little extractable text was found.':'Text extraction and indexing completed.'});parts.forEach((p,n)=>sections.push({id:uid(),projectId,libraryId,documentId,documentName:file.name,heading:p.heading,level:p.level||1,kind:p.kind||'section',path:p.path||[p.heading],location:p.location,startLine:p.startLine||null,endLine:p.endLine||null,order:n,text:p.text,characters:p.text.length,wordCount:p.text.trim()?p.text.trim().split(/\s+/).length:0}))}catch(error){documents.push({id:uid(),projectId,libraryId,name:file.name,title:file.name.replace(/\.[^.]+$/,''),type:file.type,extension:(file.name.split('.').pop()||'').toLowerCase(),size:file.size,lastModified:file.lastModified||null,category:categoryFor(file.name),tags:[],sectionCount:0,characterCount:0,indexedAt:new Date().toISOString(),status:'error',health:'error',healthDetail:error.message,error:error.message})}}return {documents,sections}}
+
+function chunkLong(section) {
+  const paragraphs = section.text.split(/\n\s*\n/);
+  const output = [];
+  let buffer = '';
+  let part = 1;
+  for (const paragraph of paragraphs) {
+    if (`${buffer}\n\n${paragraph}`.length > 6500 && buffer) {
+      output.push({
+        ...section,
+        key: part === 1 ? section.key : `${section.key}-part-${part}`,
+        parentKey: part === 1 ? section.parentKey : section.key,
+        title: `${section.title} — Part ${part++}`,
+        text: buffer
+      });
+      buffer = paragraph;
+    } else buffer += `${buffer ? '\n\n' : ''}${paragraph}`;
+  }
+  if (buffer) output.push({
+    ...section,
+    key: part === 1 ? section.key : `${section.key}-part-${part}`,
+    parentKey: part === 1 ? section.parentKey : section.key,
+    title: part > 1 ? `${section.title} — Part ${part}` : section.title,
+    text: buffer
+  });
+  return output;
+}
+
+async function loadScript(src, test) {
+  if (test()) return;
+  await new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Could not load parser: ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
+async function parsePDF(file) {
+  const pdfjs = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
+  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+  const pages = [];
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const lines = [];
+    let currentY = null;
+    let line = [];
+    for (const item of content.items) {
+      const y = Math.round(item.transform?.[5] || 0);
+      if (currentY !== null && Math.abs(y - currentY) > 2) {
+        if (line.length) lines.push(line.join(' ').replace(/\s+/g, ' ').trim());
+        line = [];
+      }
+      line.push(item.str);
+      currentY = y;
+    }
+    if (line.length) lines.push(line.join(' ').replace(/\s+/g, ' ').trim());
+    pages.push(`PAGE ${pageNumber}\n${lines.filter(Boolean).join('\n')}`);
+  }
+  return pages.join('\n');
+}
+
+async function parseDocx(file) {
+  await loadScript('https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js', () => window.mammoth);
+  return (await window.mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() })).value;
+}
+
+async function parseXlsx(file) {
+  await loadScript('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js', () => window.XLSX);
+  const workbook = window.XLSX.read(await file.arrayBuffer(), { type: 'array' });
+  return workbook.SheetNames.map(sheet => `SHEET: ${sheet}\n${window.XLSX.utils.sheet_to_csv(workbook.Sheets[sheet])}`).join('\n\n');
+}
+
+async function parseFile(file) {
+  const extension = file.name.split('.').pop().toLowerCase();
+  if (['txt', 'md', 'csv', 'json', 'html', 'htm', 'xml', 'log'].includes(extension)) return file.text();
+  if (extension === 'docx') return parseDocx(file);
+  if (['xlsx', 'xls'].includes(extension)) return parseXlsx(file);
+  if (extension === 'pdf') return parsePDF(file);
+  throw new Error(`Unsupported file type: .${extension}`);
+}
+
+function categoryFor(name) {
+  const value = name.toLowerCase();
+  if (/spec|section|division/.test(value)) return 'Specifications';
+  if (/drawing|plan|sheet/.test(value)) return 'Drawings';
+  if (/sop|procedure|manual/.test(value)) return 'SOPs';
+  if (/report|assessment|inspection/.test(value)) return 'Reports';
+  if (/photo|image/.test(value)) return 'Photos';
+  return 'General';
+}
+
+export async function parseFiles(files, projectId, onProgress = () => {}, libraryId = null) {
+  const documents = [];
+  const sections = [];
+  let index = 0;
+  for (const file of files) {
+    onProgress({ current: ++index, total: files.length, name: file.name });
+    try {
+      const text = clean(await parseFile(file));
+      const documentId = uid();
+      const parts = buildSpecificationHierarchy(text, file.name);
+      const ids = new Map(parts.map(part => [part.key, uid()]));
+      const sectionIds = new Map(parts
+        .filter(part => part.hierarchyType === 'spec-section' && part.sectionNumber)
+        .map(part => [part.sectionNumber.replace(/\D/g, ''), ids.get(part.key)]));
+      const extension = (file.name.split('.').pop() || '').toLowerCase();
+      documents.push({
+        id: documentId, projectId, libraryId, name: file.name,
+        title: file.name.replace(/\.[^.]+$/, ''), type: file.type || extension, extension,
+        size: file.size, lastModified: file.lastModified || null, category: categoryFor(file.name), tags: [],
+        sectionCount: parts.length, characterCount: text.length, lineCount: text ? text.split('\n').length : 0,
+        headingCount: parts.filter(part => part.title !== 'Document beginning').length,
+        largestSection: Math.max(0, ...parts.map(part => part.text.length)),
+        averageSection: parts.length ? Math.round(text.length / parts.length) : 0,
+        hierarchyVersion: HIERARCHY_VERSION, indexedAt: new Date().toISOString(), status: 'verified',
+        health: text.length < 100 ? 'warning' : 'healthy',
+        healthDetail: text.length < 100 ? 'Very little extractable text was found.' : 'Text extraction and hierarchy indexing completed.'
+      });
+      parts.forEach((part, order) => {
+        const id = ids.get(part.key);
+        const parentId = ids.get(part.parentKey) || null;
+        const pageRange = part.metadata.pageRange;
+        sections.push({
+          id, parentId, projectId, libraryId, documentId, documentName: file.name,
+          heading: part.title, level: part.hierarchyLevel || 1, kind: part.hierarchyType || 'section',
+          hierarchyType: part.hierarchyType || 'section', hierarchyVersion: HIERARCHY_VERSION,
+          division: part.division || '', sectionNumber: part.sectionNumber || '', sectionTitle: part.sectionTitle || '',
+          path: part.path || [part.title], location: part.location, page: part.pageStart,
+          pageStart: part.pageStart, pageEnd: part.pageEnd, pageRange,
+          startLine: part.startLine || null, endLine: part.endLine || null, order,
+          text: part.text, characters: part.text.length,
+          wordCount: part.text.trim() ? part.text.trim().split(/\s+/).length : 0,
+          sourceLabel: part.sectionNumber && !part.title.startsWith(part.sectionNumber)
+            ? `${part.sectionNumber} — ${part.title}`
+            : part.title,
+          crossReferences: part.crossReferences,
+          crossReferenceIds: part.crossReferences.map(reference => sectionIds.get(reference.replace(/\D/g, ''))).filter(Boolean),
+          metadata: { ...part.metadata, parent: parentId },
+          citations: [{ document: file.name, pageStart: part.pageStart, pageEnd: part.pageEnd, location: part.location, sectionNumber: part.sectionNumber || '' }]
+        });
+      });
+    } catch (error) {
+      documents.push({
+        id: uid(), projectId, libraryId, name: file.name,
+        title: file.name.replace(/\.[^.]+$/, ''), type: file.type,
+        extension: (file.name.split('.').pop() || '').toLowerCase(), size: file.size,
+        lastModified: file.lastModified || null, category: categoryFor(file.name), tags: [],
+        sectionCount: 0, characterCount: 0, hierarchyVersion: HIERARCHY_VERSION,
+        indexedAt: new Date().toISOString(), status: 'error', health: 'error',
+        healthDetail: error.message, error: error.message
+      });
+    }
+  }
+  return { documents, sections };
+}

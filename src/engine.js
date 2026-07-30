@@ -13,6 +13,7 @@ import { analyzeCorpus } from './core/reasoning.js';
 
 const STATE_KEY = 'mc-master-state-v2';
 const DOC_DB = 'mc-master-documents-v2';
+const DOC_DB_VERSION = 2;
 const APP_VERSION = '2.8.1';
 
 const defaults = {
@@ -47,6 +48,7 @@ const defaults = {
 };
 
 let state = loadState();
+let sectionCache = null;
 
 moduleStatus('State Manager', 'ready', {
   summary: 'State loaded'
@@ -183,7 +185,7 @@ function usableIndexedDocument(document, indexedSectionCount) {
 
 function openDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DOC_DB, 1);
+    const request = indexedDB.open(DOC_DB, DOC_DB_VERSION);
 
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -194,14 +196,19 @@ function openDB() {
         });
       }
 
+      let sections;
       if (!db.objectStoreNames.contains('sections')) {
-        const sections = db.createObjectStore('sections', {
+        sections = db.createObjectStore('sections', {
           keyPath: 'id'
         });
-
-        sections.createIndex('projectId', 'projectId');
-        sections.createIndex('documentId', 'documentId');
+      } else {
+        sections = request.transaction.objectStore('sections');
       }
+
+      if (!sections.indexNames.contains('projectId')) sections.createIndex('projectId', 'projectId');
+      if (!sections.indexNames.contains('documentId')) sections.createIndex('documentId', 'documentId');
+      if (!sections.indexNames.contains('parentId')) sections.createIndex('parentId', 'parentId');
+      if (!sections.indexNames.contains('sectionNumber')) sections.createIndex('sectionNumber', 'sectionNumber');
     };
 
     request.onsuccess = () => resolve(request.result);
@@ -416,6 +423,7 @@ export const engine = {
     }
 
     state.activeProject = id;
+    sectionCache = null;
 
     state.activeLibrary =
       state.libraries.find(
@@ -629,11 +637,20 @@ export const engine = {
   },
 
   async sections() {
-    return all(
+    if (sectionCache?.projectId === state.activeProject) {
+      return sectionCache.sections;
+    }
+
+    const sections = await all(
       'sections',
       'projectId',
       state.activeProject
     );
+    sectionCache = {
+      projectId: state.activeProject,
+      sections
+    };
+    return sections;
   },
 
   async ingest(
@@ -755,6 +772,7 @@ export const engine = {
 
       await putMany('documents', parsed.documents);
       await putMany('sections', parsed.sections);
+      sectionCache = null;
 
       if (action === 'replace') {
         for (let index = 0; index < parsed.documents.length; index += 1) {
@@ -804,6 +822,7 @@ export const engine = {
       'documentId',
       id
     );
+    sectionCache = null;
 
     await tx(
       'documents',
@@ -836,7 +855,11 @@ export const engine = {
 
   async extractRequirements(query = '', options = {}) {
     const sections = await this.sections();
-    const result = extractRequirementsFromSections(sections, query, {
+    const cleanedQuery = String(query || '').trim();
+    const sourceSections = cleanedQuery
+      ? retrieve(cleanedQuery, sections, Math.min(50, Number(options.limit) || 50))
+      : sections;
+    const result = extractRequirementsFromSections(sourceSections, cleanedQuery, {
       limit: options.limit || 100,
       includeAdvisory: options.includeAdvisory !== false,
       includeNegative: options.includeNegative !== false
@@ -844,7 +867,7 @@ export const engine = {
 
     logger.info('Requirement extraction completed', {
       query,
-      sectionsSearched: sections.length,
+      sectionsSearched: sourceSections.length,
       requirements: result.requirements.length,
       mandatory: result.summary.mandatory,
       prohibited: result.summary.prohibited
@@ -855,13 +878,17 @@ export const engine = {
 
   async extractDefinitions(query = '', options = {}) {
     const sections = await this.sections();
-    const result = extractDefinitionsFromSections(sections, query, {
+    const cleanedQuery = String(query || '').trim();
+    const sourceSections = cleanedQuery
+      ? retrieve(cleanedQuery, sections, Math.min(50, Number(options.limit) || 50))
+      : sections;
+    const result = extractDefinitionsFromSections(sourceSections, cleanedQuery, {
       limit: options.limit || 100
     });
 
     logger.info('Definition extraction completed', {
       query,
-      sectionsSearched: sections.length,
+      sectionsSearched: sourceSections.length,
       definitions: result.definitions.length
     });
 
@@ -1224,9 +1251,20 @@ export const engine = {
       importedDocuments
     );
 
+    const sectionIdMap = new Map(
+      data.sections.map(section => [section.id, uid()])
+    );
     const importedSections = data.sections.map(section => ({
       ...section,
-      id: uid(),
+      id: sectionIdMap.get(section.id),
+      parentId: sectionIdMap.get(section.parentId) || null,
+      crossReferenceIds: (section.crossReferenceIds || [])
+        .map(id => sectionIdMap.get(id))
+        .filter(Boolean),
+      metadata: {
+        ...(section.metadata || {}),
+        parent: sectionIdMap.get(section.parentId) || null
+      },
       projectId: importedProject.id,
       libraryId:
         libraryIdMap.get(section.libraryId) ||
@@ -1240,6 +1278,7 @@ export const engine = {
       'sections',
       importedSections
     );
+    sectionCache = null;
 
     state.evaluations.push(
       ...(Array.isArray(data.evaluations)

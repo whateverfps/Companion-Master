@@ -1648,7 +1648,7 @@ async function renderSources() {
 
       <button id="expandSections" class="subtle">Expand all</button>
       <button id="collapseSections" class="subtle">Collapse all</button>
-      <button id="exportExtraction" class="subtle">Export report</button>
+      <button id="exportExtraction" class="subtle">Export selected branch</button>
     </div>
 
     <div class="extraction-report
@@ -1672,6 +1672,35 @@ async function renderSources() {
     <div id="sectionResults"></div>
   `;
 
+  let activeSectionId = null;
+  const sectionsById = new Map(selectedSections.map(section => [section.id, section]));
+  const sectionIndexById = new Map(selectedSections.map((section, index) => [section.id, index]));
+  const sectionsByNumber = new Map(selectedSections
+    .filter(section => section.sectionNumber)
+    .map(section => [safeText(section.sectionNumber).replace(/\D/g, ''), section]));
+  const sectionSearchText = new Map(selectedSections.map((section, index) => [
+    section.id,
+    `${sectionHeading(section, index)} ${sectionText(section)} ${Array.isArray(section.metadata?.keywords) ? section.metadata.keywords.join(' ') : safeText(section.metadata?.keywords)}`.toLowerCase()
+  ]));
+  const childrenByParent = new Map();
+  for (const section of selectedSections) {
+    const parentId = sectionsById.has(section.parentId) ? section.parentId : null;
+    if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
+    childrenByParent.get(parentId).push(section);
+  }
+
+  const branchSections = sectionId => {
+    if (!sectionId || !sectionsById.has(sectionId)) return selectedSections;
+    const output = [];
+    const queue = [sectionsById.get(sectionId)];
+    while (queue.length) {
+      const section = queue.shift();
+      output.push(section);
+      queue.push(...(childrenByParent.get(section.id) || []));
+    }
+    return output;
+  };
+
   const drawSections = () => {
     const query = (
       $('#sectionFilter').value ||
@@ -1682,12 +1711,10 @@ async function renderSources() {
 
     const level = $('#sectionLevel').value;
 
-    const shown = selectedSections.filter((section, index) =>
+    const matches = selectedSections.filter((section, index) =>
       (
         !query ||
-        `${sectionHeading(section, index)} ${sectionText(section)}`
-          .toLowerCase()
-          .includes(query)
+        safeText(sectionSearchText.get(section.id)).includes(query)
       ) &&
       (
         !level ||
@@ -1695,19 +1722,43 @@ async function renderSources() {
       )
     );
 
-    $('#sectionResults').innerHTML = shown.length
-      ? shown.map(section => {
-          const sectionIndex = selectedSections.indexOf(section);
+    const visibleIds = new Set(matches.map(section => section.id));
+    if (query || level) {
+      for (const section of matches) {
+        let parent = sectionsById.get(section.parentId);
+        while (parent) {
+          visibleIds.add(parent.id);
+          parent = sectionsById.get(parent.parentId);
+        }
+      }
+    }
+
+    const roots = (childrenByParent.get(null) || []).filter(section =>
+      (!query && !level) || visibleIds.has(section.id)
+    );
+
+    const renderNode = section => {
+          const sectionIndex = sectionIndexById.get(section.id);
           const heading = sectionHeading(section, sectionIndex);
           const location = sectionLocation(section);
           const text = sectionText(section);
+          const children = (childrenByParent.get(section.id) || []).filter(child =>
+            (!query && !level) || visibleIds.has(child.id)
+          );
+          const references = (section.crossReferences || []).map(reference => {
+            const target = sectionsByNumber.get(safeText(reference).replace(/\D/g, ''));
+            return target
+              ? `<button class="cross-reference" data-jump-section="${esc(target.id)}">${esc(reference)}</button>`
+              : `<span>${esc(reference)}</span>`;
+          }).join(' ');
 
           return `
           <details
-            class="source-section"
-            ${sectionIndex === 0 && !query ? 'open' : ''}
+            class="source-section ${section.id === activeSectionId ? 'active' : ''}"
+            data-section-node="${esc(section.id)}"
+            ${query || section.id === activeSectionId ? 'open' : ''}
           >
-            <summary>
+            <summary data-activate-section="${esc(section.id)}">
               <b>${section.order + 1}</b>
 
               <span style="--level:${Math.max(0, (section.level || 1) - 1)}">
@@ -1730,62 +1781,124 @@ async function renderSources() {
             <div class="section-actions">
               <button
                 class="subtle"
-                data-copy-section="${section.id}"
+                data-jump-section="${esc(section.id)}"
+              >
+                Jump to section
+              </button>
+
+              <button
+                class="subtle"
+                data-select-branch="${esc(section.id)}"
+              >
+                Select branch
+              </button>
+
+              <button
+                class="subtle"
+                data-copy-section="${esc(section.id)}"
               >
                 Copy text
               </button>
 
               <button
                 class="subtle"
-                data-copy-citation="${section.id}"
+                data-copy-citation="${esc(section.id)}"
               >
                 Copy source label
               </button>
             </div>
 
             <pre>${esc(text)}</pre>
+            ${references ? `<div class="section-references"><b>References:</b> ${references}</div>` : ''}
+            ${children.length ? `<div class="source-tree-children" data-tree-children="${esc(section.id)}"></div>` : ''}
           </details>
         `;
-        }).join('')
+    };
+
+    $('#sectionResults').innerHTML = roots.length
+      ? roots.map(renderNode).join('')
       : '<div class="empty">No sections match this filter.</div>';
 
-    $$('[data-copy-section]').forEach(button => {
-      button.onclick = () => {
-        const section = selectedSections.find(item =>
-          item.id === button.dataset.copySection
-        );
+    const populateChildren = details => {
+      const container = details.querySelector(':scope > [data-tree-children]');
+      if (!container || container.dataset.loaded) return;
+      const children = childrenByParent.get(details.dataset.sectionNode) || [];
+      const shownChildren = children.filter(child => (!query && !level) || visibleIds.has(child.id));
+      container.innerHTML = shownChildren.map(renderNode).join('');
+      container.dataset.loaded = 'true';
+      bindTree(container);
+    };
 
-        navigator.clipboard.writeText(
-          sectionText(section)
-        );
-      };
-    });
+    const activate = sectionId => {
+      activeSectionId = sectionId;
+      $$('[data-section-node]').forEach(node =>
+        node.classList.toggle('active', node.dataset.sectionNode === sectionId)
+      );
+    };
 
-    $$('[data-copy-citation]').forEach(button => {
-      button.onclick = () => {
-        const section = selectedSections.find(item =>
-          item.id === button.dataset.copyCitation
-        );
+    const bindTree = root => {
+      root.querySelectorAll(':scope > [data-section-node]').forEach(details => {
+        details.ontoggle = () => {
+          if (details.open) populateChildren(details);
+        };
+        if (details.open) populateChildren(details);
+      });
+      root.querySelectorAll('[data-activate-section]').forEach(summary => {
+        summary.onclick = () => activate(summary.dataset.activateSection);
+      });
+      root.querySelectorAll('[data-select-branch]').forEach(button => {
+        button.onclick = event => {
+          event.preventDefault();
+          activate(button.dataset.selectBranch);
+        };
+      });
+      root.querySelectorAll('[data-jump-section]').forEach(button => {
+        button.onclick = () => {
+          const targetId = button.dataset.jumpSection;
+          activeSectionId = targetId;
+          const target = sectionsById.get(targetId);
+          $('#sectionFilter').value = sectionHeading(target, sectionIndexById.get(target.id));
+          drawSections();
+          document.querySelector(`[data-section-node="${CSS.escape(targetId)}"]`)?.scrollIntoView({ block: 'center' });
+        };
+      });
+      root.querySelectorAll('[data-copy-section]').forEach(button => {
+        button.onclick = () => {
+          const section = sectionsById.get(button.dataset.copySection);
+          navigator.clipboard.writeText(sectionText(section));
+        };
+      });
+      root.querySelectorAll('[data-copy-citation]').forEach(button => {
+        button.onclick = () => {
+          const section = sectionsById.get(button.dataset.copyCitation);
+          const sectionIndex = sectionIndexById.get(section.id);
+          const sourceLabel = sectionSourceLabel(section, sectionIndex);
+          const location = sectionLocation(section);
+          navigator.clipboard.writeText([
+            `${documentLabel} — ${sourceLabel}`,
+            location ? `(${location})` : ''
+          ].filter(Boolean).join(' '));
+        };
+      });
+    };
 
-        const sectionIndex = selectedSections.indexOf(section);
-        const sourceLabel = sectionSourceLabel(section, sectionIndex);
-        const location = sectionLocation(section);
-
-        navigator.clipboard.writeText([
-          `${documentLabel} — ${sourceLabel}`,
-          location ? `(${location})` : ''
-        ].filter(Boolean).join(' '));
-      };
-    });
+    bindTree($('#sectionResults'));
   };
 
-  $('#sectionFilter').oninput = drawSections;
+  let filterTimer;
+  $('#sectionFilter').oninput = () => {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(drawSections, 120);
+  };
   $('#sectionLevel').onchange = drawSections;
 
   $('#expandSections').onclick = () => {
-    $$('#sectionResults details').forEach(details => {
-      details.open = true;
-    });
+    const expand = () => {
+      const closed = [...$('#sectionResults').querySelectorAll('details:not([open])')];
+      closed.forEach(details => { details.open = true; });
+      if (closed.length) requestAnimationFrame(expand);
+    };
+    expand();
   };
 
   $('#collapseSections').onclick = () => {
@@ -1795,12 +1908,14 @@ async function renderSources() {
   };
 
   $('#exportExtraction').onclick = () => {
+    const exportedSections = branchSections(activeSectionId);
     download(
       `${documentLabel.replace(/[^a-z0-9]+/gi, '-') || 'document'}-extraction-report.json`,
       JSON.stringify(
         {
           ...report,
-          sections: selectedSections.map(
+          selectedRoot: activeSectionId,
+          sections: exportedSections.map(
             ({
               id,
               projectId,
