@@ -2,7 +2,7 @@
  * ============================================================================
  * Mission Companion
  * Conflict Engine
- *
+ **
  * File:
  *     WorkflowRule.js
  *
