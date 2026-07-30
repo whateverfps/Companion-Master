@@ -815,6 +815,7 @@ export const engine = {
       answer = callOffline(cleanedPrompt, hits);
     } else {
       let structuredAnalysis = '';
+      let dependencyAnalysis = '';
 
       try {
         const analysis = analyzeCorpus(cleanedPrompt, hits, {
@@ -829,10 +830,54 @@ export const engine = {
         });
       }
 
+      if (
+        hits.length &&
+        hits.meta?.queryExpansion?.intents?.includes('dependency')
+      ) {
+        try {
+          const {
+            buildDependencyGraph,
+            answerDependencyQuestion,
+            buildWorkflowSequence
+          } = await import('./core/dependency.js');
+
+          const graph = buildDependencyGraph(hits, {
+            includePhaseInference: true
+          });
+
+          const dependencyResult = answerDependencyQuestion(
+            graph,
+            cleanedPrompt,
+            {
+              limit: 3,
+              maxDepth: 4,
+              minimumScore: 0.25
+            }
+          );
+
+          const sequence = shouldIncludeDependencySequence(cleanedPrompt)
+            ? buildWorkflowSequence(graph)
+            : null;
+
+          dependencyAnalysis = buildDependencyAnalysisBlock(
+            graph,
+            dependencyResult,
+            sequence,
+            hits
+          );
+        } catch (error) {
+          logger.warning('Dependency analysis unavailable', {
+            message: error?.message || String(error)
+          });
+        }
+      }
+
       const evidenceContext = buildContext(hits);
-      const context = structuredAnalysis
-        ? `${evidenceContext}\n\n${structuredAnalysis}`
-        : evidenceContext;
+      const context = [
+        evidenceContext,
+        structuredAnalysis,
+        dependencyAnalysis
+      ].filter(Boolean).join('\n\n');
 
       answer = await callAI(
         cleanedPrompt,
@@ -1191,6 +1236,169 @@ function buildStructuredAnalysisBlock(analysis, hits) {
     while (block.length > 16000 && category.length) {
       category.pop();
       block = `${header}\nSTRUCTURED ANALYSIS TRUNCATED\n${JSON.stringify(payload)}`;
+    }
+  }
+
+  return block;
+}
+
+function shouldIncludeDependencySequence(prompt) {
+  return /\b(sequence of (?:work|activities)|order of operations|what comes next|what follows|what happens after|handoffs?|downstream(?: impacts?)?)\b/i.test(
+    String(prompt || '')
+  );
+}
+
+function buildDependencyAnalysisBlock(graph, result, sequence, hits) {
+  const validSources = new Set(
+    safeArray(hits)
+      .map(hit => Number(hit?.sourceNumber))
+      .filter(source => Number.isInteger(source) && source > 0)
+  );
+
+  const nodes = new Map(
+    safeArray(graph?.nodes).map(node => [node.id, node])
+  );
+
+  const sourceNumbers = (...values) => [...new Set(
+    values
+      .flat()
+      .map(value => Number(value))
+      .filter(value => Number.isInteger(value) && value > 0 && validSources.has(value))
+  )].slice(0, 4);
+
+  const edgeSources = edge => sourceNumbers(
+    nodes.get(edge?.from)?.sourceNumber,
+    nodes.get(edge?.to)?.sourceNumber,
+    nodes.get(edge?.sourceRequirementId)?.sourceNumber
+  );
+
+  const edgeRecord = edge => {
+    const sources = edgeSources(edge);
+
+    if (!sources.length) return null;
+
+    return {
+      from: compactText(nodes.get(edge.from)?.label, 300),
+      to: compactText(nodes.get(edge.to)?.label, 300),
+      relationship: compactText(edge.type, 80),
+      reason: compactText(edge.reason, 240),
+      sourceNumbers: sources,
+      confidencePercent: Number.isFinite(Number(edge.confidence))
+        ? Number(edge.confidence)
+        : null,
+      algorithmicallyMatched: true
+    };
+  };
+
+  const traversals = safeArray(result?.matches).flatMap(match => [
+    ...safeArray(match?.prerequisites),
+    ...safeArray(match?.successors)
+  ]);
+
+  const questionEdges = [...new Map(
+    traversals
+      .map(item => item?.via)
+      .filter(Boolean)
+      .map(edge => [edge.id, edge])
+  ).values()];
+
+  const relationships = questionEdges
+    .filter(edge => edge.type === 'explicit-predecessor' || edge.type === 'explicit-successor')
+    .map(edgeRecord)
+    .filter(Boolean)
+    .slice(0, 10);
+
+  const phaseRelationships = safeArray(graph?.edges)
+    .filter(edge => edge?.type === 'phase-sequence')
+    .map(edge => {
+      const sources = edgeSources(edge);
+
+      return sources.length
+        ? {
+            from: compactText(nodes.get(edge.from)?.label, 300),
+            to: compactText(nodes.get(edge.to)?.label, 300),
+            relationship: 'phase-sequence',
+            sourceNumbers: sources,
+            confidencePercent: Number.isFinite(Number(edge.confidence))
+              ? Number(edge.confidence)
+              : null,
+            inferred: true,
+            basis: 'Typical phase ordering, not an explicit source statement'
+          }
+        : null;
+    })
+    .filter(Boolean)
+    .slice(0, 6);
+
+  const sequenceSteps = safeArray(sequence?.ordered)
+    .map((node, index) => {
+      const sources = sourceNumbers(node?.sourceNumber);
+
+      return sources.length
+        ? {
+            step: index + 1,
+            activity: compactText(node?.label, 300),
+            phase: compactText(node?.phase, 80),
+            sourceNumbers: sources,
+            inferred: true,
+            basis: 'Topological ordering of the dependency graph'
+          }
+        : null;
+    })
+    .filter(Boolean)
+    .slice(0, 12);
+
+  const downstreamImpacts = safeArray(result?.matches)
+    .flatMap(match => safeArray(match?.successors).map(successor => {
+      const sources = sourceNumbers(
+        match?.requirement?.sourceNumber,
+        successor?.requirement?.sourceNumber
+      );
+
+      return sources.length
+        ? {
+            cause: compactText(match?.requirement?.statement, 300),
+            affectedActivity: compactText(successor?.requirement?.label, 300),
+            sourceNumbers: sources,
+            inferred: true,
+            basis: 'Dependency traversal'
+          }
+        : null;
+    }))
+    .filter(Boolean)
+    .slice(0, 8);
+
+  const payload = {
+    sourceBacked: { relationships },
+    inferred: {
+      phaseRelationships,
+      sequence: sequenceSteps,
+      downstreamImpacts
+    }
+  };
+
+  const header = [
+    'DEPENDENCY ANALYSIS',
+    'This block is supplemental to the retrieved evidence.',
+    'Source citations support the underlying requirements; dependency relationships may be algorithmically derived.',
+    'Source-backed relationships use explicit dependency language but are algorithmically matched.',
+    'Inferred records are not direct source statements.',
+    'The evidence context remains authoritative.'
+  ].join('\n');
+
+  const removalOrder = [
+    payload.inferred.phaseRelationships,
+    payload.inferred.sequence,
+    payload.inferred.downstreamImpacts,
+    payload.sourceBacked.relationships
+  ];
+
+  let block = `${header}\n${JSON.stringify(payload)}`;
+
+  for (const category of removalOrder) {
+    while (block.length > 12000 && category.length) {
+      category.pop();
+      block = `${header}\nDEPENDENCY ANALYSIS TRUNCATED\n${JSON.stringify(payload)}`;
     }
   }
 
