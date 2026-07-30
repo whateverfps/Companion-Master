@@ -16,7 +16,7 @@
  * ============================================================================
  */
 
-import { ReasoningRule } from "./ConflictReasoner.js";
+import { ReasoningRule } from "../ConflictReasoner.js";
 
 export const ScheduleConflictType = Object.freeze({
     DATE_CONTRADICTION: "date_contradiction",
