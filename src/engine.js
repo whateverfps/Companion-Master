@@ -12,7 +12,7 @@ import {
 
 const STATE_KEY = 'mc-master-state-v2';
 const DOC_DB = 'mc-master-documents-v2';
-const APP_VERSION = '2.8.0';
+const APP_VERSION = '2.8.1';
 
 const defaults = {
   settings: {
@@ -690,6 +690,110 @@ export const engine = {
     return hits;
   },
 
+  async extractRequirements(query = '', options = {}) {
+    const sections = await this.sections();
+    const result = extractRequirementsFromSections(sections, query, {
+      limit: options.limit || 100,
+      includeAdvisory: options.includeAdvisory !== false,
+      includeNegative: options.includeNegative !== false
+    });
+
+    logger.info('Requirement extraction completed', {
+      query,
+      sectionsSearched: sections.length,
+      requirements: result.requirements.length,
+      mandatory: result.summary.mandatory,
+      prohibited: result.summary.prohibited
+    });
+
+    return structuredClone(result);
+  },
+
+  async extractDefinitions(query = '', options = {}) {
+    const sections = await this.sections();
+    const result = extractDefinitionsFromSections(sections, query, {
+      limit: options.limit || 100
+    });
+
+    logger.info('Definition extraction completed', {
+      query,
+      sectionsSearched: sections.length,
+      definitions: result.definitions.length
+    });
+
+    return structuredClone(result);
+  },
+
+  async compareSources(query, options = {}) {
+    const cleanedQuery = String(query || '').trim();
+
+    if (!cleanedQuery) {
+      throw new Error('Enter a topic or question to compare.');
+    }
+
+    const sections = await this.sections();
+    const hits = retrieve(
+      cleanedQuery,
+      sections,
+      Math.max(Number(options.topK || state.settings.topK || 10), 10)
+    );
+
+    const comparison = compareRetrievedSources(cleanedQuery, hits, {
+      maximumSources: options.maximumSources || 8
+    });
+
+    logger.info('Source comparison completed', {
+      query: cleanedQuery,
+      hits: hits.length,
+      agreements: comparison.agreements.length,
+      differences: comparison.differences.length,
+      conflicts: comparison.conflicts.length
+    });
+
+    return structuredClone(comparison);
+  },
+
+  async analyzeKnowledge(query, options = {}) {
+    const cleanedQuery = String(query || '').trim();
+
+    if (!cleanedQuery) {
+      throw new Error('Enter a topic or question to analyze.');
+    }
+
+    const sections = await this.sections();
+    const hits = retrieve(
+      cleanedQuery,
+      sections,
+      options.topK || state.settings.topK
+    );
+
+    const requirements = extractRequirementsFromSections(hits, cleanedQuery, {
+      limit: options.requirementLimit || 50,
+      includeAdvisory: true,
+      includeNegative: true
+    });
+
+    const definitions = extractDefinitionsFromSections(hits, cleanedQuery, {
+      limit: options.definitionLimit || 50
+    });
+
+    const comparison = compareRetrievedSources(cleanedQuery, hits, {
+      maximumSources: options.maximumSources || 8
+    });
+
+    return structuredClone({
+      query: cleanedQuery,
+      generatedAt: new Date().toISOString(),
+      retrieval: {
+        hits,
+        meta: hits.meta || {}
+      },
+      requirements,
+      definitions,
+      comparison
+    });
+  },
+
   async ask(prompt, mode = state.settings.mode) {
     const cleanedPrompt = String(prompt || '').trim();
 
@@ -963,6 +1067,24 @@ function callOffline(prompt, hits) {
     };
   }
 
+  const intent = detectOfflineAnalysisIntent(prompt);
+
+  if (intent === 'requirements') {
+    return buildOfflineRequirementReport(prompt, hits);
+  }
+
+  if (intent === 'definitions') {
+    return buildOfflineDefinitionReport(prompt, hits);
+  }
+
+  if (intent === 'comparison') {
+    return buildOfflineComparisonReport(prompt, hits);
+  }
+
+  return buildOfflineEvidenceReport(prompt, hits);
+}
+
+function buildOfflineEvidenceReport(prompt, hits) {
   const evidenceBlocks = hits
     .slice(0, Math.min(hits.length, 6))
     .map(hit => formatOfflineSource(hit, prompt));
@@ -972,7 +1094,6 @@ function callOffline(prompt, hits) {
     .map(hit => hit.sourceNumber);
 
   const conflicts = hits.meta?.conflicts || [];
-
   const conflictBlock = conflicts.length
     ? [
         '',
@@ -991,7 +1112,6 @@ function callOffline(prompt, hits) {
       ];
 
   const confidence = calculateOfflineConfidence(hits);
-
   const content = [
     '## Offline evidence report',
     '',
@@ -1013,6 +1133,474 @@ function callOffline(prompt, hits) {
 
   return {
     content,
+    citations: [...new Set(citations)]
+  };
+}
+
+const REQUIREMENT_PATTERNS = [
+  { type: 'prohibited', strength: 100, pattern: /\bshall not\b/i },
+  { type: 'prohibited', strength: 100, pattern: /\bmust not\b/i },
+  { type: 'prohibited', strength: 100, pattern: /\bmay not\b/i },
+  { type: 'prohibited', strength: 100, pattern: /\bis prohibited\b/i },
+  { type: 'mandatory', strength: 100, pattern: /\bshall\b/i },
+  { type: 'mandatory', strength: 100, pattern: /\bmust\b/i },
+  { type: 'mandatory', strength: 95, pattern: /\bis required to\b/i },
+  { type: 'mandatory', strength: 90, pattern: /\bis responsible for\b/i },
+  { type: 'permitted', strength: 70, pattern: /\bmay\b/i },
+  { type: 'advisory', strength: 45, pattern: /\bshould\b/i },
+  { type: 'informational', strength: 30, pattern: /\bwill\b/i }
+];
+
+const DEFINITION_PATTERNS = [
+  { pattern: /^(.{2,120}?)\s+(?:shall mean|means|is defined as|refers to)\s+(.+)$/i, termGroup: 1, definitionGroup: 2 },
+  { pattern: /^(.{2,120}?):\s+(.+)$/i, termGroup: 1, definitionGroup: 2 },
+  { pattern: /^(.{2,120}?)\s+[—–-]\s+(.+)$/i, termGroup: 1, definitionGroup: 2 }
+];
+
+function detectOfflineAnalysisIntent(prompt) {
+  const value = String(prompt || '').toLowerCase();
+
+  if (/\b(compare|comparison|difference|conflict|contradiction|consistent|agreement|precedence)\b/i.test(value)) {
+    return 'comparison';
+  }
+
+  if (/\b(define|definition|definitions|meaning|what does .* mean|what is meant by)\b/i.test(value)) {
+    return 'definitions';
+  }
+
+  if (/\b(requirement|requirements|shall|must|required|responsible|prohibited|obligation|duties)\b/i.test(value)) {
+    return 'requirements';
+  }
+
+  return 'evidence';
+}
+
+function normalizeAnalysisText(value) {
+  return String(value || '')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function splitAnalysisSentences(value) {
+  return normalizeAnalysisText(value)
+    .split(/(?<=[.!?;:])\s+|\n+/)
+    .map(sentence => sentence.trim())
+    .filter(sentence => sentence.length >= 12);
+}
+
+function matchesAnalysisQuery(text, query) {
+  const queryTerms = tokenizeOffline(query);
+
+  if (!queryTerms.length) {
+    return true;
+  }
+
+  const lower = String(text || '').toLowerCase();
+  return queryTerms.some(term => lower.includes(term));
+}
+
+function classifyRequirement(sentence) {
+  for (const rule of REQUIREMENT_PATTERNS) {
+    if (rule.pattern.test(sentence)) {
+      return {
+        type: rule.type,
+        strength: rule.strength
+      };
+    }
+  }
+
+  return null;
+}
+
+function extractResponsibleParty(sentence) {
+  const patterns = [
+    /^\s*(?:the\s+)?([A-Z][A-Za-z0-9 /&()_-]{1,80}?)\s+(?:shall|must|will|should|may)\b/,
+    /\b(?:the\s+)?([A-Za-z][A-Za-z0-9 /&()_-]{1,80}?)\s+is responsible for\b/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = String(sentence || '').match(pattern);
+    if (match?.[1]) {
+      return match[1].trim();
+    }
+  }
+
+  return null;
+}
+
+function requirementKey(requirement) {
+  return `${requirement.type}|${String(requirement.text || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
+}
+
+function extractRequirementsFromSections(sections, query = '', options = {}) {
+  const limit = Math.max(1, Number(options.limit || 100));
+  const includeAdvisory = options.includeAdvisory !== false;
+  const includeNegative = options.includeNegative !== false;
+  const requirements = [];
+  const seen = new Set();
+
+  for (const section of Array.isArray(sections) ? sections : []) {
+    for (const sentence of splitAnalysisSentences(section.text)) {
+      const classification = classifyRequirement(sentence);
+
+      if (!classification) {
+        continue;
+      }
+
+      if (!includeAdvisory && ['advisory', 'informational'].includes(classification.type)) {
+        continue;
+      }
+
+      if (!includeNegative && classification.type === 'prohibited') {
+        continue;
+      }
+
+      if (!matchesAnalysisQuery(`${section.heading || ''} ${sentence}`, query)) {
+        continue;
+      }
+
+      const requirement = {
+        id: `${section.id || section.documentId || 'section'}:${requirements.length + 1}`,
+        type: classification.type,
+        strength: classification.strength,
+        text: truncateText(sentence, 700),
+        responsibleParty: extractResponsibleParty(sentence),
+        documentId: section.documentId || null,
+        documentName: section.documentName || 'Unknown document',
+        heading: section.heading || 'Unheaded section',
+        path: Array.isArray(section.path) ? section.path : [],
+        location: section.location || 'Location not specified',
+        sourceNumber: section.sourceNumber || null
+      };
+
+      const key = requirementKey(requirement);
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      requirements.push(requirement);
+
+      if (requirements.length >= limit) {
+        break;
+      }
+    }
+
+    if (requirements.length >= limit) {
+      break;
+    }
+  }
+
+  requirements.sort((a, b) => b.strength - a.strength || a.documentName.localeCompare(b.documentName));
+
+  const summary = {
+    total: requirements.length,
+    mandatory: requirements.filter(item => item.type === 'mandatory').length,
+    prohibited: requirements.filter(item => item.type === 'prohibited').length,
+    permitted: requirements.filter(item => item.type === 'permitted').length,
+    advisory: requirements.filter(item => item.type === 'advisory').length,
+    informational: requirements.filter(item => item.type === 'informational').length,
+    responsibleParties: [...new Set(requirements.map(item => item.responsibleParty).filter(Boolean))]
+  };
+
+  return {
+    query: String(query || '').trim(),
+    generatedAt: new Date().toISOString(),
+    summary,
+    requirements
+  };
+}
+
+function cleanDefinitionTerm(value) {
+  return String(value || '')
+    .replace(/^[\s•*#\d.)-]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractDefinitionsFromSections(sections, query = '', options = {}) {
+  const limit = Math.max(1, Number(options.limit || 100));
+  const definitions = [];
+  const seen = new Set();
+
+  for (const section of Array.isArray(sections) ? sections : []) {
+    for (const sentence of splitAnalysisSentences(section.text)) {
+      let parsed = null;
+
+      for (const rule of DEFINITION_PATTERNS) {
+        const match = sentence.match(rule.pattern);
+        if (!match) {
+          continue;
+        }
+
+        const term = cleanDefinitionTerm(match[rule.termGroup]);
+        const definition = String(match[rule.definitionGroup] || '').trim();
+
+        if (term.length < 2 || term.length > 120 || definition.length < 10) {
+          continue;
+        }
+
+        if (rule.pattern === DEFINITION_PATTERNS[1].pattern && !/definition|definitions|glossary/i.test(`${section.heading || ''} ${(section.path || []).join(' ')}`)) {
+          continue;
+        }
+
+        parsed = { term, definition };
+        break;
+      }
+
+      if (!parsed) {
+        continue;
+      }
+
+      if (!matchesAnalysisQuery(`${parsed.term} ${parsed.definition} ${section.heading || ''}`, query)) {
+        continue;
+      }
+
+      const key = parsed.term.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      definitions.push({
+        id: `${section.id || section.documentId || 'section'}:${definitions.length + 1}`,
+        term: parsed.term,
+        definition: truncateText(parsed.definition, 800),
+        documentId: section.documentId || null,
+        documentName: section.documentName || 'Unknown document',
+        heading: section.heading || 'Unheaded section',
+        path: Array.isArray(section.path) ? section.path : [],
+        location: section.location || 'Location not specified',
+        sourceNumber: section.sourceNumber || null
+      });
+
+      if (definitions.length >= limit) {
+        break;
+      }
+    }
+
+    if (definitions.length >= limit) {
+      break;
+    }
+  }
+
+  definitions.sort((a, b) => a.term.localeCompare(b.term));
+
+  return {
+    query: String(query || '').trim(),
+    generatedAt: new Date().toISOString(),
+    summary: {
+      total: definitions.length,
+      documents: new Set(definitions.map(item => item.documentId).filter(Boolean)).size
+    },
+    definitions
+  };
+}
+
+function analysisTerms(value) {
+  return new Set(tokenizeOffline(value).map(term => term.replace(/(ing|ed|es|s)$/i, '')));
+}
+
+function analysisSimilarity(first, second) {
+  const a = analysisTerms(first);
+  const b = analysisTerms(second);
+
+  if (!a.size || !b.size) {
+    return 0;
+  }
+
+  const intersection = [...a].filter(term => b.has(term)).length;
+  const union = new Set([...a, ...b]).size;
+  return intersection / Math.max(1, union);
+}
+
+function compareRetrievedSources(query, hits, options = {}) {
+  const maximumSources = Math.max(2, Number(options.maximumSources || 8));
+  const sources = (Array.isArray(hits) ? hits : [])
+    .slice(0, maximumSources)
+    .map(hit => ({
+      sourceNumber: hit.sourceNumber,
+      documentId: hit.documentId || null,
+      documentName: hit.documentName || 'Unknown document',
+      heading: hit.heading || 'Unheaded section',
+      location: hit.location || 'Location not specified',
+      path: Array.isArray(hit.path) ? hit.path : [],
+      score: Number(hit.score || 0),
+      excerpts: selectEvidenceSentences(hit.text, query, hit.matchedTerms || [], 3),
+      requirements: extractRequirementsFromSections([hit], query, { limit: 12 }).requirements,
+      definitions: extractDefinitionsFromSections([hit], query, { limit: 12 }).definitions
+    }));
+
+  const agreements = [];
+  const differences = [];
+
+  for (let i = 0; i < sources.length; i += 1) {
+    for (let j = i + 1; j < sources.length; j += 1) {
+      const first = sources[i];
+      const second = sources[j];
+      const firstText = first.excerpts.join(' ');
+      const secondText = second.excerpts.join(' ');
+      const similarity = analysisSimilarity(firstText, secondText);
+
+      if (similarity >= 0.28) {
+        agreements.push({
+          sourceA: first.sourceNumber,
+          sourceB: second.sourceNumber,
+          similarity: Math.round(similarity * 100),
+          reason: 'The sources use materially overlapping language or address the same obligation.'
+        });
+      } else if (similarity >= 0.08) {
+        differences.push({
+          sourceA: first.sourceNumber,
+          sourceB: second.sourceNumber,
+          similarity: Math.round(similarity * 100),
+          reason: 'The sources address related subject matter but emphasize different details, duties, or conditions.'
+        });
+      }
+    }
+  }
+
+  const conflicts = (hits?.meta?.conflicts || []).map(conflict => ({ ...conflict }));
+
+  return {
+    query,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      sources: sources.length,
+      documents: new Set(sources.map(source => source.documentId).filter(Boolean)).size,
+      agreements: agreements.length,
+      differences: differences.length,
+      conflicts: conflicts.length
+    },
+    sources,
+    agreements,
+    differences,
+    conflicts
+  };
+}
+
+function buildOfflineRequirementReport(prompt, hits) {
+  const result = extractRequirementsFromSections(hits, prompt, {
+    limit: 30,
+    includeAdvisory: true,
+    includeNegative: true
+  });
+  const confidence = calculateOfflineConfidence(hits);
+  const citations = result.requirements.map(item => item.sourceNumber).filter(Boolean);
+
+  const requirementLines = result.requirements.length
+    ? result.requirements.map(item => {
+        const party = item.responsibleParty ? ` — **Responsible party:** ${item.responsibleParty}` : '';
+        const citation = item.sourceNumber ? ` [S${item.sourceNumber}]` : '';
+        return `- **${item.type.toUpperCase()}** (${item.strength}%): ${item.text}${party}${citation}`;
+      })
+    : ['No explicit requirement language was found in the retrieved sources.'];
+
+  return {
+    content: [
+      '## Offline requirement report',
+      '',
+      `**Question:** ${prompt}`,
+      '',
+      `**Evidence confidence:** ${confidence.label} (${confidence.score}%)`,
+      '',
+      `**Extracted:** ${result.summary.total} requirements — ${result.summary.mandatory} mandatory, ${result.summary.prohibited} prohibited, ${result.summary.permitted} permitted, ${result.summary.advisory} advisory.`,
+      '',
+      '### Extracted requirements',
+      '',
+      ...requirementLines,
+      '',
+      '### Evidence gaps',
+      '',
+      'This is deterministic language extraction. Each item should be reviewed in its full section context before it is treated as a controlling obligation.'
+    ].join('\n'),
+    citations: [...new Set(citations)]
+  };
+}
+
+function buildOfflineDefinitionReport(prompt, hits) {
+  const result = extractDefinitionsFromSections(hits, prompt, { limit: 30 });
+  const confidence = calculateOfflineConfidence(hits);
+  const citations = result.definitions.map(item => item.sourceNumber).filter(Boolean);
+
+  const definitionLines = result.definitions.length
+    ? result.definitions.map(item => {
+        const citation = item.sourceNumber ? ` [S${item.sourceNumber}]` : '';
+        return `- **${item.term}:** ${item.definition}${citation}`;
+      })
+    : ['No explicit definitions were found in the retrieved sources.'];
+
+  return {
+    content: [
+      '## Offline definition report',
+      '',
+      `**Question:** ${prompt}`,
+      '',
+      `**Evidence confidence:** ${confidence.label} (${confidence.score}%)`,
+      '',
+      '### Extracted definitions',
+      '',
+      ...definitionLines,
+      '',
+      '### Evidence gaps',
+      '',
+      'Only explicit definitional language was extracted. Implied meanings were not created.'
+    ].join('\n'),
+    citations: [...new Set(citations)]
+  };
+}
+
+function buildOfflineComparisonReport(prompt, hits) {
+  const comparison = compareRetrievedSources(prompt, hits, { maximumSources: 8 });
+  const citations = comparison.sources.map(source => source.sourceNumber).filter(Boolean);
+
+  const sourceLines = comparison.sources.map(source => {
+    const excerpts = source.excerpts.length
+      ? source.excerpts.map(excerpt => `  - ${excerpt} [S${source.sourceNumber}]`).join('\n')
+      : `  - No readable excerpt was available. [S${source.sourceNumber}]`;
+    return `- **[S${source.sourceNumber}] ${source.documentName} — ${source.heading}**\n${excerpts}`;
+  });
+
+  const agreementLines = comparison.agreements.length
+    ? comparison.agreements.map(item => `- [S${item.sourceA}] and [S${item.sourceB}]: ${item.reason} (${item.similarity}% textual similarity).`)
+    : ['No strong cross-source agreement was detected.'];
+
+  const differenceLines = comparison.differences.length
+    ? comparison.differences.map(item => `- [S${item.sourceA}] and [S${item.sourceB}]: ${item.reason}`)
+    : ['No material differences were detected by the comparison rules.'];
+
+  const conflictLines = comparison.conflicts.length
+    ? comparison.conflicts.map(item => `- [S${item.sourceA}] may conflict with [S${item.sourceB}]: ${item.reason}.`)
+    : ['No opposing requirement language was detected among the retrieved sources.'];
+
+  return {
+    content: [
+      '## Offline source comparison',
+      '',
+      `**Topic:** ${prompt}`,
+      '',
+      '### Compared sources',
+      '',
+      ...sourceLines,
+      '',
+      '### Agreements',
+      '',
+      ...agreementLines,
+      '',
+      '### Differences',
+      '',
+      ...differenceLines,
+      '',
+      '### Potential conflicts',
+      '',
+      ...conflictLines,
+      '',
+      '### Evidence gaps',
+      '',
+      'Similarity and conflict indicators are screening tools. Review the complete cited sections, referenced clauses, and order-of-precedence provisions before relying on a final interpretation.'
+    ].join('\n'),
     citations: [...new Set(citations)]
   };
 }
