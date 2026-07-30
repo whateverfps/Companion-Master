@@ -240,7 +240,7 @@ function inferRequiredEvidence(text) {
 }
 
 function inferStatus(text, metadata = {}) {
-  const explicit = lower(metadata.status ?? metadata.complianceStatus);
+  const explicit = lower(metadata?.status ?? metadata?.complianceStatus);
   if (Object.values(ComplianceStatus).includes(explicit)) return explicit;
   if (NA_PATTERNS.test(text)) return ComplianceStatus.NOT_APPLICABLE;
   if (WAIVER_PATTERNS.test(text)) return ComplianceStatus.WAIVED;

@@ -77,3 +77,66 @@ export function sectionSourceLabelValue(section, index = 0) {
     `Section ${Math.max(0, index) + 1}`
   );
 }
+
+export function normalizeDocumentRecord(document = {}) {
+  const source = document && typeof document === 'object' ? document : {};
+  return {
+    ...source,
+    id: firstText(source.id, source.documentId),
+    name: firstText(source.name, source.filename, source.title, 'Untitled document'),
+    title: firstText(source.title, source.name, source.filename, 'Untitled document'),
+    category: firstText(source.category, 'General'),
+    projectId: firstText(source.projectId),
+    libraryId: firstText(source.libraryId),
+    sectionCount: Number.isFinite(Number(source.sectionCount)) ? Number(source.sectionCount) : 0,
+    characterCount: Number.isFinite(Number(source.characterCount)) ? Number(source.characterCount) : 0
+  };
+}
+
+export function normalizeSectionRecord(section = {}, index = 0) {
+  const source = section && typeof section === 'object' ? section : {};
+  const heading = sectionHeadingValue(source, index);
+  const text = sectionTextValue(source);
+  const sectionNumber = normalizeSectionNumber(source.sectionNumber ?? source.metadata?.sectionNumber);
+  return {
+    ...source,
+    id: firstText(source.id, source.sectionId),
+    documentId: firstText(source.documentId, source.document?.id),
+    documentName: firstText(source.documentName, source.document?.name, source.metadata?.document),
+    parentId: firstText(source.parentId, source.parent, source.metadata?.parent) || null,
+    heading,
+    text,
+    location: sectionLocationValue(source),
+    sourceLabel: sectionSourceLabelValue(source, index),
+    sectionNumber,
+    division: firstText(source.division, source.metadata?.division, sectionNumber.slice(0, 2)),
+    level: Number.isFinite(Number(source.level)) ? Number(source.level) : 1,
+    order: Number.isFinite(Number(source.order)) ? Number(source.order) : index,
+    path: arrayValue(source.path).map(textValue),
+    crossReferences: arrayValue(source.crossReferences).map(normalizeSectionNumber).filter(Boolean),
+    metadata: source.metadata && typeof source.metadata === 'object' ? { ...source.metadata } : {}
+  };
+}
+
+export function normalizeHierarchyNode(section = {}, index = 0) {
+  const normalized = normalizeSectionRecord(section, index);
+  return {
+    ...normalized,
+    hierarchyType: firstText(normalized.hierarchyType, normalized.kind, 'section'),
+    hierarchyVersion: Number.isFinite(Number(normalized.hierarchyVersion))
+      ? Number(normalized.hierarchyVersion)
+      : 0
+  };
+}
+
+export function normalizeCrossReference(reference = {}) {
+  const source = reference && typeof reference === 'object'
+    ? reference
+    : { sectionNumber: reference };
+  return {
+    ...source,
+    sectionNumber: normalizeSectionNumber(source.sectionNumber ?? source.reference ?? source.target),
+    targetId: firstText(source.targetId, source.sectionId) || null,
+    resolved: source.resolved === true
+  };
+}

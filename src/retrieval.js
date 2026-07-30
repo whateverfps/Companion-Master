@@ -4582,6 +4582,13 @@ function buildHierarchyNeighbors(
 
 const hierarchyIndexCache = new WeakMap();
 
+export function invalidateRetrievalCaches(sections = []) {
+  if (!Array.isArray(sections)) return;
+  hierarchyIndexCache.delete(sections);
+  corpusStatsCache.delete(sections);
+  for (const section of sections) sectionAnalysisCache.delete(section);
+}
+
 function hierarchySearchIndex(sections) {
   if (hierarchyIndexCache.has(sections)) return hierarchyIndexCache.get(sections);
 

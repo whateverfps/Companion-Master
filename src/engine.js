@@ -2,6 +2,7 @@ import { parseFiles } from './parsers.js';
 import { arrayValue } from './data-model.js';
 import {
   retrieve,
+  invalidateRetrievalCaches,
   buildContext,
   scoreAnswer,
   verifyCitations
@@ -53,6 +54,7 @@ let sectionCache = null;
 let documentCache = null;
 
 function invalidateKnowledgeCache() {
+  if (sectionCache?.sections) invalidateRetrievalCaches(sectionCache.sections);
   sectionCache = null;
   documentCache = null;
 }
