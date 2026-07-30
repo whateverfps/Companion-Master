@@ -4,7 +4,7 @@
   "private": true,
   "description": "Source-grounded subject matter expert workspace with local document retrieval and optional AI assistance.",
   "scripts": {
-    "test": "node --check src/app.js && node --check src/engine.js && node --check src/parsers.js && node --check src/retrieval.js && node --check src/diagnostics.js",
+    "test": "node --check src/app.js && node --check src/engine.js && node --check src/parsers.js && node --check src/retrieval.js && node --check src/diagnostics.js && node --check src/core/dependency.js && node --check src/core/reasoning.js && node --check src/core/timeline.js && node --check src/core/conflicts/AcceptanceRule.js && node --check src/core/conflicts/ConflictGraph.js && node --check src/core/conflicts/ConflictReasoner.js && node --check src/core/conflicts/ResponsibilityRule.js && node --check src/core/conflicts/rules/ComplianceRule.js && node --check src/core/conflicts/rules/DefinitionRule.js && node --check src/core/conflicts/rules/DocumentPrecedenceRule.js && node --check src/core/conflicts/rules/ScheduleRule.js && node --check src/core/conflicts/rules/WorkflowRule.js",
     "serve": "python3 -m http.server 8000",
     "start": "python3 -m http.server 8000"
   },
