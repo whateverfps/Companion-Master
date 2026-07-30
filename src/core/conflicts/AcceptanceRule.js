@@ -180,6 +180,349 @@ function similarity(left, right) {
     return union === 0 ? 0 : intersection / union;
 }
 
+function normalizeNodeType(value) {
+    return normalize(value).toLowerCase();
+}
+
+function stableNodeArray(nodes) {
+    const result = [];
+    const seen = new Set();
+
+    for (const node of nodes || []) {
+        if (!node) {
+            continue;
+        }
+
+        const nodeId = node?.id ?? node?.nodeId ?? null;
+        const marker = nodeId != null
+            ? `id:${nodeId}`
+            : `title:${normalize(node?.title || node?.name || "")}`;
+
+        if (seen.has(marker)) {
+            continue;
+        }
+
+        seen.add(marker);
+        result.push(node);
+    }
+
+    return result;
+}
+
+function readNodeValue(node, key) {
+    if (!node) {
+        return undefined;
+    }
+
+    if (node[key] !== undefined && node[key] !== null && node[key] !== "") {
+        return node[key];
+    }
+
+    if (node.metadata && node.metadata[key] !== undefined && node.metadata[key] !== null && node.metadata[key] !== "") {
+        return node.metadata[key];
+    }
+
+    return undefined;
+}
+
+function buildCandidateFilter(context = {}) {
+    const filter = {};
+    const criteria = context?.criteria && typeof context.criteria === "object"
+        ? context.criteria
+        : {};
+
+    for (const key of ["document", "section", "source", "specification", "responsibility", "type", "nodeId"]) {
+        if (criteria[key] !== undefined && criteria[key] !== null && criteria[key] !== "") {
+            filter[key] = criteria[key];
+        }
+    }
+
+    if (context?.nodes && Array.isArray(context.nodes)) {
+        filter.nodeIds = context.nodes
+            .map(node => node?.id)
+            .filter(Boolean)
+            .slice(0, 10);
+    } else if (context?.nodeIds && Array.isArray(context.nodeIds)) {
+        filter.nodeIds = context.nodeIds.filter(Boolean).slice(0, 10);
+    }
+
+    return filter;
+}
+
+function resolveCandidateNodes(graph, context = {}, nodeTypes = []) {
+    const allowedTypes = (nodeTypes || [])
+        .map(value => normalizeNodeType(value))
+        .filter(Boolean);
+
+    const filterByTypes = nodes => {
+        if (!allowedTypes.length) {
+            return stableNodeArray(nodes);
+        }
+
+        return stableNodeArray(nodes.filter(node => allowedTypes.includes(normalizeNodeType(node?.type))));
+    };
+
+    if (graph && Array.isArray(context?.nodes) && context.nodes.length > 0) {
+        return filterByTypes(context.nodes);
+    }
+
+    const nodeIds = Array.isArray(context?.nodeIds)
+        ? context.nodeIds
+        : (context?.nodeId ? [context.nodeId] : []);
+
+    if (nodeIds.length > 0) {
+        const resolved = [];
+        const seen = new Set();
+
+        for (const nodeId of nodeIds) {
+            if (!nodeId) {
+                continue;
+            }
+
+            const node = graph?.getNode
+                ? graph.getNode(nodeId)
+                : null;
+            const fallbackNode = graph?.nodes instanceof Map
+                ? graph.nodes.get(nodeId)
+                : null;
+            const candidate = node || fallbackNode || null;
+
+            if (!candidate || seen.has(candidate.id)) {
+                continue;
+            }
+
+            seen.add(candidate.id);
+            resolved.push(candidate);
+        }
+
+        if (resolved.length > 0) {
+            return filterByTypes(resolved);
+        }
+    }
+
+    const criteria = context?.criteria && typeof context.criteria === "object"
+        ? { ...context.criteria }
+        : {};
+
+    for (const key of ["document", "section", "source", "specification", "responsibility", "type", "nodeId"]) {
+        if (context?.[key] !== undefined && context?.[key] !== null && context?.[key] !== "") {
+            criteria[key] = context[key];
+        }
+    }
+
+    if (Object.keys(criteria).length > 0) {
+        if (graph && typeof graph.query === "function") {
+            try {
+                const queryCriteria = { ...criteria };
+
+                if (queryCriteria.nodeId !== undefined) {
+                    queryCriteria.id = queryCriteria.nodeId;
+                    delete queryCriteria.nodeId;
+                }
+
+                const matched = graph.query(queryCriteria);
+                if (matched) {
+                    return filterByTypes(Array.isArray(matched) ? matched : [...matched]);
+                }
+            } catch {
+                // Fall through to the compatible fallback below.
+            }
+        }
+
+        const indexedCriteria = [];
+
+        if (criteria.document !== undefined && criteria.document !== null && criteria.document !== "") {
+            indexedCriteria.push(["document", graph?.getNodesByDocument]);
+        }
+
+        if (criteria.section !== undefined && criteria.section !== null && criteria.section !== "") {
+            indexedCriteria.push(["section", graph?.getNodesBySection]);
+        }
+
+        if (criteria.source !== undefined && criteria.source !== null && criteria.source !== "") {
+            indexedCriteria.push(["source", graph?.getNodesBySource]);
+        }
+
+        if (criteria.specification !== undefined && criteria.specification !== null && criteria.specification !== "") {
+            indexedCriteria.push(["specification", graph?.getNodesBySpecification]);
+        }
+
+        if (criteria.responsibility !== undefined && criteria.responsibility !== null && criteria.responsibility !== "") {
+            indexedCriteria.push(["responsibility", graph?.getNodesByResponsibility]);
+        }
+
+        if (indexedCriteria.length > 0) {
+            let matched = null;
+
+            for (const [, lookup] of indexedCriteria) {
+                if (typeof lookup !== "function") {
+                    continue;
+                }
+
+                const current = lookup.call(graph, criteria["document"] ?? criteria["section"] ?? criteria["source"] ?? criteria["specification"] ?? criteria["responsibility"]);
+                const nodes = Array.isArray(current) ? current : [...(current || [])];
+
+                if (!matched) {
+                    matched = nodes;
+                } else {
+                    const matchedIds = new Set(matched.map(node => node?.id).filter(Boolean));
+                    matched = nodes.filter(node => matchedIds.has(node?.id));
+                }
+
+            }
+
+            if (matched) {
+                return filterByTypes(matched);
+            }
+        }
+    }
+
+    if (graph && typeof graph.findNodes === "function") {
+        return filterByTypes(graph.findNodes({
+            types: nodeTypes
+        }));
+    }
+
+    return [];
+}
+
+function collectGraphEvidence(graph, node) {
+    const terms = [];
+    const evidence = [];
+
+    if (Array.isArray(node?.evidence)) {
+        for (const entry of node.evidence) {
+            if (!entry) {
+                continue;
+            }
+
+            const evidenceValue = entry.id || entry.reference || entry.title || entry.name || entry.type;
+            if (evidenceValue) {
+                terms.push(String(evidenceValue));
+            }
+        }
+    }
+
+    for (const value of [node?.id, node?.title, node?.text, node?.document, node?.section, node?.source, node?.metadata?.evidence, node?.metadata?.evidenceId]) {
+        if (value) {
+            terms.push(String(value));
+        }
+    }
+
+    const seen = new Set();
+
+    for (const term of terms) {
+        if (!term || seen.has(term.toLowerCase())) {
+            continue;
+        }
+
+        seen.add(term.toLowerCase());
+
+        if (graph && typeof graph.getEvidence === "function") {
+            try {
+                const matches = graph.getEvidence(term) || [];
+
+                for (const match of matches) {
+                    const matchValue = match?.id || match?.reference || match?.name || match?.title || match?.text;
+                    if (!matchValue) {
+                        continue;
+                    }
+
+                    const normalizedValue = normalize(matchValue);
+                    if (!normalizedValue || seen.has(normalizedValue.toLowerCase())) {
+                        continue;
+                    }
+
+                    seen.add(normalizedValue.toLowerCase());
+                    evidence.push(normalizedValue);
+                }
+            } catch {
+                // Ignore lookup failures and fall back below.
+            }
+        }
+    }
+
+    return unique(evidence);
+}
+
+function applyFindingMetadata(finding, rule, context = {}, candidateNodes = []) {
+    if (!finding) {
+        return finding;
+    }
+
+    const ruleName = rule?.name || rule?.constructor?.name || "AcceptanceRule";
+    const criteria = context?.criteria && typeof context.criteria === "object"
+        ? context.criteria
+        : {};
+    const candidateFilter = {};
+
+    for (const key of ["document", "section", "source", "specification", "responsibility", "type", "nodeId"]) {
+        if (criteria[key] !== undefined && criteria[key] !== null && criteria[key] !== "") {
+            candidateFilter[key] = criteria[key];
+        }
+    }
+
+    if (Array.isArray(context?.nodeIds) && context.nodeIds.length > 0) {
+        candidateFilter.nodeIds = context.nodeIds.filter(Boolean).slice(0, 10);
+    } else if (Array.isArray(context?.nodes) && context.nodes.length > 0) {
+        candidateFilter.nodeIds = context.nodes.map(node => node?.id).filter(Boolean).slice(0, 10);
+    }
+
+    const isFiltered = Boolean(
+        context?.filtered ||
+        context?.nodes ||
+        context?.nodeIds ||
+        (criteria && Object.keys(criteria).length > 0)
+    );
+
+    const graphEvidenceIds = unique([
+        ...(finding.graphEvidenceIds || []),
+        ...(finding.evidence || [])
+            .map(entry => entry?.id || entry?.reference || entry?.title || entry?.name || entry?.type)
+            .filter(Boolean)
+    ]);
+
+    finding.rule = finding.rule || ruleName;
+    finding.ruleVersion = finding.ruleVersion || "6";
+    finding.executionContext = {
+        filtered: isFiltered,
+        criteria: candidateFilter,
+        candidateNodeCount: (candidateNodes || []).length,
+        candidateNodeIds: (candidateNodes || []).map(node => node?.id).filter(Boolean)
+    };
+    finding.metadata = {
+        ...(finding.metadata || {}),
+        candidateFilter,
+        graphEvidenceIds,
+        filtered: isFiltered,
+        candidateNodeCount: (candidateNodes || []).length
+    };
+    finding.trace = Array.isArray(finding.trace)
+        ? [...finding.trace]
+        : [];
+    finding.trace.push({
+        rule: ruleName,
+        filtered: isFiltered,
+        candidateNodeCount: (candidateNodes || []).length,
+        candidateFilter
+    });
+
+    return finding;
+}
+
+function findingIdentitySignature(finding) {
+    const nodeIds = unique((finding?.nodeIds || [finding?.nodeId]).filter(Boolean))
+        .map(value => normalize(String(value)))
+        .sort();
+
+    return [
+        nodeIds.join("|"),
+        normalize(finding?.subtype),
+        normalize(finding?.subject),
+        normalize(finding?.rule || finding?.ruleName)
+    ].join("::");
+}
+
 function identifyActions(text) {
     const actions = [];
 
@@ -297,7 +640,7 @@ function inferDocumentAuthority(node) {
     return Number(node.metadata?.authorityScore) || 30;
 }
 
-export function extractAcceptanceCriteria(node) {
+export function extractAcceptanceCriteria(node, graph = null) {
     const text = normalize(
         [
             node.title,
@@ -321,7 +664,10 @@ export function extractAcceptanceCriteria(node) {
     }
 
     const status = identifyStatus(text);
-    const evidence = extractEvidenceTypes(text);
+    const graphEvidenceIds = collectGraphEvidence(graph, node);
+    const evidence = graphEvidenceIds.length > 0
+        ? graphEvidenceIds
+        : extractEvidenceTypes(text);
     const parties = identifyParties(text);
     const prerequisites = extractPrerequisites(text);
     const subject = extractSubject(text);
@@ -337,12 +683,18 @@ export function extractAcceptanceCriteria(node) {
     return {
         nodeId: node.id,
         node,
+        document: readNodeValue(node, "document"),
+        section: readNodeValue(node, "section"),
+        source: readNodeValue(node, "source"),
+        specification: readNodeValue(node, "specification") || readNodeValue(node, "metadata")?.specification,
+        responsibility: readNodeValue(node, "responsibility") || readNodeValue(node, "metadata")?.responsibility,
         text,
         subject,
         actions,
         status,
         parties,
         evidence,
+        graphEvidenceIds,
         prerequisites,
         thresholdPresent: hasThreshold(text),
         negated: hasNegation(text),
@@ -651,21 +1003,28 @@ export class AcceptanceRule extends ReasoningRule {
     }
 
     appliesTo(graph) {
-        return (
-            graph &&
-            typeof graph.findNodes === "function" &&
-            typeof graph.getIncoming === "function" &&
-            typeof graph.getOutgoing === "function"
+        return Boolean(
+            graph && (
+                typeof graph.findNodes === "function" ||
+                typeof graph.query === "function" ||
+                typeof graph.getNodesByDocument === "function" ||
+                typeof graph.getNodesBySection === "function" ||
+                typeof graph.getNodesBySource === "function" ||
+                typeof graph.getNodesBySpecification === "function" ||
+                typeof graph.getNodesByResponsibility === "function"
+            )
         );
     }
 
-    execute(graph, result) {
-        const nodes = graph.findNodes({
-            types: this.options.nodeTypes
-        });
+    execute(graph, result, context = {}) {
+        const candidateNodes = resolveCandidateNodes(
+            graph,
+            context,
+            this.options.nodeTypes
+        );
 
-        const criteria = nodes
-            .map(extractAcceptanceCriteria)
+        const criteria = candidateNodes
+            .map(node => extractAcceptanceCriteria(node, graph))
             .filter(Boolean);
 
         const seen = new Set();
@@ -726,6 +1085,11 @@ export class AcceptanceRule extends ReasoningRule {
                     ),
                     confidence: comparison.confidence,
                     nodeIds: [left.nodeId, right.nodeId],
+                    document: readNodeValue(left.node, "document") || readNodeValue(right.node, "document"),
+                    section: readNodeValue(left.node, "section") || readNodeValue(right.node, "section"),
+                    source: readNodeValue(left.node, "source") || readNodeValue(right.node, "source"),
+                    specification: readNodeValue(left.node, "specification") || readNodeValue(right.node, "specification") || readNodeValue(left.node, "metadata")?.specification || readNodeValue(right.node, "metadata")?.specification,
+                    responsibility: readNodeValue(left.node, "responsibility") || readNodeValue(right.node, "responsibility") || readNodeValue(left.node, "metadata")?.responsibility || readNodeValue(right.node, "metadata")?.responsibility,
                     subject:
                         left.subject ||
                         right.subject ||
@@ -758,6 +1122,10 @@ export class AcceptanceRule extends ReasoningRule {
                             confidence: right.confidence
                         }
                     ],
+                    graphEvidenceIds: unique([
+                        ...(left.graphEvidenceIds || []),
+                        ...(right.graphEvidenceIds || [])
+                    ]),
                     resolution,
                     explanation: buildExplanation(
                         left,
@@ -767,6 +1135,15 @@ export class AcceptanceRule extends ReasoningRule {
                     )
                 };
 
+                const duplicateKey = findingIdentitySignature(finding);
+                const duplicate = result.findings.some(existing => findingIdentitySignature(existing) === duplicateKey);
+
+                if (duplicate) {
+                    result.metrics.duplicateFindingsRemoved += 1;
+                    continue;
+                }
+
+                applyFindingMetadata(finding, this, context, candidateNodes);
                 result.addFinding(finding);
                 result.addExplanation({
                     findingId: finding.id,
@@ -779,19 +1156,21 @@ export class AcceptanceRule extends ReasoningRule {
         }
 
         if (this.options.detectAmbiguousCriteria) {
-            this.detectAmbiguousCriteria(criteria, result);
+            this.detectAmbiguousCriteria(criteria, result, context, candidateNodes);
         }
 
         if (this.options.detectPrerequisiteFailures) {
             this.detectPrerequisiteFailures(
                 graph,
                 criteria,
-                result
+                result,
+                context,
+                candidateNodes
             );
         }
     }
 
-    detectAmbiguousCriteria(criteria, result) {
+    detectAmbiguousCriteria(criteria, result, context = {}, candidateNodes = []) {
         for (const criterion of criteria) {
             const missingAcceptor =
                 criterion.parties.length === 0;
@@ -842,6 +1221,11 @@ export class AcceptanceRule extends ReasoningRule {
                     0.55 + ambiguity.length * 0.1
                 ),
                 nodeIds: [criterion.nodeId],
+                document: criterion.document,
+                section: criterion.section,
+                source: criterion.source,
+                specification: criterion.specification,
+                responsibility: criterion.responsibility,
                 subject: criterion.subject,
                 actions: criterion.actions,
                 acceptors: criterion.parties,
@@ -852,6 +1236,7 @@ export class AcceptanceRule extends ReasoningRule {
                         missing: ambiguity
                     }
                 ],
+                graphEvidenceIds: criterion.graphEvidenceIds || [],
                 resolution: {
                     status: "unresolved",
                     governingNodeId: null,
@@ -862,6 +1247,15 @@ export class AcceptanceRule extends ReasoningRule {
                     `The acceptance criterion does not clearly identify ${ambiguity.join(", ")}.`
             };
 
+            const duplicateKey = findingIdentitySignature(finding);
+            const duplicate = result.findings.some(existing => findingIdentitySignature(existing) === duplicateKey);
+
+            if (duplicate) {
+                result.metrics.duplicateFindingsRemoved += 1;
+                continue;
+            }
+
+            applyFindingMetadata(finding, this, context, candidateNodes);
             result.addFinding(finding);
             result.addExplanation({
                 findingId: finding.id,
@@ -873,7 +1267,7 @@ export class AcceptanceRule extends ReasoningRule {
         }
     }
 
-    detectPrerequisiteFailures(graph, criteria, result) {
+    detectPrerequisiteFailures(graph, criteria, result, context = {}, candidateNodes = []) {
         const byNode = new Map(
             criteria.map(criterion => [
                 criterion.nodeId,
@@ -911,6 +1305,11 @@ export class AcceptanceRule extends ReasoningRule {
                 severity: "medium",
                 confidence: 0.72,
                 nodeIds: [criterion.nodeId],
+                document: criterion.document,
+                section: criterion.section,
+                source: criterion.source,
+                specification: criterion.specification,
+                responsibility: criterion.responsibility,
                 subject: criterion.subject,
                 actions: criterion.actions,
                 acceptors: criterion.parties,
@@ -921,6 +1320,7 @@ export class AcceptanceRule extends ReasoningRule {
                         prerequisites: criterion.prerequisites
                     }
                 ],
+                graphEvidenceIds: criterion.graphEvidenceIds || [],
                 resolution: {
                     status: "unresolved",
                     governingNodeId: null,
@@ -931,6 +1331,15 @@ export class AcceptanceRule extends ReasoningRule {
                     `The criterion depends on ${criterion.prerequisites.join("; ")}, but no prerequisite relationship is represented in the graph.`
             };
 
+            const duplicateKey = findingIdentitySignature(finding);
+            const duplicate = result.findings.some(existing => findingIdentitySignature(existing) === duplicateKey);
+
+            if (duplicate) {
+                result.metrics.duplicateFindingsRemoved += 1;
+                continue;
+            }
+
+            applyFindingMetadata(finding, this, context, candidateNodes);
             result.addFinding(finding);
             result.addExplanation({
                 findingId: finding.id,
