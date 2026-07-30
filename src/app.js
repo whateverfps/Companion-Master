@@ -5,6 +5,12 @@ installGlobalHandlers();
 setLifecycle('loading-ui');
 
 const app = document.querySelector('#app');
+const safeText = value => value == null ? '' : String(value);
+const preferredText = (...values) => safeText(
+  values.find(value =>
+    value != null && safeText(value).trim() !== ''
+  )
+);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
   '&': '&amp;',
   '<': '&lt;',
@@ -750,7 +756,10 @@ $('#fileInput').onchange = async () => {
 
   importQueue = files.map((file, index) => ({
     id: `q-${Date.now()}-${index}`,
+    file,
     name: file.name,
+    size: file.size,
+    libraryId,
     status: 'waiting',
     detail: 'Waiting to process'
   }));
@@ -798,11 +807,13 @@ $('#fileInput').onchange = async () => {
     importQueue = importQueue.map(queueItem => {
       const failed = result.documents.find(document =>
         document.name === queueItem.name &&
+        document.size === queueItem.size &&
         document.status === 'error'
       );
 
       const skipped = result.skipped?.find(document =>
-        document.name === queueItem.name
+        document.name === queueItem.name &&
+        document.size === queueItem.size
       );
 
       if (failed) {
@@ -817,7 +828,8 @@ $('#fileInput').onchange = async () => {
         return {
           ...queueItem,
           status: 'skipped',
-          detail: skipped.reason
+          detail: duplicateDetail(skipped),
+          duplicate: skipped.duplicate
         };
       }
 
@@ -897,6 +909,94 @@ $('#newLibrary').onclick = () => openModal(
   }
 );
 
+function duplicateDetail(skipped) {
+  const duplicate = skipped?.duplicate;
+
+  if (!duplicate) {
+    return skipped?.reason || 'Duplicate document';
+  }
+
+  return `${skipped.reason} Project: ${duplicate.projectName}; Library: ${duplicate.libraryName}; Document ID: ${duplicate.documentId}; Status: ${duplicate.status}.`;
+}
+
+async function retryImport(queueId, duplicateAction) {
+  const queueItem = importQueue.find(item => item.id === queueId);
+
+  if (!queueItem?.file) {
+    return;
+  }
+
+  importQueue = importQueue.map(item => item.id === queueId
+    ? {
+        ...item,
+        status: 'processing',
+        detail: duplicateAction === 'replace'
+          ? 'Replacing existing document'
+          : 'Re-importing document'
+      }
+    : item
+  );
+  renderImportQueue();
+
+  try {
+    const result = await engine.ingest(
+      [queueItem.file],
+      progress => {
+        importQueue = importQueue.map(item => item.id === queueId
+          ? {
+              ...item,
+              detail: `Extracting and indexing (${progress.current}/${progress.total})`
+            }
+          : item
+        );
+        renderImportQueue();
+      },
+      queueItem.libraryId,
+      {
+        duplicateAction,
+        duplicateDocumentId: queueItem.duplicate?.documentId
+      }
+    );
+    const document = result.documents.find(item =>
+      item.name === queueItem.name && item.size === queueItem.size
+    );
+
+    if (!document || document.status !== 'verified' || document.sectionCount <= 0) {
+      throw new Error(document?.error || 'No usable indexed document was created.');
+    }
+
+    importQueue = importQueue.map(item => item.id === queueId
+      ? {
+          ...item,
+          status: 'complete',
+          detail: `Indexed and verified (${document.sectionCount} sections)`,
+          duplicate: null
+        }
+      : item
+    );
+    $('#ingestStatus').innerHTML = `
+      <div class="success">
+        Indexed ${result.sections.length} sections from 1 document.
+      </div>
+    `;
+  } catch (error) {
+    importQueue = importQueue.map(item => item.id === queueId
+      ? {
+          ...item,
+          status: 'error',
+          detail: error.message
+        }
+      : item
+    );
+    $('#ingestStatus').innerHTML = `
+      <div class="error">${esc(error.message)}</div>
+    `;
+  } finally {
+    renderImportQueue();
+    await refresh();
+  }
+}
+
 function renderImportQueue() {
   $('#importQueue').innerHTML = importQueue.length
     ? importQueue.map(queueItem => `
@@ -916,10 +1016,41 @@ function renderImportQueue() {
           <div>
             <strong>${esc(queueItem.name)}</strong>
             <small>${esc(queueItem.detail)}</small>
+            ${queueItem.status === 'skipped'
+              ? `
+                <div class="queue-actions">
+                  <button data-queue-id="${esc(queueItem.id)}" data-import-action="reimport">Re-import anyway</button>
+                  <button data-queue-id="${esc(queueItem.id)}" data-import-action="replace">Replace existing document</button>
+                  <button class="subtle" data-queue-id="${esc(queueItem.id)}" data-import-action="dismiss">Dismiss</button>
+                </div>
+              `
+              : queueItem.status === 'error'
+                ? `
+                  <div class="queue-actions">
+                    <button data-queue-id="${esc(queueItem.id)}" data-import-action="reimport">Retry</button>
+                    <button class="subtle" data-queue-id="${esc(queueItem.id)}" data-import-action="dismiss">Dismiss</button>
+                  </div>
+                `
+                : ''}
           </div>
         </article>
       `).join('')
     : '<div class="empty">No imports in this session.</div>';
+
+  $('#importQueue').querySelectorAll('[data-import-action]').forEach(button => {
+    button.onclick = () => {
+      const queueId = button.dataset.queueId;
+      const action = button.dataset.importAction;
+
+      if (action === 'dismiss') {
+        importQueue = importQueue.filter(item => item.id !== queueId);
+        renderImportQueue();
+        return;
+      }
+
+      retryImport(queueId, action);
+    };
+  });
 }
 
 async function renderKnowledgeWorkspace(prefetched = null) {
@@ -1371,6 +1502,12 @@ async function renderSources() {
 
   selectedDoc = selected.id;
 
+  const documentLabel = preferredText(
+    selected.title,
+    selected.name,
+    'Untitled document'
+  );
+
   const selectedSections = sections
     .filter(section =>
       section.documentId === selected.id
@@ -1379,19 +1516,54 @@ async function renderSources() {
       a.order - b.order
     );
 
+  const sectionText = section => preferredText(
+    section?.text,
+    section?.content,
+    section?.metadata?.text,
+    section?.metadata?.content
+  );
+
+  const sectionHeading = (section, index) => preferredText(
+    section?.heading,
+    section?.label,
+    section?.title,
+    section?.metadata?.heading,
+    section?.metadata?.title,
+    `Section ${Math.max(0, index) + 1}`
+  );
+
+  const sectionLocation = section => preferredText(
+    section?.location,
+    section?.sectionLabel,
+    section?.metadata?.location,
+    section?.metadata?.sectionLabel
+  );
+
+  const sectionSourceLabel = (section, index) => preferredText(
+    section?.sourceLabel,
+    section?.source,
+    section?.metadata?.sourceLabel,
+    section?.metadata?.source,
+    section?.heading,
+    section?.label,
+    section?.title,
+    `Section ${Math.max(0, index) + 1}`
+  );
+
   const totalWords = selectedSections.reduce(
     (total, section) =>
       total +
       (
-        section.wordCount ||
-        section.text?.trim().split(/\s+/).length ||
-        0
+        section.wordCount ??
+        (sectionText(section).trim()
+          ? sectionText(section).trim().split(/\s+/).length
+          : 0)
       ),
     0
   );
 
   const emptySections = selectedSections.filter(section =>
-    !section.text?.trim()
+    !sectionText(section).trim()
   ).length;
 
   const shortSections = selectedSections.filter(section =>
@@ -1400,9 +1572,10 @@ async function renderSources() {
 
   const duplicateHeadings = Object.entries(
     selectedSections.reduce(
-      (map, section) => {
-        map[section.heading] =
-          (map[section.heading] || 0) + 1;
+      (map, section, index) => {
+        const heading = sectionHeading(section, index);
+        map[heading] =
+          (map[heading] || 0) + 1;
 
         return map;
       },
@@ -1427,7 +1600,7 @@ async function renderSources() {
   $('#sourceDetail').innerHTML = `
     <div class="source-title">
       <span>EXTRACTION VERIFICATION</span>
-      <h2>${esc(selected.title || selected.name)}</h2>
+      <h2>${esc(documentLabel)}</h2>
       <p>
         ${esc(selected.name)}
         · ${esc(selected.category || 'General')}
@@ -1509,10 +1682,10 @@ async function renderSources() {
 
     const level = $('#sectionLevel').value;
 
-    const shown = selectedSections.filter(section =>
+    const shown = selectedSections.filter((section, index) =>
       (
         !query ||
-        `${section.heading} ${section.text}`
+        `${sectionHeading(section, index)} ${sectionText(section)}`
           .toLowerCase()
           .includes(query)
       ) &&
@@ -1523,20 +1696,28 @@ async function renderSources() {
     );
 
     $('#sectionResults').innerHTML = shown.length
-      ? shown.map((section, index) => `
+      ? shown.map(section => {
+          const sectionIndex = selectedSections.indexOf(section);
+          const heading = sectionHeading(section, sectionIndex);
+          const location = sectionLocation(section);
+          const text = sectionText(section);
+
+          return `
           <details
             class="source-section"
-            ${index === 0 && !query ? 'open' : ''}
+            ${sectionIndex === 0 && !query ? 'open' : ''}
           >
             <summary>
               <b>${section.order + 1}</b>
 
               <span style="--level:${Math.max(0, (section.level || 1) - 1)}">
-                <strong>${esc(section.heading)}</strong>
+                <strong>${esc(heading)}</strong>
                 <small>
                   ${esc(
-                    (section.path || []).join(' › ') ||
-                    section.location
+                    (Array.isArray(section.path)
+                      ? section.path.map(safeText).join(' › ')
+                      : safeText(section.path)) ||
+                    location
                   )}
                   · ${fmt(section.characters)} chars
                   · ${fmt(section.wordCount || 0)} words
@@ -1562,9 +1743,10 @@ async function renderSources() {
               </button>
             </div>
 
-            <pre>${esc(section.text)}</pre>
+            <pre>${esc(text)}</pre>
           </details>
-        `).join('')
+        `;
+        }).join('')
       : '<div class="empty">No sections match this filter.</div>';
 
     $$('[data-copy-section]').forEach(button => {
@@ -1574,8 +1756,7 @@ async function renderSources() {
         );
 
         navigator.clipboard.writeText(
-          section?.text ||
-          ''
+          sectionText(section)
         );
       };
     });
@@ -1586,9 +1767,14 @@ async function renderSources() {
           item.id === button.dataset.copyCitation
         );
 
-        navigator.clipboard.writeText(
-          `${selected.name} — ${section?.heading || ''} (${section?.location || ''})`
-        );
+        const sectionIndex = selectedSections.indexOf(section);
+        const sourceLabel = sectionSourceLabel(section, sectionIndex);
+        const location = sectionLocation(section);
+
+        navigator.clipboard.writeText([
+          `${documentLabel} — ${sourceLabel}`,
+          location ? `(${location})` : ''
+        ].filter(Boolean).join(' '));
       };
     });
   };
@@ -1610,7 +1796,7 @@ async function renderSources() {
 
   $('#exportExtraction').onclick = () => {
     download(
-      `${selected.title.replace(/[^a-z0-9]+/gi, '-')}-extraction-report.json`,
+      `${documentLabel.replace(/[^a-z0-9]+/gi, '-') || 'document'}-extraction-report.json`,
       JSON.stringify(
         {
           ...report,

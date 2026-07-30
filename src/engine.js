@@ -134,6 +134,53 @@ function uid() {
   return crypto.randomUUID();
 }
 
+async function contentHash(file) {
+  if (!file || !globalThis.crypto?.subtle || typeof file.arrayBuffer !== 'function') {
+    return null;
+  }
+
+  try {
+    const digest = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      await file.arrayBuffer()
+    );
+
+    return [...new Uint8Array(digest)]
+      .map(byte => byte.toString(16).padStart(2, '0'))
+      .join('');
+  } catch {
+    return null;
+  }
+}
+
+function sameLegacyFingerprint(file, document) {
+  return (
+    document.name === file.name &&
+    Number(document.size) === Number(file.size) &&
+    Number.isFinite(Number(file.lastModified)) &&
+    Number.isFinite(Number(document.lastModified)) &&
+    Number(document.lastModified) === Number(file.lastModified)
+  );
+}
+
+function sameDocumentContent(file, hash, document) {
+  if (hash && document.contentHash) {
+    return hash === document.contentHash;
+  }
+
+  return sameLegacyFingerprint(file, document);
+}
+
+function usableIndexedDocument(document, indexedSectionCount) {
+  const status = String(document.status || '').toLowerCase();
+
+  return (
+    ['verified', 'complete', 'indexed', 'ready'].includes(status) &&
+    Number(document.sectionCount) > 0 &&
+    Number(indexedSectionCount) > 0
+  );
+}
+
 function openDB() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DOC_DB, 1);
@@ -592,7 +639,8 @@ export const engine = {
   async ingest(
     files,
     onProgress,
-    libraryId = state.activeLibrary
+    libraryId = state.activeLibrary,
+    options = {}
   ) {
     if (!libraryId) {
       throw new Error(
@@ -600,51 +648,146 @@ export const engine = {
       );
     }
 
-    const existing = await this.documents();
-    const incoming = [...files];
-
-    const accepted = incoming.filter(
-      file =>
-        !existing.some(
-          document =>
-            document.name === file.name &&
-            document.size === file.size
-        )
+    const library = state.libraries.find(item =>
+      item.id === libraryId && item.projectId === state.activeProject
     );
 
-    const skipped = incoming
-      .filter(file => !accepted.includes(file))
-      .map(file => ({
-        name: file.name,
-        reason: 'Duplicate name and file size'
+    if (!library) {
+      throw new Error('The selected knowledge library is not available in this project.');
+    }
+
+    const incoming = [...files];
+    const action = ['skip', 'reimport', 'replace'].includes(options.duplicateAction)
+      ? options.duplicateAction
+      : 'skip';
+    const descriptors = await Promise.all(
+      incoming.map(async file => ({
+        file,
+        contentHash: await contentHash(file),
+        duplicate: null
+      }))
+    );
+    let existing = await this.documents(libraryId);
+    const projectSections = await this.sections();
+    const sectionCounts = new Map();
+
+    for (const section of projectSections) {
+      sectionCounts.set(
+        section.documentId,
+        (sectionCounts.get(section.documentId) || 0) + 1
+      );
+    }
+
+    const abandoned = existing.filter(document =>
+      descriptors.some(({ file }) =>
+        document.name === file.name &&
+        Number(document.size) === Number(file.size)
+      ) &&
+      !usableIndexedDocument(document, sectionCounts.get(document.id))
+    );
+
+    for (const document of abandoned) {
+      await this.removeDocument(document.id);
+    }
+
+    existing = existing.filter(
+      document => !abandoned.some(item => item.id === document.id)
+    );
+
+    for (const descriptor of descriptors) {
+      descriptor.duplicate = existing.find(document =>
+        usableIndexedDocument(document, sectionCounts.get(document.id)) &&
+        sameDocumentContent(
+          descriptor.file,
+          descriptor.contentHash,
+          document
+        )
+      ) || null;
+    }
+
+    const acceptedDescriptors = descriptors.filter(descriptor =>
+      action !== 'skip' || !descriptor.duplicate
+    );
+    const accepted = acceptedDescriptors.map(descriptor => descriptor.file);
+    const project = state.projects.find(item => item.id === state.activeProject);
+    const skipped = descriptors
+      .filter(descriptor => action === 'skip' && descriptor.duplicate)
+      .map(descriptor => ({
+        name: descriptor.file.name,
+        size: descriptor.file.size,
+        lastModified: descriptor.file.lastModified || null,
+        reason: 'A usable indexed copy already exists in this library.',
+        duplicate: {
+          projectId: state.activeProject,
+          projectName: project?.name || state.activeProject,
+          libraryId,
+          libraryName: library?.name || libraryId,
+          documentId: descriptor.duplicate.id,
+          status: descriptor.duplicate.status,
+          sectionCount: sectionCounts.get(descriptor.duplicate.id) || 0,
+          contentHash: descriptor.duplicate.contentHash || null
+        }
       }));
 
     logger.info('Document ingestion started', {
       files: accepted.map(file => file.name),
       libraryId,
-      skipped: skipped.length
+      skipped: skipped.length,
+      abandonedRemoved: abandoned.length,
+      duplicateAction: action
     });
 
     try {
-      const parsed = await parseFiles(
+      const parsedResult = await parseFiles(
         accepted,
         state.activeProject,
         onProgress,
         libraryId
       );
 
+      const parsed = {
+        ...parsedResult,
+        documents: parsedResult.documents.map((document, index) => ({
+          ...document,
+          contentHash: acceptedDescriptors[index]?.contentHash || null
+        }))
+      };
+
       await putMany('documents', parsed.documents);
       await putMany('sections', parsed.sections);
+
+      if (action === 'replace') {
+        for (let index = 0; index < parsed.documents.length; index += 1) {
+          const document = parsed.documents[index];
+          const descriptor = acceptedDescriptors[index];
+          const replacementId = options.duplicateDocumentId || descriptor?.duplicate?.id;
+
+          if (
+            replacementId &&
+            document.status === 'verified' &&
+            document.sectionCount > 0
+          ) {
+            const replacement = existing.find(item => item.id === replacementId);
+
+            if (replacement) {
+              await this.removeDocument(replacement.id);
+            }
+          }
+        }
+      }
 
       logger.info('Document ingestion completed', {
         documents: parsed.documents.length,
         sections: parsed.sections.length,
-        skipped: skipped.length
+        skipped: skipped.length,
+        abandonedRemoved: abandoned.length,
+        duplicateAction: action
       });
 
       return {
         ...parsed,
-        skipped
+        skipped,
+        abandonedRemoved: abandoned.map(document => document.id)
       };
     } catch (error) {
       logger.error('Document ingestion failed', {
