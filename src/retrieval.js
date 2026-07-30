@@ -1066,7 +1066,1764 @@ function sharedRequirementTerms(first, second) {
     secondTerms.has(term)
   );
 }
+const RESPONSIBLE_PARTIES = [
+    "contractor",
+    "government",
+    "owner",
+    "owner qc",
+    "owner representative",
+    "resident engineer",
+    "contracting officer",
+    "co",
+    "cor",
+    "designer",
+    "architect",
+    "engineer",
+    "commissioning agent",
+    "oit",
+    "subcontractor",
+    "manufacturer",
+    "vendor",
+    "supplier",
+    "fire marshal",
+    "authority having jurisdiction",
+    "ahj"
+];
 
+const DELIVERABLE_KEYWORDS = [
+    "submittal",
+    "shop drawing",
+    "product data",
+    "sample",
+    "inspection report",
+    "test report",
+    "commissioning report",
+    "photograph",
+    "certificate",
+    "closeout",
+    "record drawing",
+    "as-built",
+    "operation manual",
+    "maintenance manual",
+    "warranty",
+    "training",
+    "schedule",
+    "mockup",
+    "punch list"
+];
+
+const ACCEPTANCE_PATTERNS = [
+
+    /\baccepted when\b/i,
+    /\bapproved by\b/i,
+    /\bsuccessful completion\b/i,
+    /\bverified by\b/i,
+    /\bpasses testing\b/i,
+    /\bacceptable\b/i,
+    /\bapproval required\b/i,
+    /\bfinal acceptance\b/i
+
+];
+
+const REQUIREMENT_PATTERNS = [
+
+    /\bshall\b/i,
+    /\bshall not\b/i,
+    /\bmust\b/i,
+    /\bmust not\b/i,
+    /\brequired\b/i,
+    /\bprohibited\b/i,
+    /\bmay\b/i,
+    /\bmay not\b/i
+
+];
+
+const EXCEPTION_PATTERNS = [
+
+    /\bunless\b/i,
+    /\bexcept\b/i,
+    /\bprovided that\b/i,
+    /\bhowever\b/i,
+    /\bsubject to\b/i,
+    /\bnotwithstanding\b/i
+
+];
+
+function splitIntoSentences(text)
+{
+    return String(text || "")
+
+        .replace(/\r/g," ")
+
+        .split(/(?<=[.!?])\s+/)
+
+        .map(x=>x.trim())
+
+        .filter(Boolean);
+}
+
+function containsPattern(sentence, patterns)
+{
+    return patterns.some(pattern=>pattern.test(sentence));
+}
+
+function detectResponsibleParty(sentence)
+{
+    const lower = sentence.toLowerCase();
+
+    for(const party of RESPONSIBLE_PARTIES)
+    {
+        if(lower.includes(party))
+            return party;
+    }
+
+    return null;
+}
+
+function detectDeliverables(sentence)
+{
+    const found=[];
+
+    const lower=sentence.toLowerCase();
+
+    for(const item of DELIVERABLE_KEYWORDS)
+    {
+        if(lower.includes(item))
+            found.push(item);
+    }
+
+    return uniq(found);
+}
+
+function sentenceConfidence(sentence)
+{
+    let score=0;
+
+    if(REQUIREMENT.test(sentence))
+        score+=25;
+
+    if(RESPONSIBILITY.test(sentence))
+        score+=20;
+
+    if(DEFINITION.test(sentence))
+        score+=15;
+
+    if(EXCEPTION.test(sentence))
+        score-=5;
+
+    score+=Math.min(sentence.length/12,20);
+
+    return clamp(Math.round(score),0,100);
+}
+
+function buildKnowledgeNode(hit,sentence)
+{
+    return {
+
+        sourceNumber:hit.sourceNumber,
+
+        documentId:hit.documentId,
+
+        documentName:hit.documentName,
+
+        heading:hit.heading,
+
+        path:hit.path,
+
+        level:hit.level,
+
+        location:hit.location,
+
+        sentence,
+
+        confidence:sentenceConfidence(sentence),
+
+        responsibleParty:detectResponsibleParty(sentence),
+
+        deliverables:detectDeliverables(sentence),
+
+        references:extractReferences(sentence)
+
+    };
+}
+
+function buildKnowledgeNodes(hits)
+{
+    const nodes=[];
+
+    for(const hit of hits)
+    {
+        const sentences=splitIntoSentences(hit.text);
+
+        for(const sentence of sentences)
+        {
+            nodes.push(
+                buildKnowledgeNode(hit,sentence)
+            );
+        }
+    }
+
+    return nodes;
+}
+
+function filterRequirementNodes(nodes)
+{
+    return nodes.filter(node=>
+
+        containsPattern(
+            node.sentence,
+            REQUIREMENT_PATTERNS
+        )
+
+    );
+}
+
+function filterExceptionNodes(nodes)
+{
+    return nodes.filter(node=>
+
+        containsPattern(
+            node.sentence,
+            EXCEPTION_PATTERNS
+        )
+
+    );
+}
+
+function filterAcceptanceNodes(nodes)
+{
+    return nodes.filter(node=>
+
+        containsPattern(
+            node.sentence,
+            ACCEPTANCE_PATTERNS
+        )
+
+    );
+}
+
+function summarizeKnowledge(nodes)
+{
+    return {
+
+        totalNodes:nodes.length,
+
+        requirements:
+            filterRequirementNodes(nodes).length,
+
+        acceptance:
+            filterAcceptanceNodes(nodes).length,
+
+        exceptions:
+            filterExceptionNodes(nodes).length,
+
+        deliverables:
+            nodes.filter(x=>x.deliverables.length).length,
+
+        responsible:
+            nodes.filter(x=>x.responsibleParty).length
+
+    };
+}
+function normalizeKnowledgeValue(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeKnowledgeKey(value) {
+  return normalizeKnowledgeValue(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function requirementType(sentence) {
+  const value = String(sentence || '');
+
+  if (
+    /\b(shall not|must not|may not|is prohibited|are prohibited|not permitted)\b/i.test(
+      value
+    )
+  ) {
+    return 'prohibited';
+  }
+
+  if (
+    /\b(shall|must|required|required to|is responsible for|will provide|will perform)\b/i.test(
+      value
+    )
+  ) {
+    return 'mandatory';
+  }
+
+  if (/\bmay\b/i.test(value)) {
+    return 'permitted';
+  }
+
+  if (/\bshould\b/i.test(value)) {
+    return 'advisory';
+  }
+
+  return 'informational';
+}
+
+function requirementStrength(type) {
+  const strengths = {
+    prohibited: 100,
+    mandatory: 95,
+    permitted: 60,
+    advisory: 45,
+    informational: 25
+  };
+
+  return strengths[type] || 25;
+}
+
+function extractRequirementAction(sentence) {
+  const value = normalizeKnowledgeValue(sentence);
+
+  const match = value.match(
+    /\b(?:shall not|must not|may not|shall|must|required to|required|may|should|will)\b\s+(.+)/i
+  );
+
+  if (!match) {
+    return value;
+  }
+
+  return normalizeKnowledgeValue(match[1])
+    .replace(/[.;:]+$/, '')
+    .trim();
+}
+
+function extractRequirementSubject(sentence, responsibleParty) {
+  if (responsibleParty) {
+    return responsibleParty;
+  }
+
+  const value = normalizeKnowledgeValue(sentence);
+
+  const modalMatch = value.match(
+    /^(.{2,100}?)\s+\b(?:shall not|must not|may not|shall|must|required to|may|should|will)\b/i
+  );
+
+  if (modalMatch) {
+    return normalizeKnowledgeValue(modalMatch[1])
+      .replace(/^(the|a|an)\s+/i, '')
+      .trim();
+  }
+
+  return null;
+}
+
+function extractTiming(sentence) {
+  const value = String(sentence || '');
+
+  const patterns = [
+    /\bprior to\b[^.;]*/i,
+    /\bbefore\b[^.;]*/i,
+    /\bafter\b[^.;]*/i,
+    /\bwithin\s+\d+\s+(?:calendar\s+|business\s+|working\s+)?(?:day|days|hour|hours|week|weeks|month|months)\b[^.;]*/i,
+    /\bnot later than\b[^.;]*/i,
+    /\bno later than\b[^.;]*/i,
+    /\bupon completion\b[^.;]*/i,
+    /\buntil\b[^.;]*/i,
+    /\bduring\b[^.;]*/i,
+    /\bwhen\b[^.;]*/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+
+    if (match) {
+      return normalizeKnowledgeValue(match[0]);
+    }
+  }
+
+  return null;
+}
+
+function extractConditions(sentence) {
+  const value = String(sentence || '');
+
+  const matches = [
+    ...value.matchAll(
+      /\b(?:if|when|where|provided that|subject to|unless|except when|after|before|upon)\b[^.;]*/gi
+    )
+  ];
+
+  return uniq(
+    matches.map(match =>
+      normalizeKnowledgeValue(match[0])
+    )
+  ).slice(0, 6);
+}
+
+function extractExceptionsFromSentence(sentence) {
+  const value = String(sentence || '');
+
+  const matches = [
+    ...value.matchAll(
+      /\b(?:unless|except(?: when)?|provided that|however|subject to|notwithstanding)\b[^.;]*/gi
+    )
+  ];
+
+  return uniq(
+    matches.map(match =>
+      normalizeKnowledgeValue(match[0])
+    )
+  ).slice(0, 6);
+}
+
+function inferDeliverableType(deliverable) {
+  const value = String(deliverable || '').toLowerCase();
+
+  if (/\b(submittal|shop drawing|product data|sample|mockup)\b/.test(value)) {
+    return 'submittal';
+  }
+
+  if (/\b(report|inspection report|test report|commissioning report)\b/.test(value)) {
+    return 'report';
+  }
+
+  if (/\b(certificate|certification)\b/.test(value)) {
+    return 'certificate';
+  }
+
+  if (/\b(schedule)\b/.test(value)) {
+    return 'schedule';
+  }
+
+  if (/\b(photo|photograph)\b/.test(value)) {
+    return 'photograph';
+  }
+
+  if (/\b(record drawing|as-built)\b/.test(value)) {
+    return 'record-document';
+  }
+
+  if (/\b(operation manual|maintenance manual|manual)\b/.test(value)) {
+    return 'manual';
+  }
+
+  if (/\b(warranty)\b/.test(value)) {
+    return 'warranty';
+  }
+
+  if (/\b(training)\b/.test(value)) {
+    return 'training';
+  }
+
+  if (/\b(punch list|closeout)\b/.test(value)) {
+    return 'closeout';
+  }
+
+  return 'deliverable';
+}
+
+function requirementIdentifier(node, index) {
+  const documentPart =
+    normalizeKnowledgeKey(
+      node.documentId ||
+      node.documentName ||
+      'document'
+    )
+      .replace(/\s+/g, '-')
+      .slice(0, 40) || 'document';
+
+  const headingPart =
+    normalizeKnowledgeKey(node.heading || 'section')
+      .replace(/\s+/g, '-')
+      .slice(0, 40) || 'section';
+
+  return `REQ-${documentPart}-${headingPart}-${index + 1}`;
+}
+
+function evidenceTermsForRequirement(requirement) {
+  return uniq([
+    ...(requirement.deliverables || []),
+    ...(requirement.references || []),
+    requirement.action,
+    requirement.subject,
+    requirement.responsibleParty
+  ])
+    .filter(Boolean)
+    .flatMap(value =>
+      normalizeKnowledgeKey(value)
+        .split(/\s+/)
+        .filter(term =>
+          term.length >= 4
+        )
+    );
+}
+
+function buildRequirementRecord(node, index) {
+  const type = requirementType(node.sentence);
+  const responsibleParty =
+    node.responsibleParty ||
+    detectResponsibleParty(node.sentence);
+
+  const deliverables =
+    node.deliverables?.length
+      ? node.deliverables
+      : detectDeliverables(node.sentence);
+
+  const exceptions =
+    extractExceptionsFromSentence(node.sentence);
+
+  const conditions =
+    extractConditions(node.sentence);
+
+  const record = {
+    id: requirementIdentifier(node, index),
+
+    statement:
+      normalizeKnowledgeValue(node.sentence),
+
+    type,
+
+    strength:
+      requirementStrength(type),
+
+    subject:
+      extractRequirementSubject(
+        node.sentence,
+        responsibleParty
+      ),
+
+    responsibleParty,
+
+    action:
+      extractRequirementAction(node.sentence),
+
+    deliverables,
+
+    timing:
+      extractTiming(node.sentence),
+
+    conditions,
+
+    exceptions,
+
+    references:
+      node.references ||
+      extractReferences(node.sentence),
+
+    confidence:
+      clamp(
+        Math.round(
+          Number(node.confidence || 0) +
+          requirementStrength(type) * 0.15 +
+          (responsibleParty ? 5 : 0) +
+          (deliverables.length ? 5 : 0)
+        ),
+        0,
+        100
+      ),
+
+    sourceNumber:
+      node.sourceNumber,
+
+    documentId:
+      node.documentId,
+
+    documentName:
+      node.documentName,
+
+    heading:
+      node.heading,
+
+    path:
+      node.path || [],
+
+    level:
+      node.level,
+
+    location:
+      node.location
+  };
+
+  record.evidenceTerms =
+    evidenceTermsForRequirement(record);
+
+  return record;
+}
+
+function deduplicateRequirements(requirements) {
+  const selected = [];
+
+  for (const requirement of requirements) {
+    const duplicate = selected.find(existing => {
+      const sameDocument =
+        existing.documentId === requirement.documentId;
+
+      const sameHeading =
+        normalizeKnowledgeKey(existing.heading) ===
+        normalizeKnowledgeKey(requirement.heading);
+
+      const similarity = textSimilarity(
+        existing.statement,
+        requirement.statement
+      );
+
+      return (
+        similarity >= 0.88 ||
+        (
+          sameDocument &&
+          sameHeading &&
+          similarity >= 0.72
+        )
+      );
+    });
+
+    if (!duplicate) {
+      selected.push(requirement);
+      continue;
+    }
+
+    if (
+      requirement.confidence >
+      duplicate.confidence
+    ) {
+      Object.assign(
+        duplicate,
+        requirement
+      );
+    }
+  }
+
+  return selected;
+}
+
+export function extractRequirements(hits) {
+  const safeHits = Array.isArray(hits)
+    ? hits
+    : [];
+
+  const nodes =
+    buildKnowledgeNodes(safeHits);
+
+  const requirementNodes =
+    filterRequirementNodes(nodes);
+
+  const requirements =
+    deduplicateRequirements(
+      requirementNodes.map(
+        buildRequirementRecord
+      )
+    );
+
+  const summary = {
+    total:
+      requirements.length,
+
+    mandatory:
+      requirements.filter(
+        requirement =>
+          requirement.type === 'mandatory'
+      ).length,
+
+    prohibited:
+      requirements.filter(
+        requirement =>
+          requirement.type === 'prohibited'
+      ).length,
+
+    permitted:
+      requirements.filter(
+        requirement =>
+          requirement.type === 'permitted'
+      ).length,
+
+    advisory:
+      requirements.filter(
+        requirement =>
+          requirement.type === 'advisory'
+      ).length,
+
+    informational:
+      requirements.filter(
+        requirement =>
+          requirement.type === 'informational'
+      ).length,
+
+    withResponsibleParty:
+      requirements.filter(
+        requirement =>
+          Boolean(requirement.responsibleParty)
+      ).length,
+
+    withDeliverables:
+      requirements.filter(
+        requirement =>
+          requirement.deliverables.length > 0
+      ).length,
+
+    withTiming:
+      requirements.filter(
+        requirement =>
+          Boolean(requirement.timing)
+      ).length,
+
+    withExceptions:
+      requirements.filter(
+        requirement =>
+          requirement.exceptions.length > 0
+      ).length
+  };
+
+  return {
+    requirements,
+    summary,
+    knowledgeSummary:
+      summarizeKnowledge(nodes)
+  };
+}
+
+export function extractResponsibilities(hits) {
+  const result =
+    extractRequirements(hits);
+
+  const grouped = new Map();
+
+  for (const requirement of result.requirements) {
+    const party =
+      requirement.responsibleParty ||
+      requirement.subject;
+
+    if (!party) {
+      continue;
+    }
+
+    const key =
+      normalizeKnowledgeKey(party);
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        party,
+        requirementCount: 0,
+        requirements: [],
+        documents: [],
+        deliverables: []
+      });
+    }
+
+    const group =
+      grouped.get(key);
+
+    group.requirementCount += 1;
+
+    group.requirements.push(
+      requirement
+    );
+
+    group.documents.push(
+      requirement.documentName
+    );
+
+    group.deliverables.push(
+      ...requirement.deliverables
+    );
+  }
+
+  const responsibilities = [
+    ...grouped.values()
+  ]
+    .map(group => ({
+      ...group,
+      documents:
+        uniq(group.documents),
+
+      deliverables:
+        uniq(group.deliverables),
+
+      mandatoryCount:
+        group.requirements.filter(
+          requirement =>
+            requirement.type === 'mandatory'
+        ).length,
+
+      prohibitedCount:
+        group.requirements.filter(
+          requirement =>
+            requirement.type === 'prohibited'
+        ).length
+    }))
+    .sort((first, second) =>
+      second.requirementCount -
+      first.requirementCount
+    );
+
+  return {
+    responsibilities,
+
+    summary: {
+      parties:
+        responsibilities.length,
+
+      assignedRequirements:
+        responsibilities.reduce(
+          (sum, group) =>
+            sum + group.requirementCount,
+          0
+        ),
+
+      unassignedRequirements:
+        result.requirements.filter(
+          requirement =>
+            !requirement.responsibleParty &&
+            !requirement.subject
+        ).length
+    }
+  };
+}
+
+export function extractDeliverables(hits) {
+  const result =
+    extractRequirements(hits);
+
+  const grouped = new Map();
+
+  for (const requirement of result.requirements) {
+    for (const deliverable of requirement.deliverables) {
+      const key =
+        normalizeKnowledgeKey(deliverable);
+
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          name: deliverable,
+          type:
+            inferDeliverableType(deliverable),
+
+          requirementCount: 0,
+          requirements: [],
+          responsibleParties: [],
+          documents: [],
+          references: []
+        });
+      }
+
+      const group =
+        grouped.get(key);
+
+      group.requirementCount += 1;
+
+      group.requirements.push(
+        requirement
+      );
+
+      group.responsibleParties.push(
+        requirement.responsibleParty ||
+        requirement.subject
+      );
+
+      group.documents.push(
+        requirement.documentName
+      );
+
+      group.references.push(
+        ...requirement.references
+      );
+    }
+  }
+
+  const deliverables = [
+    ...grouped.values()
+  ]
+    .map(group => ({
+      ...group,
+
+      responsibleParties:
+        uniq(
+          group.responsibleParties
+        ),
+
+      documents:
+        uniq(group.documents),
+
+      references:
+        uniq(group.references)
+    }))
+    .sort((first, second) =>
+      second.requirementCount -
+      first.requirementCount
+    );
+
+  return {
+    deliverables,
+
+    summary: {
+      uniqueDeliverables:
+        deliverables.length,
+
+      totalRequirementLinks:
+        deliverables.reduce(
+          (sum, item) =>
+            sum + item.requirementCount,
+          0
+        ),
+
+      byType:
+        deliverables.reduce(
+          (summary, item) => {
+            summary[item.type] =
+              (summary[item.type] || 0) + 1;
+
+            return summary;
+          },
+          {}
+        )
+    }
+  };
+}
+
+export function extractAcceptanceCriteria(hits) {
+  const safeHits = Array.isArray(hits)
+    ? hits
+    : [];
+
+  const nodes =
+    buildKnowledgeNodes(safeHits);
+
+  const acceptanceNodes =
+    filterAcceptanceNodes(nodes);
+
+  const criteria =
+    acceptanceNodes.map(
+      (node, index) => ({
+        id: `ACC-${index + 1}`,
+
+        statement:
+          normalizeKnowledgeValue(
+            node.sentence
+          ),
+
+        responsibleParty:
+          node.responsibleParty ||
+          detectResponsibleParty(
+            node.sentence
+          ),
+
+        deliverables:
+          node.deliverables?.length
+            ? node.deliverables
+            : detectDeliverables(
+                node.sentence
+              ),
+
+        timing:
+          extractTiming(node.sentence),
+
+        conditions:
+          extractConditions(
+            node.sentence
+          ),
+
+        references:
+          node.references ||
+          extractReferences(
+            node.sentence
+          ),
+
+        confidence:
+          node.confidence,
+
+        sourceNumber:
+          node.sourceNumber,
+
+        documentId:
+          node.documentId,
+
+        documentName:
+          node.documentName,
+
+        heading:
+          node.heading,
+
+        path:
+          node.path || [],
+
+        location:
+          node.location
+      })
+    );
+
+  return {
+    criteria,
+
+    summary: {
+      total:
+        criteria.length,
+
+      withResponsibleParty:
+        criteria.filter(
+          criterion =>
+            Boolean(
+              criterion.responsibleParty
+            )
+        ).length,
+
+      withDeliverables:
+        criteria.filter(
+          criterion =>
+            criterion.deliverables.length > 0
+        ).length,
+
+      withTiming:
+        criteria.filter(
+          criterion =>
+            Boolean(criterion.timing)
+        ).length
+    }
+  };
+}
+
+export function extractExceptions(hits) {
+  const safeHits = Array.isArray(hits)
+    ? hits
+    : [];
+
+  const nodes =
+    buildKnowledgeNodes(safeHits);
+
+  const exceptionNodes =
+    filterExceptionNodes(nodes);
+
+  const exceptions =
+    exceptionNodes.map(
+      (node, index) => ({
+        id: `EXC-${index + 1}`,
+
+        statement:
+          normalizeKnowledgeValue(
+            node.sentence
+          ),
+
+        clauses:
+          extractExceptionsFromSentence(
+            node.sentence
+          ),
+
+        responsibleParty:
+          node.responsibleParty ||
+          detectResponsibleParty(
+            node.sentence
+          ),
+
+        references:
+          node.references ||
+          extractReferences(
+            node.sentence
+          ),
+
+        confidence:
+          node.confidence,
+
+        sourceNumber:
+          node.sourceNumber,
+
+        documentId:
+          node.documentId,
+
+        documentName:
+          node.documentName,
+
+        heading:
+          node.heading,
+
+        path:
+          node.path || [],
+
+        location:
+          node.location
+      })
+    );
+
+  return {
+    exceptions,
+
+    summary: {
+      total:
+        exceptions.length,
+
+      withReferences:
+        exceptions.filter(
+          exception =>
+            exception.references.length > 0
+        ).length,
+
+      withResponsibleParty:
+        exceptions.filter(
+          exception =>
+            Boolean(
+              exception.responsibleParty
+            )
+        ).length
+    }
+  };
+}
+
+function sourceReferenceNode(reference) {
+  return {
+    id:
+      `REF-${normalizeKnowledgeKey(reference)
+        .replace(/\s+/g, '-')}`,
+
+    type:
+      'reference',
+
+    label:
+      reference,
+
+    reference
+  };
+}
+
+export function extractCrossReferenceGraph(hits) {
+  const safeHits = Array.isArray(hits)
+    ? hits
+    : [];
+
+  const nodes = new Map();
+  const edges = [];
+
+  for (const hit of safeHits) {
+    const sourceId =
+      `SRC-${normalizeKnowledgeKey(
+        hit.documentId ||
+        hit.documentName ||
+        hit.sourceNumber
+      ).replace(/\s+/g, '-')}-${hit.sourceNumber}`;
+
+    if (!nodes.has(sourceId)) {
+      nodes.set(sourceId, {
+        id:
+          sourceId,
+
+        type:
+          'source',
+
+        label:
+          hit.heading ||
+          hit.documentName ||
+          `Source ${hit.sourceNumber}`,
+
+        sourceNumber:
+          hit.sourceNumber,
+
+        documentId:
+          hit.documentId,
+
+        documentName:
+          hit.documentName,
+
+        heading:
+          hit.heading,
+
+        path:
+          hit.path || [],
+
+        location:
+          hit.location
+      });
+    }
+
+    const references = uniq([
+      ...(hit.crossReferences || []),
+      ...extractReferences(
+        `${hit.heading || ''} ${hit.text || ''}`
+      )
+    ]);
+
+    for (const reference of references) {
+      const referenceNode =
+        sourceReferenceNode(reference);
+
+      if (!nodes.has(referenceNode.id)) {
+        nodes.set(
+          referenceNode.id,
+          referenceNode
+        );
+      }
+
+      edges.push({
+        id:
+          `${sourceId}->${referenceNode.id}`,
+
+        from:
+          sourceId,
+
+        to:
+          referenceNode.id,
+
+        type:
+          'references',
+
+        sourceNumber:
+          hit.sourceNumber
+      });
+    }
+  }
+
+  const uniqueEdges = [
+    ...new Map(
+      edges.map(edge => [
+        edge.id,
+        edge
+      ])
+    ).values()
+  ];
+
+  return {
+    nodes:
+      [...nodes.values()],
+
+    edges:
+      uniqueEdges,
+
+    summary: {
+      sourceNodes:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'source'
+        ).length,
+
+      referenceNodes:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'reference'
+        ).length,
+
+      edges:
+        uniqueEdges.length
+    }
+  };
+}
+
+function graphNodeId(prefix, value) {
+  return `${prefix}-${normalizeKnowledgeKey(value)
+    .replace(/\s+/g, '-')
+    .slice(0, 80)}`;
+}
+
+export function buildRequirementGraph(hits) {
+  const result =
+    extractRequirements(hits);
+
+  const nodes = new Map();
+  const edges = [];
+
+  for (const requirement of result.requirements) {
+    nodes.set(requirement.id, {
+      id:
+        requirement.id,
+
+      type:
+        'requirement',
+
+      label:
+        requirement.statement,
+
+      requirementType:
+        requirement.type,
+
+      confidence:
+        requirement.confidence,
+
+      sourceNumber:
+        requirement.sourceNumber
+    });
+
+    const party =
+      requirement.responsibleParty ||
+      requirement.subject;
+
+    if (party) {
+      const partyId =
+        graphNodeId('PARTY', party);
+
+      if (!nodes.has(partyId)) {
+        nodes.set(partyId, {
+          id:
+            partyId,
+
+          type:
+            'party',
+
+          label:
+            party
+        });
+      }
+
+      edges.push({
+        id:
+          `${partyId}->${requirement.id}`,
+
+        from:
+          partyId,
+
+        to:
+          requirement.id,
+
+        type:
+          'responsible-for'
+      });
+    }
+
+    for (const deliverable of requirement.deliverables) {
+      const deliverableId =
+        graphNodeId(
+          'DELIVERABLE',
+          deliverable
+        );
+
+      if (!nodes.has(deliverableId)) {
+        nodes.set(deliverableId, {
+          id:
+            deliverableId,
+
+          type:
+            'deliverable',
+
+          label:
+            deliverable,
+
+          deliverableType:
+            inferDeliverableType(
+              deliverable
+            )
+        });
+      }
+
+      edges.push({
+        id:
+          `${requirement.id}->${deliverableId}`,
+
+        from:
+          requirement.id,
+
+        to:
+          deliverableId,
+
+        type:
+          'requires'
+      });
+    }
+
+    for (const reference of requirement.references) {
+      const referenceId =
+        graphNodeId(
+          'REFERENCE',
+          reference
+        );
+
+      if (!nodes.has(referenceId)) {
+        nodes.set(referenceId, {
+          id:
+            referenceId,
+
+          type:
+            'reference',
+
+          label:
+            reference
+        });
+      }
+
+      edges.push({
+        id:
+          `${requirement.id}->${referenceId}`,
+
+        from:
+          requirement.id,
+
+        to:
+          referenceId,
+
+        type:
+          'references'
+      });
+    }
+
+    for (const exception of requirement.exceptions) {
+      const exceptionId =
+        graphNodeId(
+          'EXCEPTION',
+          `${requirement.id}-${exception}`
+        );
+
+      if (!nodes.has(exceptionId)) {
+        nodes.set(exceptionId, {
+          id:
+            exceptionId,
+
+          type:
+            'exception',
+
+          label:
+            exception
+        });
+      }
+
+      edges.push({
+        id:
+          `${exceptionId}->${requirement.id}`,
+
+        from:
+          exceptionId,
+
+        to:
+          requirement.id,
+
+        type:
+          'qualifies'
+      });
+    }
+  }
+
+  const uniqueEdges = [
+    ...new Map(
+      edges.map(edge => [
+        edge.id,
+        edge
+      ])
+    ).values()
+  ];
+
+  return {
+    nodes:
+      [...nodes.values()],
+
+    edges:
+      uniqueEdges,
+
+    requirements:
+      result.requirements,
+
+    summary: {
+      ...result.summary,
+
+      graphNodes:
+        nodes.size,
+
+      graphEdges:
+        uniqueEdges.length,
+
+      partyNodes:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'party'
+        ).length,
+
+      deliverableNodes:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'deliverable'
+        ).length,
+
+      referenceNodes:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'reference'
+        ).length,
+
+      exceptionNodes:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'exception'
+        ).length
+    }
+  };
+}
+
+function buildEvidenceIndex(evidenceSections) {
+  const safeSections =
+    Array.isArray(evidenceSections)
+      ? evidenceSections
+      : [];
+
+  return safeSections.map(
+    (section, index) => {
+      const combined =
+        normalizeKnowledgeValue(
+          [
+            section.documentName,
+            section.heading,
+            ...(section.path || []),
+            section.location,
+            section.text
+          ].join(' ')
+        );
+
+      return {
+        id:
+          section.id ||
+          `EVIDENCE-${index + 1}`,
+
+        sourceNumber:
+          section.sourceNumber,
+
+        documentId:
+          section.documentId,
+
+        documentName:
+          section.documentName,
+
+        heading:
+          section.heading,
+
+        location:
+          section.location,
+
+        text:
+          section.text,
+
+        combined,
+
+        normalized:
+          normalizeKnowledgeKey(
+            combined
+          )
+      };
+    }
+  );
+}
+
+function evidenceMatchScore(requirement, evidence) {
+  const terms =
+    requirement.evidenceTerms || [];
+
+  if (!terms.length) {
+    return 0;
+  }
+
+  const matched =
+    terms.filter(term =>
+      evidence.normalized.includes(term)
+    );
+
+  const coverage =
+    matched.length /
+    Math.max(1, terms.length);
+
+  const statementSimilarity =
+    textSimilarity(
+      requirement.statement,
+      evidence.combined
+    );
+
+  const referenceMatch =
+    requirement.references.some(
+      reference =>
+        evidence.normalized.includes(
+          normalizeKnowledgeKey(reference)
+        )
+    )
+      ? 0.25
+      : 0;
+
+  const deliverableMatch =
+    requirement.deliverables.some(
+      deliverable =>
+        evidence.normalized.includes(
+          normalizeKnowledgeKey(deliverable)
+        )
+    )
+      ? 0.25
+      : 0;
+
+  return clamp(
+    coverage * 0.45 +
+    statementSimilarity * 0.25 +
+    referenceMatch +
+    deliverableMatch,
+    0,
+    1
+  );
+}
+
+export function detectMissingEvidence(
+  hits,
+  evidenceSections = hits,
+  options = {}
+) {
+  const {
+    minimumScore = 0.42,
+    maximumMatches = 5
+  } = options || {};
+
+  const result =
+    extractRequirements(hits);
+
+  const evidenceIndex =
+    buildEvidenceIndex(
+      evidenceSections
+    );
+
+  const assessments =
+    result.requirements.map(
+      requirement => {
+        const matches =
+          evidenceIndex
+            .map(evidence => ({
+              evidence,
+              score:
+                evidenceMatchScore(
+                  requirement,
+                  evidence
+                )
+            }))
+            .filter(match =>
+              match.score > 0
+            )
+            .sort((first, second) =>
+              second.score -
+              first.score
+            )
+            .slice(
+              0,
+              maximumMatches
+            );
+
+        const bestMatch =
+          matches[0] || null;
+
+        const supported =
+          Boolean(bestMatch) &&
+          bestMatch.score >=
+            minimumScore;
+
+        return {
+          requirementId:
+            requirement.id,
+
+          requirement,
+
+          supported,
+
+          status:
+            supported
+              ? 'supported'
+              : 'missing-evidence',
+
+          confidence:
+            supported
+              ? clamp(
+                  Math.round(
+                    bestMatch.score * 100
+                  ),
+                  0,
+                  100
+                )
+              : clamp(
+                  Math.round(
+                    (
+                      1 -
+                      (bestMatch?.score || 0)
+                    ) *
+                    requirement.confidence
+                  ),
+                  0,
+                  100
+                ),
+
+          evidenceMatches:
+            matches.map(match => ({
+              score:
+                Math.round(
+                  match.score * 100
+                ),
+
+              sourceNumber:
+                match.evidence
+                  .sourceNumber,
+
+              documentId:
+                match.evidence
+                  .documentId,
+
+              documentName:
+                match.evidence
+                  .documentName,
+
+              heading:
+                match.evidence
+                  .heading,
+
+              location:
+                match.evidence
+                  .location
+            })),
+
+          evidenceGap:
+            supported
+              ? null
+              : {
+                  required:
+                    requirement.statement,
+
+                  responsibleParty:
+                    requirement.responsibleParty ||
+                    requirement.subject,
+
+                  expectedDeliverables:
+                    requirement.deliverables,
+
+                  expectedReferences:
+                    requirement.references,
+
+                  reason:
+                    bestMatch
+                      ? 'Potential evidence was found, but it did not meet the required confidence threshold.'
+                      : 'No matching evidence was found.'
+                }
+        };
+      }
+    );
+
+  const missing =
+    assessments.filter(
+      assessment =>
+        !assessment.supported
+    );
+
+  const supported =
+    assessments.filter(
+      assessment =>
+        assessment.supported
+    );
+
+  return {
+    assessments,
+    missing,
+    supported,
+
+    summary: {
+      totalRequirements:
+        assessments.length,
+
+      supported:
+        supported.length,
+
+      missingEvidence:
+        missing.length,
+
+      compliancePercent:
+        assessments.length
+          ? Math.round(
+              supported.length /
+              assessments.length *
+              100
+            )
+          : 100,
+
+      minimumScore:
+        Math.round(
+          minimumScore * 100
+        )
+    }
+  };
+}
 export function detectConflicts(hits) {
   const conflicts = [];
 
