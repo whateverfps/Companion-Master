@@ -1,7 +1,7 @@
 import {
   extractRequirements,
   buildRequirementGraph
-} from "./retrieval.js";
+} from "../retrieval.js";
 
 /* =====================================================================
    Constants
