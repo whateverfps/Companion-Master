@@ -1,55 +1,1662 @@
-const STOP=new Set('the a an and or but to of in on for with by from is are was were be been being this that these those it its as at into about what which who when where why how can could should would may might do does did'.split(' '));
-const SYNONYMS={
-  definition:['means','defined','definition','refers'],
-  responsibility:['responsible','responsibility','duties','shall','must'],
-  requirement:['required','requirement','shall','must','minimum'],
-  submit:['submittal','submit','submission','provide'],
-  approve:['approval','approved','acceptance','accepted'],
-  inspect:['inspection','inspect','verify','verification'],
-  schedule:['scheduled','scheduling','timeline','duration'],
-  payment:['pay','paid','compensation','invoice'],
-  contractor:['vendor','builder','construction contractor'],
-  owner:['government','va','agency','owner representative'],
-  conflict:['exception','unless','however','notwithstanding','supersede']
-};
-const NEGATION=/\b(no|not|never|shall not|must not|prohibited|except|unless|without)\b/i;
-const REQUIREMENT=/\b(shall|must|required|prohibited|may not|is responsible|will)\b/i;
-const tokens=s=>(String(s||'').toLowerCase().match(/[a-z0-9][a-z0-9._/-]*/g)||[]).filter(x=>x.length>1&&!STOP.has(x));
-const stem=t=>t.replace(/(ing|ments|ment|ness|ation|ions|ion|ies|ied|ed|es|s)$/,'');
-const uniq=a=>[...new Set(a.filter(Boolean))];
+const STOP = new Set(
+  [
+    'the', 'a', 'an', 'and', 'or', 'but', 'to', 'of', 'in', 'on', 'for',
+    'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'this', 'that', 'these', 'those', 'it', 'its', 'as', 'at', 'into',
+    'about', 'what', 'which', 'who', 'when', 'where', 'why', 'how', 'can',
+    'could', 'should', 'would', 'may', 'might', 'do', 'does', 'did'
+  ]
+);
 
-export function expandQuery(query){
-  const base=tokens(query);const expanded=[];
-  for(const t of base){expanded.push(t,stem(t));for(const [root,terms] of Object.entries(SYNONYMS)){if(t===root||terms.some(x=>x.includes(t)||t.includes(x)))expanded.push(root,...terms.flatMap(tokens));}}
-  const phrases=[...String(query).matchAll(/"([^"]+)"/g)].map(x=>x[1].toLowerCase());
-  const refs=String(query).match(/\b(?:section|article|chapter|appendix|specification)?\s*\d{1,2}(?:\s*\d{2}){1,3}(?:\.\d+)*\b/gi)||[];
-  return {base:uniq(base),expanded:uniq(expanded),phrases:uniq(phrases),references:uniq(refs.map(x=>x.trim().toLowerCase()))};
+const SYNONYMS = {
+  definition: [
+    'means',
+    'defined',
+    'definition',
+    'refers',
+    'interpretation'
+  ],
+
+  responsibility: [
+    'responsible',
+    'responsibility',
+    'duties',
+    'duty',
+    'shall',
+    'must',
+    'obligation'
+  ],
+
+  requirement: [
+    'required',
+    'requirement',
+    'shall',
+    'must',
+    'minimum',
+    'mandatory'
+  ],
+
+  submit: [
+    'submittal',
+    'submit',
+    'submission',
+    'provide',
+    'deliver'
+  ],
+
+  approve: [
+    'approval',
+    'approved',
+    'acceptance',
+    'accepted',
+    'authorize',
+    'authorized'
+  ],
+
+  inspect: [
+    'inspection',
+    'inspect',
+    'verify',
+    'verification',
+    'review',
+    'examine'
+  ],
+
+  schedule: [
+    'scheduled',
+    'scheduling',
+    'timeline',
+    'duration',
+    'milestone',
+    'completion'
+  ],
+
+  payment: [
+    'pay',
+    'paid',
+    'compensation',
+    'invoice',
+    'billing',
+    'reimbursement'
+  ],
+
+  contractor: [
+    'vendor',
+    'builder',
+    'construction contractor',
+    'prime contractor',
+    'general contractor'
+  ],
+
+  owner: [
+    'government',
+    'va',
+    'agency',
+    'owner representative',
+    'contracting officer',
+    'cor'
+  ],
+
+  conflict: [
+    'exception',
+    'unless',
+    'however',
+    'notwithstanding',
+    'supersede',
+    'precedence',
+    'discrepancy'
+  ],
+
+  closeout: [
+    'turnover',
+    'completion',
+    'final acceptance',
+    'punch list',
+    'warranty',
+    'record documents'
+  ],
+
+  safety: [
+    'hazard',
+    'protection',
+    'unsafe',
+    'incident',
+    'osha',
+    'life safety'
+  ]
+};
+
+const NEGATION =
+  /\b(no|not|never|shall not|must not|may not|prohibited|except|unless|without|neither)\b/i;
+
+const REQUIREMENT =
+  /\b(shall|must|required|prohibited|may not|is responsible for|will provide|will perform)\b/i;
+
+const EXCEPTION =
+  /\b(exception|except|unless|however|notwithstanding|subject to|provided that)\b/i;
+
+const DEFINITION =
+  /\b(means|defined as|definition|refers to|shall mean)\b/i;
+
+const RESPONSIBILITY =
+  /\b(responsible for|responsibility|duties include|shall provide|shall perform|must provide|must perform)\b/i;
+
+const CROSS_REFERENCE_PATTERNS = [
+  /\b(?:section|article|chapter|appendix|specification|paragraph|part)\s+[a-z0-9][a-z0-9 ._-]*/gi,
+  /\b\d{2}\s+\d{2}\s+\d{2}(?:\.\d+)*\b/g,
+  /\b\d+(?:\.\d+){1,5}\b/g
+];
+
+const tokens = value =>
+  (
+    String(value || '')
+      .toLowerCase()
+      .match(/[a-z0-9][a-z0-9._/-]*/g) ||
+    []
+  ).filter(token =>
+    token.length > 1 &&
+    !STOP.has(token)
+  );
+
+const stem = token =>
+  String(token || '')
+    .toLowerCase()
+    .replace(
+      /(ingly|edly|ments|ment|ness|ations|ation|ions|ion|ities|ity|ies|ied|ing|ers|er|ed|es|s)$/,
+      ''
+    );
+
+const uniq = values =>
+  [...new Set(values.filter(Boolean))];
+
+const clamp = (value, min, max) =>
+  Math.max(min, Math.min(max, value));
+
+function normalizeReference(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
 }
-function termFrequency(text,term){let n=0,i=0;while((i=text.indexOf(term,i))!==-1){n++;i+=Math.max(1,term.length)}return n}
-function scoreSection(s,q){
-  const heading=String(s.heading||'').toLowerCase(),path=(s.path||[]).join(' ').toLowerCase(),text=String(s.text||'').toLowerCase();
-  const headingTokens=new Set(tokens(heading));const textTokens=new Set(tokens(text));let lexical=0,headingScore=0,phraseScore=0,referenceScore=0,coverage=0;const matched=[];
-  for(const t of q.expanded){const st=stem(t);let hit=false;if(headingTokens.has(t)||headingTokens.has(st)||heading.includes(t)){headingScore+=14;hit=true}else if(path.includes(t)){headingScore+=8;hit=true}if(textTokens.has(t)||textTokens.has(st)){lexical+=4+Math.min(4,termFrequency(text,t));hit=true}else if(text.includes(t)){lexical+=1.5;hit=true}if(hit)matched.push(t)}
-  for(const p of q.phrases){if(heading.includes(p)){phraseScore+=28;matched.push(p)}else if(text.includes(p)){phraseScore+=20;matched.push(p)}}
-  for(const r of q.references){if(heading.includes(r)||path.includes(r)){referenceScore+=35;matched.push(r)}else if(text.includes(r)){referenceScore+=18;matched.push(r)}}
-  coverage=q.base.length?q.base.filter(t=>matched.some(m=>m.includes(t)||t.includes(m))).length/q.base.length:0;
-  let intent=0;const combined=`${heading} ${text}`;if(/define|definition|what is|means/i.test(q.raw)&&/\b(defined|means|definition|refers to)\b/i.test(combined))intent+=8;if(/who|responsib|duty/i.test(q.raw)&&/\b(responsible|shall|must|duties)\b/i.test(combined))intent+=7;if(/require|shall|must|prohibit/i.test(q.raw)&&REQUIREMENT.test(combined))intent+=6;if(/exception|unless|conflict/i.test(q.raw)&&/\b(exception|unless|however|notwithstanding|supersede)\b/i.test(combined))intent+=7;
-  const specificity=Math.max(.72,1-Math.log10(Math.max(100,text.length))/18);const score=(lexical+headingScore+phraseScore+referenceScore+intent)*(0.55+coverage*.45)*specificity;
-  return {score,components:{lexical,heading:headingScore,phrase:phraseScore,reference:referenceScore,intent,coverage:Math.round(coverage*100)},matchedTerms:uniq(matched).slice(0,12)};
+
+function escapeRegex(value) {
+  return String(value || '')
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
-function rerank(rows){
-  const seenDocs=new Map();return rows.map((r,i)=>{const prior=seenDocs.get(r.documentId)||0;seenDocs.set(r.documentId,prior+1);let rerank=r.score;if(i<20&&r.components.coverage>=67)rerank+=8;if(r.level<=2)rerank+=2;if(prior>=3)rerank-=Math.min(8,(prior-2)*2);return {...r,rerankScore:rerank}}).sort((a,b)=>b.rerankScore-a.rerankScore||b.score-a.score);
+
+function countOccurrences(text, term) {
+  if (!text || !term) {
+    return 0;
+  }
+
+  const pattern = new RegExp(
+    `(^|[^a-z0-9])${escapeRegex(term)}(?=$|[^a-z0-9])`,
+    'gi'
+  );
+
+  return [...String(text).matchAll(pattern)].length;
 }
-export function detectConflicts(hits){
-  const conflicts=[];for(let i=0;i<hits.length;i++)for(let j=i+1;j<hits.length;j++){
-    const a=hits[i],b=hits[j];if(a.documentId===b.documentId)continue;const at=new Set(tokens(`${a.heading} ${a.text}`).map(stem)),bt=new Set(tokens(`${b.heading} ${b.text}`).map(stem));const overlap=[...at].filter(x=>bt.has(x)).length/Math.max(1,Math.min(at.size,bt.size));const aNeg=NEGATION.test(a.text),bNeg=NEGATION.test(b.text);if(overlap>.22&&aNeg!==bNeg&&REQUIREMENT.test(a.text)&&REQUIREMENT.test(b.text))conflicts.push({sourceA:a.sourceNumber,sourceB:b.sourceNumber,documents:[a.documentName,b.documentName],reason:'Potentially opposing requirement language',confidence:Math.round(Math.min(.95,overlap+.35)*100)});
-  }return conflicts.slice(0,6);
+
+function sectionText(section) {
+  return [
+    section.heading || '',
+    ...(section.path || []),
+    section.location || '',
+    section.text || ''
+  ].join(' ');
 }
-export function retrieve(query,sections,topK=10){
-  const q={...expandQuery(query),raw:String(query)};const scored=sections.map(s=>({...s,...scoreSection(s,q)})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score).slice(0,Math.max(topK*5,30));const ranked=rerank(scored).slice(0,topK).map((x,i)=>({...x,score:x.rerankScore,sourceNumber:i+1}));const conflicts=detectConflicts(ranked);return Object.assign(ranked,{meta:{queryExpansion:q,conflicts,totalCandidates:scored.length}});
+
+function classifyQueryIntent(rawQuery) {
+  const query = String(rawQuery || '').toLowerCase();
+
+  const intents = [];
+
+  if (
+    /\b(define|definition|meaning|what is|what does .* mean)\b/i.test(query)
+  ) {
+    intents.push('definition');
+  }
+
+  if (
+    /\b(who|responsib|duty|duties|role|obligation)\b/i.test(query)
+  ) {
+    intents.push('responsibility');
+  }
+
+  if (
+    /\b(require|required|requirement|shall|must|prohibit|mandatory)\b/i.test(query)
+  ) {
+    intents.push('requirement');
+  }
+
+  if (
+    /\b(exception|unless|conflict|precedence|supersede|contradict)\b/i.test(query)
+  ) {
+    intents.push('conflict');
+  }
+
+  if (
+    /\b(submit|submittal|provide for approval|submission)\b/i.test(query)
+  ) {
+    intents.push('submittal');
+  }
+
+  if (
+    /\b(inspect|inspection|verify|verification|review)\b/i.test(query)
+  ) {
+    intents.push('inspection');
+  }
+
+  if (
+    /\b(schedule|when|duration|timeline|milestone|completion date)\b/i.test(query)
+  ) {
+    intents.push('schedule');
+  }
+
+  if (
+    /\b(payment|invoice|paid|compensation|billing)\b/i.test(query)
+  ) {
+    intents.push('payment');
+  }
+
+  if (
+    /\b(closeout|turnover|final acceptance|warranty|punch list)\b/i.test(query)
+  ) {
+    intents.push('closeout');
+  }
+
+  return intents.length
+    ? intents
+    : ['general'];
 }
-export function buildContext(hits){const conflictNote=hits.meta?.conflicts?.length?`\nPOTENTIAL SOURCE CONFLICTS:\n${hits.meta.conflicts.map(c=>`[S${c.sourceA}] may conflict with [S${c.sourceB}]: ${c.reason}`).join('\n')}\n`:'';return hits.map(h=>`[S${h.sourceNumber}] DOCUMENT: ${h.documentName}\nSECTION: ${h.heading||'Unheaded section'}\nPATH: ${(h.path||[]).join(' > ')||'Not specified'}\nLOCATION: ${h.location||'Not specified'}\nRETRIEVAL: matched ${h.matchedTerms.join(', ')||'general relevance'}\n${h.text}`).join('\n\n---\n\n')+conflictNote}
-export function verifyCitations(answer,hits){
-  const valid=new Set(hits.map(h=>h.sourceNumber));const cited=[...String(answer).matchAll(/\[S(\d+)\]/g)].map(m=>Number(m[1]));const invalid=uniq(cited.filter(n=>!valid.has(n)));const used=uniq(cited.filter(n=>valid.has(n)));const sentences=String(answer).split(/(?<=[.!?])\s+/).filter(s=>s.trim().length>20);const material=sentences.filter(s=>/\b(shall|must|required|responsible|means|defined|prohibited|will|is|are|was|were)\b/i.test(s)&&!/^evidence gaps/i.test(s));const uncited=material.filter(s=>!/\[S\d+\]/.test(s));return {used,invalid,uncited,materialClaims:material.length,coverage:material.length?Math.round((material.length-uncited.length)/material.length*100):100,passed:invalid.length===0&&uncited.length===0};
+
+function extractReferences(value) {
+  const found = [];
+
+  for (const pattern of CROSS_REFERENCE_PATTERNS) {
+    const matches = String(value || '').match(pattern) || [];
+
+    for (const match of matches) {
+      const normalized = normalizeReference(match);
+
+      if (normalized.length >= 3) {
+        found.push(normalized);
+      }
+    }
+  }
+
+  return uniq(found);
 }
-export function scoreAnswer(answer,e,hits){const lower=answer.toLowerCase();const facts=(e.requiredFacts||'').split('\n').map(x=>x.trim()).filter(Boolean);const prohibited=(e.prohibited||'').split('\n').map(x=>x.trim()).filter(Boolean);const factHits=facts.filter(x=>lower.includes(x.toLowerCase()));const prohibitedHits=prohibited.filter(x=>lower.includes(x.toLowerCase()));const verification=verifyCitations(answer,hits);const sourceMatch=e.expectedSource?hits.some(h=>(h.documentName+' '+h.heading).toLowerCase().includes(e.expectedSource.toLowerCase())):true;const score=Math.max(0,Math.round((facts.length?factHits.length/facts.length:1)*55+Math.min(verification.used.length,3)*8+(sourceMatch?10:0)+(verification.passed?11:0)-prohibitedHits.length*20-verification.invalid.length*10));return {score,factHits,missingFacts:facts.filter(x=>!factHits.includes(x)),prohibitedHits,citations:verification.used.length,sourceMatch,answer,hits,citationVerification:verification,conflicts:hits.meta?.conflicts||[]}}
+
+export function expandQuery(query) {
+  const raw = String(query || '');
+  const base = tokens(raw);
+  const expanded = [];
+
+  for (const token of base) {
+    expanded.push(token, stem(token));
+
+    for (const [root, terms] of Object.entries(SYNONYMS)) {
+      const synonymTokens = terms.flatMap(tokens);
+
+      const matchesRoot =
+        token === root ||
+        stem(token) === stem(root);
+
+      const matchesSynonym = synonymTokens.some(synonym =>
+        synonym === token ||
+        stem(synonym) === stem(token) ||
+        synonym.includes(token) ||
+        token.includes(synonym)
+      );
+
+      if (matchesRoot || matchesSynonym) {
+        expanded.push(
+          root,
+          stem(root),
+          ...synonymTokens,
+          ...synonymTokens.map(stem)
+        );
+      }
+    }
+  }
+
+  const quotedPhrases = [
+    ...raw.matchAll(/"([^"]+)"/g)
+  ].map(match =>
+    match[1].toLowerCase().trim()
+  );
+
+  const naturalPhrases = [];
+
+  const normalizedWords = raw
+    .toLowerCase()
+    .replace(/[^\w./-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  for (let size = 2; size <= 4; size += 1) {
+    for (
+      let index = 0;
+      index <= normalizedWords.length - size;
+      index += 1
+    ) {
+      const phrase = normalizedWords
+        .slice(index, index + size)
+        .join(' ');
+
+      const meaningfulTerms = tokens(phrase);
+
+      if (meaningfulTerms.length >= 2) {
+        naturalPhrases.push(phrase);
+      }
+    }
+  }
+
+  return {
+    raw,
+    base: uniq(base),
+    stems: uniq(base.map(stem)),
+    expanded: uniq(expanded),
+    phrases: uniq([
+      ...quotedPhrases,
+      ...naturalPhrases
+    ]),
+    references: extractReferences(raw),
+    intents: classifyQueryIntent(raw)
+  };
+}
+
+function buildCorpusStats(sections) {
+  const documentFrequency = new Map();
+  let totalLength = 0;
+
+  for (const section of sections) {
+    const terms = uniq(
+      tokens(sectionText(section))
+        .map(stem)
+    );
+
+    totalLength += tokens(section.text || '').length;
+
+    for (const term of terms) {
+      documentFrequency.set(
+        term,
+        (documentFrequency.get(term) || 0) + 1
+      );
+    }
+  }
+
+  return {
+    sectionCount: Math.max(1, sections.length),
+    averageLength:
+      sections.length
+        ? totalLength / sections.length
+        : 1,
+    documentFrequency
+  };
+}
+
+function inverseDocumentFrequency(term, corpus) {
+  const frequency =
+    corpus.documentFrequency.get(stem(term)) ||
+    0;
+
+  return Math.log(
+    1 +
+    (
+      corpus.sectionCount -
+      frequency +
+      0.5
+    ) /
+    (
+      frequency +
+      0.5
+    )
+  );
+}
+
+function bm25Score(text, queryTerms, corpus) {
+  const words = tokens(text);
+  const normalizedWords = words.map(stem);
+  const frequency = new Map();
+
+  for (const word of normalizedWords) {
+    frequency.set(
+      word,
+      (frequency.get(word) || 0) + 1
+    );
+  }
+
+  const sectionLength = Math.max(1, words.length);
+  const k1 = 1.35;
+  const b = 0.72;
+
+  let score = 0;
+
+  for (const queryTerm of uniq(queryTerms.map(stem))) {
+    const termFrequency =
+      frequency.get(queryTerm) ||
+      0;
+
+    if (!termFrequency) {
+      continue;
+    }
+
+    const idf = inverseDocumentFrequency(
+      queryTerm,
+      corpus
+    );
+
+    const numerator =
+      termFrequency *
+      (k1 + 1);
+
+    const denominator =
+      termFrequency +
+      k1 *
+      (
+        1 -
+        b +
+        b *
+        (
+          sectionLength /
+          Math.max(1, corpus.averageLength)
+        )
+      );
+
+    score += idf * numerator / denominator;
+  }
+
+  return score;
+}
+
+function calculateCoverage(query, matchedTerms) {
+  if (!query.base.length) {
+    return 0;
+  }
+
+  const matchedStems = new Set(
+    matchedTerms
+      .flatMap(tokens)
+      .map(stem)
+  );
+
+  const covered = query.base.filter(term =>
+    matchedStems.has(stem(term))
+  ).length;
+
+  return covered / query.base.length;
+}
+
+function intentScore(combinedText, query) {
+  let score = 0;
+  const matchedIntents = [];
+
+  for (const intent of query.intents) {
+    if (
+      intent === 'definition' &&
+      DEFINITION.test(combinedText)
+    ) {
+      score += 12;
+      matchedIntents.push(intent);
+    }
+
+    if (
+      intent === 'responsibility' &&
+      RESPONSIBILITY.test(combinedText)
+    ) {
+      score += 12;
+      matchedIntents.push(intent);
+    }
+
+    if (
+      intent === 'requirement' &&
+      REQUIREMENT.test(combinedText)
+    ) {
+      score += 10;
+      matchedIntents.push(intent);
+    }
+
+    if (
+      intent === 'conflict' &&
+      EXCEPTION.test(combinedText)
+    ) {
+      score += 11;
+      matchedIntents.push(intent);
+    }
+
+    if (
+      intent === 'submittal' &&
+      /\b(submit|submittal|submission|provide for approval)\b/i.test(
+        combinedText
+      )
+    ) {
+      score += 9;
+      matchedIntents.push(intent);
+    }
+
+    if (
+      intent === 'inspection' &&
+      /\b(inspect|inspection|verify|verification|review)\b/i.test(
+        combinedText
+      )
+    ) {
+      score += 9;
+      matchedIntents.push(intent);
+    }
+
+    if (
+      intent === 'schedule' &&
+      /\b(schedule|scheduled|duration|timeline|milestone|completion)\b/i.test(
+        combinedText
+      )
+    ) {
+      score += 8;
+      matchedIntents.push(intent);
+    }
+
+    if (
+      intent === 'payment' &&
+      /\b(payment|invoice|billing|compensation|paid)\b/i.test(
+        combinedText
+      )
+    ) {
+      score += 8;
+      matchedIntents.push(intent);
+    }
+
+    if (
+      intent === 'closeout' &&
+      /\b(closeout|turnover|final acceptance|warranty|punch list|record documents)\b/i.test(
+        combinedText
+      )
+    ) {
+      score += 8;
+      matchedIntents.push(intent);
+    }
+  }
+
+  return {
+    score,
+    matchedIntents: uniq(matchedIntents)
+  };
+}
+
+function scoreSection(section, query, corpus) {
+  const heading = String(section.heading || '').toLowerCase();
+  const path = (section.path || []).join(' ').toLowerCase();
+  const location = String(section.location || '').toLowerCase();
+  const text = String(section.text || '').toLowerCase();
+
+  const headingTokens = new Set(
+    tokens(heading).map(stem)
+  );
+
+  const pathTokens = new Set(
+    tokens(path).map(stem)
+  );
+
+  const textTokens = new Set(
+    tokens(text).map(stem)
+  );
+
+  let lexical = 0;
+  let headingScore = 0;
+  let pathScore = 0;
+  let phraseScore = 0;
+  let referenceScore = 0;
+  let exactTermScore = 0;
+
+  const matchedTerms = [];
+  const matchedReferences = [];
+  const matchedPhrases = [];
+
+  for (const term of query.expanded) {
+    const normalizedTerm = term.toLowerCase();
+    const termStem = stem(normalizedTerm);
+    let matched = false;
+
+    if (
+      headingTokens.has(termStem) ||
+      heading.includes(normalizedTerm)
+    ) {
+      headingScore += 15;
+      matched = true;
+    }
+
+    if (
+      pathTokens.has(termStem) ||
+      path.includes(normalizedTerm)
+    ) {
+      pathScore += 9;
+      matched = true;
+    }
+
+    if (
+      textTokens.has(termStem)
+    ) {
+      const frequency = countOccurrences(
+        text,
+        normalizedTerm
+      );
+
+      lexical +=
+        3.5 +
+        Math.min(6, frequency * 1.25);
+
+      matched = true;
+    } else if (
+      normalizedTerm.length >= 4 &&
+      text.includes(normalizedTerm)
+    ) {
+      lexical += 1.5;
+      matched = true;
+    }
+
+    if (
+      query.base.includes(normalizedTerm) &&
+      (
+        heading.includes(normalizedTerm) ||
+        path.includes(normalizedTerm) ||
+        text.includes(normalizedTerm)
+      )
+    ) {
+      exactTermScore += 2.5;
+    }
+
+    if (matched) {
+      matchedTerms.push(normalizedTerm);
+    }
+  }
+
+  for (const phrase of query.phrases) {
+    if (phrase.length < 5) {
+      continue;
+    }
+
+    if (heading.includes(phrase)) {
+      phraseScore += 28;
+      matchedPhrases.push(phrase);
+      continue;
+    }
+
+    if (path.includes(phrase)) {
+      phraseScore += 22;
+      matchedPhrases.push(phrase);
+      continue;
+    }
+
+    if (text.includes(phrase)) {
+      phraseScore +=
+        phrase.split(/\s+/).length >= 3
+          ? 18
+          : 11;
+
+      matchedPhrases.push(phrase);
+    }
+  }
+
+  for (const reference of query.references) {
+    const normalizedReference =
+      normalizeReference(reference);
+
+    if (
+      heading.includes(normalizedReference) ||
+      path.includes(normalizedReference) ||
+      location.includes(normalizedReference)
+    ) {
+      referenceScore += 40;
+      matchedReferences.push(reference);
+      continue;
+    }
+
+    if (text.includes(normalizedReference)) {
+      referenceScore += 22;
+      matchedReferences.push(reference);
+    }
+  }
+
+  const coverage = calculateCoverage(
+    query,
+    matchedTerms
+  );
+
+  const combined = `${heading} ${path} ${text}`;
+
+  const intent = intentScore(
+    combined,
+    query
+  );
+
+  const bm25 = bm25Score(
+    `${heading} ${heading} ${path} ${text}`,
+    [
+      ...query.base,
+      ...query.expanded
+    ],
+    corpus
+  );
+
+  const crossReferences = extractReferences(
+    `${heading} ${text}`
+  );
+
+  const hierarchyBonus =
+    section.level === 1
+      ? 4
+      : section.level === 2
+        ? 3
+        : section.level === 3
+          ? 1.5
+          : 0;
+
+  const requirementBonus =
+    REQUIREMENT.test(text)
+      ? 3
+      : 0;
+
+  const exceptionBonus =
+    EXCEPTION.test(text) &&
+    query.intents.includes('conflict')
+      ? 4
+      : 0;
+
+  const length = Math.max(
+    1,
+    text.length
+  );
+
+  const specificity = clamp(
+    1 -
+    Math.log10(
+      Math.max(100, length)
+    ) / 18,
+    0.68,
+    0.95
+  );
+
+  const coverageMultiplier =
+    0.48 +
+    coverage * 0.52;
+
+  const rawScore =
+    lexical +
+    headingScore +
+    pathScore +
+    phraseScore +
+    referenceScore +
+    exactTermScore +
+    intent.score +
+    bm25 * 6 +
+    hierarchyBonus +
+    requirementBonus +
+    exceptionBonus;
+
+  const score =
+    rawScore *
+    coverageMultiplier *
+    specificity;
+
+  return {
+    score,
+
+    components: {
+      lexical: roundScore(lexical),
+      bm25: roundScore(bm25 * 6),
+      heading: roundScore(headingScore),
+      path: roundScore(pathScore),
+      phrase: roundScore(phraseScore),
+      reference: roundScore(referenceScore),
+      exactTerm: roundScore(exactTermScore),
+      intent: roundScore(intent.score),
+      hierarchy: roundScore(hierarchyBonus),
+      coverage: Math.round(coverage * 100)
+    },
+
+    matchedTerms: uniq(
+      matchedTerms
+    ).slice(0, 15),
+
+    matchedPhrases: uniq(
+      matchedPhrases
+    ).slice(0, 8),
+
+    matchedReferences: uniq(
+      matchedReferences
+    ).slice(0, 8),
+
+    matchedIntents: intent.matchedIntents,
+
+    crossReferences
+  };
+}
+
+function roundScore(value) {
+  return Math.round(
+    Number(value || 0) * 10
+  ) / 10;
+}
+
+function rerank(rows, topK) {
+  const selected = [];
+  const remaining = [...rows];
+
+  const documentCounts = new Map();
+  const headingCounts = new Map();
+
+  while (
+    remaining.length &&
+    selected.length < topK
+  ) {
+    let bestIndex = 0;
+    let bestScore = -Infinity;
+
+    for (
+      let index = 0;
+      index < remaining.length;
+      index += 1
+    ) {
+      const row = remaining[index];
+
+      const documentCount =
+        documentCounts.get(row.documentId) ||
+        0;
+
+      const normalizedHeading = String(
+        row.heading ||
+        ''
+      )
+        .toLowerCase()
+        .trim();
+
+      const headingCount =
+        headingCounts.get(normalizedHeading) ||
+        0;
+
+      let rerankScore = row.score;
+
+      if (
+        row.components.coverage >= 80
+      ) {
+        rerankScore += 10;
+      } else if (
+        row.components.coverage >= 60
+      ) {
+        rerankScore += 6;
+      }
+
+      if (
+        row.matchedReferences?.length
+      ) {
+        rerankScore += 5;
+      }
+
+      if (
+        row.matchedPhrases?.length
+      ) {
+        rerankScore += 4;
+      }
+
+      if (
+        row.matchedIntents?.length
+      ) {
+        rerankScore += 3;
+      }
+
+      if (
+        row.level <= 2
+      ) {
+        rerankScore += 2;
+      }
+
+      if (
+        documentCount >= 2
+      ) {
+        rerankScore -=
+          Math.min(
+            16,
+            documentCount * 4
+          );
+      }
+
+      if (
+        headingCount >= 1 &&
+        normalizedHeading
+      ) {
+        rerankScore -=
+          Math.min(
+            10,
+            headingCount * 4
+          );
+      }
+
+      const sameDocumentNearDuplicate =
+        selected.some(existing =>
+          existing.documentId === row.documentId &&
+          textSimilarity(
+            existing.text,
+            row.text
+          ) > 0.78
+        );
+
+      if (sameDocumentNearDuplicate) {
+        rerankScore -= 14;
+      }
+
+      if (rerankScore > bestScore) {
+        bestScore = rerankScore;
+        bestIndex = index;
+      }
+    }
+
+    const chosen = remaining.splice(
+      bestIndex,
+      1
+    )[0];
+
+    selected.push({
+      ...chosen,
+      rerankScore: bestScore
+    });
+
+    documentCounts.set(
+      chosen.documentId,
+      (
+        documentCounts.get(chosen.documentId) ||
+        0
+      ) + 1
+    );
+
+    const normalizedHeading = String(
+      chosen.heading ||
+      ''
+    )
+      .toLowerCase()
+      .trim();
+
+    headingCounts.set(
+      normalizedHeading,
+      (
+        headingCounts.get(normalizedHeading) ||
+        0
+      ) + 1
+    );
+  }
+
+  return selected.sort((a, b) =>
+    b.rerankScore - a.rerankScore ||
+    b.score - a.score
+  );
+}
+
+function textSimilarity(first, second) {
+  const firstTerms = new Set(
+    tokens(first).map(stem)
+  );
+
+  const secondTerms = new Set(
+    tokens(second).map(stem)
+  );
+
+  if (
+    !firstTerms.size ||
+    !secondTerms.size
+  ) {
+    return 0;
+  }
+
+  const intersection = [
+    ...firstTerms
+  ].filter(term =>
+    secondTerms.has(term)
+  ).length;
+
+  const union = new Set([
+    ...firstTerms,
+    ...secondTerms
+  ]).size;
+
+  return intersection / Math.max(1, union);
+}
+
+function requirementPolarity(text) {
+  const value = String(text || '');
+
+  if (
+    /\b(shall not|must not|may not|is prohibited|are prohibited|not permitted)\b/i.test(
+      value
+    )
+  ) {
+    return 'negative';
+  }
+
+  if (
+    /\b(shall|must|required|is responsible for|will provide|will perform)\b/i.test(
+      value
+    )
+  ) {
+    return 'positive';
+  }
+
+  return 'neutral';
+}
+
+function sharedRequirementTerms(first, second) {
+  const firstTerms = new Set(
+    tokens(first)
+      .map(stem)
+      .filter(term =>
+        term.length >= 4
+      )
+  );
+
+  const secondTerms = new Set(
+    tokens(second)
+      .map(stem)
+      .filter(term =>
+        term.length >= 4
+      )
+  );
+
+  return [
+    ...firstTerms
+  ].filter(term =>
+    secondTerms.has(term)
+  );
+}
+
+export function detectConflicts(hits) {
+  const conflicts = [];
+
+  for (
+    let firstIndex = 0;
+    firstIndex < hits.length;
+    firstIndex += 1
+  ) {
+    for (
+      let secondIndex = firstIndex + 1;
+      secondIndex < hits.length;
+      secondIndex += 1
+    ) {
+      const first = hits[firstIndex];
+      const second = hits[secondIndex];
+
+      if (
+        first.documentId === second.documentId
+      ) {
+        continue;
+      }
+
+      const firstCombined = `
+        ${first.heading || ''}
+        ${first.text || ''}
+      `;
+
+      const secondCombined = `
+        ${second.heading || ''}
+        ${second.text || ''}
+      `;
+
+      const firstPolarity =
+        requirementPolarity(firstCombined);
+
+      const secondPolarity =
+        requirementPolarity(secondCombined);
+
+      if (
+        firstPolarity === 'neutral' ||
+        secondPolarity === 'neutral'
+      ) {
+        continue;
+      }
+
+      const sharedTerms = sharedRequirementTerms(
+        firstCombined,
+        secondCombined
+      );
+
+      const similarity = textSimilarity(
+        firstCombined,
+        secondCombined
+      );
+
+      const opposingPolarity =
+        firstPolarity !== secondPolarity;
+
+      const exceptionDifference =
+        EXCEPTION.test(firstCombined) !==
+        EXCEPTION.test(secondCombined);
+
+      const enoughSharedContext =
+        sharedTerms.length >= 3 ||
+        similarity >= 0.2;
+
+      if (
+        enoughSharedContext &&
+        (
+          opposingPolarity ||
+          exceptionDifference
+        )
+      ) {
+        const confidence = clamp(
+          Math.round(
+            45 +
+            similarity * 100 +
+            Math.min(
+              20,
+              sharedTerms.length * 3
+            )
+          ),
+          50,
+          95
+        );
+
+        conflicts.push({
+          sourceA: first.sourceNumber,
+          sourceB: second.sourceNumber,
+
+          documents: [
+            first.documentName,
+            second.documentName
+          ],
+
+          reason: opposingPolarity
+            ? 'Potentially opposing requirement language'
+            : 'One source appears to contain an exception or qualification absent from the other',
+
+          confidence,
+
+          sharedTerms: sharedTerms.slice(0, 10)
+        });
+      }
+    }
+  }
+
+  return conflicts
+    .sort((a, b) =>
+      b.confidence - a.confidence
+    )
+    .slice(0, 6);
+}
+
+function buildHierarchyNeighbors(
+  selectedHits,
+  allSections
+) {
+  const selectedIds = new Set(
+    selectedHits.map(hit => hit.id)
+  );
+
+  const neighbors = [];
+
+  for (const hit of selectedHits) {
+    const sameDocument = allSections
+      .filter(section =>
+        section.documentId === hit.documentId
+      )
+      .sort((a, b) =>
+        a.order - b.order
+      );
+
+    const index = sameDocument.findIndex(
+      section =>
+        section.id === hit.id
+    );
+
+    if (index === -1) {
+      continue;
+    }
+
+    const candidates = [
+      sameDocument[index - 1],
+      sameDocument[index + 1]
+    ].filter(Boolean);
+
+    for (const candidate of candidates) {
+      if (
+        selectedIds.has(candidate.id)
+      ) {
+        continue;
+      }
+
+      const hitPath = (
+        hit.path ||
+        []
+      ).join(' > ');
+
+      const candidatePath = (
+        candidate.path ||
+        []
+      ).join(' > ');
+
+      const sameHierarchy =
+        hitPath &&
+        candidatePath &&
+        (
+          hitPath.startsWith(candidatePath) ||
+          candidatePath.startsWith(hitPath) ||
+          hitPath
+            .split(' > ')
+            .slice(0, -1)
+            .join(' > ') ===
+          candidatePath
+            .split(' > ')
+            .slice(0, -1)
+            .join(' > ')
+        );
+
+      if (sameHierarchy) {
+        neighbors.push({
+          ...candidate,
+          hierarchyNeighborOf: hit.id
+        });
+      }
+    }
+  }
+
+  return neighbors;
+}
+
+export function retrieve(
+  query,
+  sections,
+  topK = 10
+) {
+  const safeSections = Array.isArray(sections)
+    ? sections
+    : [];
+
+  const safeTopK = clamp(
+    Number(topK) || 10,
+    1,
+    50
+  );
+
+  const expandedQuery = expandQuery(query);
+  const corpus = buildCorpusStats(safeSections);
+
+  const scored = safeSections
+    .map(section => ({
+      ...section,
+      ...scoreSection(
+        section,
+        expandedQuery,
+        corpus
+      )
+    }))
+    .filter(section =>
+      section.score > 0
+    )
+    .sort((first, second) =>
+      second.score - first.score
+    )
+    .slice(
+      0,
+      Math.max(
+        safeTopK * 8,
+        50
+      )
+    );
+
+  const ranked = rerank(
+    scored,
+    safeTopK
+  );
+
+  const hierarchyNeighbors =
+    buildHierarchyNeighbors(
+      ranked,
+      safeSections
+    );
+
+  const finalized = ranked.map(
+    (section, index) => ({
+      ...section,
+      score: roundScore(
+        section.rerankScore
+      ),
+      sourceNumber: index + 1
+    })
+  );
+
+  const conflicts = detectConflicts(
+    finalized
+  );
+
+  return Object.assign(
+    finalized,
+    {
+      meta: {
+        queryExpansion: expandedQuery,
+        conflicts,
+        totalCandidates: scored.length,
+        totalSectionsSearched: safeSections.length,
+        hierarchyNeighbors,
+        retrievalVersion: '2.0'
+      }
+    }
+  );
+}
+
+export function buildContext(hits) {
+  const safeHits = Array.isArray(hits)
+    ? hits
+    : [];
+
+  const conflictNote =
+    hits?.meta?.conflicts?.length
+      ? `
+POTENTIAL SOURCE CONFLICTS:
+${hits.meta.conflicts
+  .map(conflict =>
+    `[S${conflict.sourceA}] may conflict with [S${conflict.sourceB}]: ${conflict.reason} (${conflict.confidence}% confidence)`
+  )
+  .join('\n')}
+`
+      : '';
+
+  const sourceContext = safeHits
+    .map(hit => {
+      const crossReferences =
+        hit.crossReferences?.length
+          ? hit.crossReferences.join(', ')
+          : 'None detected';
+
+      const matched =
+        [
+          ...(hit.matchedTerms || []),
+          ...(hit.matchedPhrases || []),
+          ...(hit.matchedReferences || [])
+        ].join(', ') ||
+        'general relevance';
+
+      return `[S${hit.sourceNumber}]
+DOCUMENT: ${hit.documentName || 'Unknown document'}
+SECTION: ${hit.heading || 'Unheaded section'}
+PATH: ${(hit.path || []).join(' > ') || 'Not specified'}
+LOCATION: ${hit.location || 'Not specified'}
+LEVEL: ${hit.level || 1}
+MATCHED INTENT: ${(hit.matchedIntents || []).join(', ') || 'general'}
+RETRIEVAL TERMS: ${matched}
+CROSS-REFERENCES: ${crossReferences}
+RETRIEVAL SCORE: ${hit.score}
+COVERAGE: ${hit.components?.coverage ?? 0}%
+
+${hit.text || ''}`;
+    })
+    .join('\n\n---\n\n');
+
+  return `${sourceContext}${conflictNote}`;
+}
+
+function splitMaterialClaims(answer) {
+  return String(answer || '')
+    .split(
+      /(?<=[.!?])\s+|\n(?=[A-Z0-9#*-])/
+    )
+    .map(sentence =>
+      sentence.trim()
+    )
+    .filter(sentence =>
+      sentence.length > 20
+    );
+}
+
+function isMaterialClaim(sentence) {
+  const value = String(sentence || '');
+
+  if (
+    /^#{1,6}\s/.test(value) ||
+    /^evidence gaps:?$/i.test(value) ||
+    /^question:/i.test(value) ||
+    /^document:/i.test(value) ||
+    /^location:/i.test(value)
+  ) {
+    return false;
+  }
+
+  return (
+    REQUIREMENT.test(value) ||
+    DEFINITION.test(value) ||
+    RESPONSIBILITY.test(value) ||
+    /\b(is|are|was|were|means|defined|requires|requires that|indicates|states|provides|permits|allows)\b/i.test(
+      value
+    )
+  );
+}
+
+export function verifyCitations(
+  answer,
+  hits
+) {
+  const safeHits = Array.isArray(hits)
+    ? hits
+    : [];
+
+  const validSources = new Set(
+    safeHits.map(hit =>
+      hit.sourceNumber
+    )
+  );
+
+  const cited = [
+    ...String(answer || '')
+      .matchAll(/\[S(\d+)\]/g)
+  ].map(match =>
+    Number(match[1])
+  );
+
+  const invalid = uniq(
+    cited.filter(sourceNumber =>
+      !validSources.has(sourceNumber)
+    )
+  );
+
+  const used = uniq(
+    cited.filter(sourceNumber =>
+      validSources.has(sourceNumber)
+    )
+  );
+
+  const sentences = splitMaterialClaims(
+    answer
+  );
+
+  const materialClaims = sentences.filter(
+    isMaterialClaim
+  );
+
+  const uncited = materialClaims.filter(
+    sentence =>
+      !/\[S\d+\]/.test(sentence)
+  );
+
+  const citationSupport = used.map(
+    sourceNumber => {
+      const hit = safeHits.find(
+        source =>
+          source.sourceNumber === sourceNumber
+      );
+
+      return {
+        sourceNumber,
+        documentName:
+          hit?.documentName ||
+          null,
+        heading:
+          hit?.heading ||
+          null
+      };
+    }
+  );
+
+  const coverage =
+    materialClaims.length
+      ? Math.round(
+          (
+            materialClaims.length -
+            uncited.length
+          ) /
+          materialClaims.length *
+          100
+        )
+      : 100;
+
+  return {
+    used,
+    invalid,
+    uncited,
+    materialClaims:
+      materialClaims.length,
+    coverage,
+    citationSupport,
+    passed:
+      invalid.length === 0 &&
+      uncited.length === 0
+  };
+}
+
+export function scoreAnswer(
+  answer,
+  evaluation,
+  hits
+) {
+  const lowerAnswer = String(
+    answer ||
+    ''
+  ).toLowerCase();
+
+  const requiredFacts = String(
+    evaluation.requiredFacts ||
+    ''
+  )
+    .split('\n')
+    .map(value =>
+      value.trim()
+    )
+    .filter(Boolean);
+
+  const prohibited = String(
+    evaluation.prohibited ||
+    ''
+  )
+    .split('\n')
+    .map(value =>
+      value.trim()
+    )
+    .filter(Boolean);
+
+  const factHits = requiredFacts.filter(
+    fact =>
+      lowerAnswer.includes(
+        fact.toLowerCase()
+      )
+  );
+
+  const prohibitedHits = prohibited.filter(
+    phrase =>
+      lowerAnswer.includes(
+        phrase.toLowerCase()
+      )
+  );
+
+  const verification = verifyCitations(
+    answer,
+    hits
+  );
+
+  const expectedSource = String(
+    evaluation.expectedSource ||
+    ''
+  )
+    .toLowerCase()
+    .trim();
+
+  const sourceMatch = expectedSource
+    ? hits.some(hit =>
+        `
+          ${hit.documentName || ''}
+          ${hit.heading || ''}
+          ${(hit.path || []).join(' ')}
+          ${hit.location || ''}
+        `
+          .toLowerCase()
+          .includes(expectedSource)
+      )
+    : true;
+
+  const factScore = requiredFacts.length
+    ? factHits.length /
+      requiredFacts.length *
+      50
+    : 50;
+
+  const citationScore =
+    Math.min(
+      verification.used.length,
+      3
+    ) * 7;
+
+  const sourceScore =
+    sourceMatch
+      ? 12
+      : 0;
+
+  const verificationScore =
+    verification.passed
+      ? 12
+      : Math.max(
+          0,
+          12 -
+          verification.uncited.length * 3 -
+          verification.invalid.length * 5
+        );
+
+  const conflictAwareness =
+    hits.meta?.conflicts?.length
+      ? /\b(conflict|exception|inconsisten|contradict|review)\b/i.test(
+          answer
+        )
+        ? 5
+        : 0
+      : 5;
+
+  const penalties =
+    prohibitedHits.length * 20 +
+    verification.invalid.length * 10;
+
+  const score = clamp(
+    Math.round(
+      factScore +
+      citationScore +
+      sourceScore +
+      verificationScore +
+      conflictAwareness -
+      penalties
+    ),
+    0,
+    100
+  );
+
+  return {
+    score,
+    factHits,
+    missingFacts: requiredFacts.filter(
+      fact =>
+        !factHits.includes(fact)
+    ),
+    prohibitedHits,
+    citations:
+      verification.used.length,
+    sourceMatch,
+    answer,
+    hits,
+    citationVerification:
+      verification,
+    conflicts:
+      hits.meta?.conflicts ||
+      []
+  };
+}
