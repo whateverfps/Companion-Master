@@ -12,6 +12,70 @@ import {
   summarizeRequirements
 } from "../retrieval.js";
 
+export function analyzeCorpus(
+  query,
+  corpus,
+  options = {}
+) {
+  const hits = Array.isArray(corpus)
+    ? corpus
+    : [];
+
+  const evidenceCorpus = Array.isArray(options.evidenceCorpus)
+    ? options.evidenceCorpus
+    : hits;
+
+  return {
+    query,
+    hits,
+
+    context: buildContext(hits),
+
+    requirements:
+      extractRequirements(hits),
+
+    responsibilities:
+      extractResponsibilities(hits),
+
+    deliverables:
+      extractDeliverables(hits),
+
+    acceptance:
+      extractAcceptanceCriteria(hits),
+
+    exceptions:
+      extractExceptions(hits),
+
+    compliance:
+      buildComplianceMatrix(
+        hits,
+        evidenceCorpus,
+        options
+      ),
+
+    evidence:
+      detectMissingEvidence(
+        hits,
+        evidenceCorpus,
+        options
+      ),
+
+    graph:
+      buildKnowledgeGraph(
+        hits,
+        evidenceCorpus,
+        options
+      ),
+
+    summary:
+      summarizeRequirements(
+        hits,
+        evidenceCorpus,
+        options
+      )
+  };
+}
+
 /* ===========================================================
    Reasoning Session
    =========================================================== */
