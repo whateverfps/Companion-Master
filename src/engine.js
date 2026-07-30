@@ -2458,9 +2458,12 @@ async function callAI(prompt, context, mode) {
           context || '(No evidence retrieved.)'
         ].join('\n')
       }
-    ],
-    temperature: 0.1
+    ]
   };
+
+  if (!settings.openaiModel.startsWith('gpt-5')) {
+    body.temperature = 0.1;
+  }
 
   const controller = new AbortController();
 
