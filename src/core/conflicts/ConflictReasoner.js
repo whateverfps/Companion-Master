@@ -84,12 +84,31 @@ function confidenceFrom(value, fallback = 0) {
 }
 
 function findingIdentity(finding) {
+    const evidenceSignature = (finding?.evidence || [])
+        .map(entry => [
+            normalizeKey(entry?.id ?? entry?.reference ?? entry?.title ?? entry?.name),
+            normalizeKey(entry?.type)
+        ].join("::"))
+        .join("||");
+
+    const nodeSignature = [...new Set([
+        finding?.nodeId,
+        finding?.governingNodeId,
+        ...(finding?.nodeIds || []),
+        ...(finding?.relatedNodeIds || []),
+        ...(finding?.activityIds || [])
+    ].filter(value => value !== undefined && value !== null && value !== ""))]
+        .map(value => normalizeKey(value))
+        .join("|");
+
     return [
+        normalizeKey(finding?.rule ?? finding?.ruleName),
         normalizeKey(finding?.type),
         normalizeKey(finding?.subtype),
-        normalizeKey(finding?.nodeId ?? finding?.governingNodeId),
+        nodeSignature,
         normalizeKey(finding?.title),
-        normalizeKey(finding?.explanation)
+        normalizeKey(finding?.explanation),
+        evidenceSignature
     ].join("|");
 }
 
@@ -204,6 +223,325 @@ function ancestorsOf(graph, nodeId) {
     return graph.getAncestors(nodeId) || [];
 }
 
+function normalizeFilterValue(value) {
+    if (value === undefined || value === null) {
+        return null;
+    }
+
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        return trimmed === "" ? null : trimmed.toLowerCase();
+    }
+
+    if (typeof value === "number" || typeof value === "boolean") {
+        return String(value).toLowerCase();
+    }
+
+    return null;
+}
+
+function normalizeFilterCriteria(criteria = {}) {
+    if (!criteria || typeof criteria !== "object") {
+        return {};
+    }
+
+    const normalized = {};
+
+    for (const key of [
+        "document",
+        "section",
+        "source",
+        "specification",
+        "responsibility",
+        "type",
+        "nodeId"
+    ]) {
+        const value = criteria[key];
+        const normalizedValue = normalizeFilterValue(value);
+
+        if (normalizedValue !== null) {
+            normalized[key] = value;
+        }
+    }
+
+    return normalized;
+}
+
+function mergeFilterCriteria(options = {}) {
+    const directOptions = [
+        "document",
+        "section",
+        "source",
+        "specification",
+        "responsibility",
+        "type",
+        "nodeId"
+    ];
+    const merged = {};
+    const criteria = options.criteria && typeof options.criteria === "object"
+        ? options.criteria
+        : {};
+
+    for (const key of directOptions) {
+        if (options[key] !== undefined && options[key] !== null && options[key] !== "") {
+            merged[key] = options[key];
+        } else if (criteria[key] !== undefined && criteria[key] !== null && criteria[key] !== "") {
+            merged[key] = criteria[key];
+        }
+    }
+
+    return merged;
+}
+
+function stableSerialize(value) {
+    if (Array.isArray(value)) {
+        return JSON.stringify(value.map(item => stableSerialize(item)));
+    }
+
+    if (value && typeof value === "object") {
+        const entries = Object.keys(value)
+            .sort()
+            .map(key => [key, stableSerialize(value[key])]);
+        return JSON.stringify(Object.fromEntries(entries));
+    }
+
+    return JSON.stringify(value);
+}
+
+function stableNodeArray(nodes) {
+    const stable = [];
+    const seen = new Set();
+
+    for (const node of nodes || []) {
+        if (!node) {
+            continue;
+        }
+
+        const nodeId = node?.id ?? node?.nodeId ?? null;
+        const marker = nodeId != null ? `id:${nodeId}` : `title:${normalizeText(node?.title || node?.name || "")}`;
+
+        if (seen.has(marker)) {
+            continue;
+        }
+
+        seen.add(marker);
+        stable.push(node);
+    }
+
+    return stable;
+}
+
+function resolveGraphNodes(graph, criteria = {}) {
+    const effectiveCriteria = normalizeFilterCriteria(criteria || {});
+
+    if (!graph) {
+        return [];
+    }
+
+    if (typeof graph.query === "function") {
+        try {
+            const queryCriteria = { ...effectiveCriteria };
+
+            if (queryCriteria.nodeId !== undefined) {
+                queryCriteria.id = queryCriteria.nodeId;
+                delete queryCriteria.nodeId;
+            }
+
+            const matched = graph.query(queryCriteria);
+            return stableNodeArray(Array.isArray(matched) ? matched : [...(matched || [])]);
+        } catch {
+            // Fall through to the graph-agnostic fallback below.
+        }
+    }
+
+    return stableNodeArray(graphNodes(graph).filter(node => {
+        if (effectiveCriteria.type !== undefined) {
+            const typeValue = normalizeFilterValue(node?.type);
+            const expectedType = normalizeFilterValue(effectiveCriteria.type);
+
+            if (typeValue !== expectedType) {
+                return false;
+            }
+        }
+
+        if (effectiveCriteria.nodeId !== undefined) {
+            const nodeIdValue = normalizeFilterValue(node?.id);
+            const expectedNodeId = normalizeFilterValue(effectiveCriteria.nodeId);
+
+            if (nodeIdValue !== expectedNodeId) {
+                return false;
+            }
+        }
+
+        if (effectiveCriteria.document !== undefined) {
+            const documentValue = normalizeFilterValue(node?.document ?? node?.metadata?.document);
+            const expectedDocument = normalizeFilterValue(effectiveCriteria.document);
+
+            if (documentValue !== expectedDocument) {
+                return false;
+            }
+        }
+
+        if (effectiveCriteria.section !== undefined) {
+            const sectionValue = normalizeFilterValue(node?.section ?? node?.metadata?.section);
+            const expectedSection = normalizeFilterValue(effectiveCriteria.section);
+
+            if (sectionValue !== expectedSection) {
+                return false;
+            }
+        }
+
+        if (effectiveCriteria.source !== undefined) {
+            const sourceValue = normalizeFilterValue(node?.source ?? node?.metadata?.source);
+            const expectedSource = normalizeFilterValue(effectiveCriteria.source);
+
+            if (sourceValue !== expectedSource) {
+                return false;
+            }
+        }
+
+        if (effectiveCriteria.specification !== undefined) {
+            const specificationValue = normalizeFilterValue(node?.specification ?? node?.metadata?.specification);
+            const expectedSpecification = normalizeFilterValue(effectiveCriteria.specification);
+
+            if (specificationValue !== expectedSpecification) {
+                return false;
+            }
+        }
+
+        if (effectiveCriteria.responsibility !== undefined) {
+            const responsibilityValue = normalizeFilterValue(node?.responsibility ?? node?.metadata?.responsibility);
+            const expectedResponsibility = normalizeFilterValue(effectiveCriteria.responsibility);
+
+            if (responsibilityValue !== expectedResponsibility) {
+                return false;
+            }
+        }
+
+        return true;
+    }));
+}
+
+function appendTraceabilityValue(values, value) {
+    if (value === undefined || value === null || value === "") {
+        return values;
+    }
+
+    if (typeof value === "object" && !Array.isArray(value)) {
+        const exists = values.some(item => item === value || (
+            typeof item === "object" && item !== null && item !== undefined &&
+            (item.id != null && item.id === value.id) ||
+            (item.reference != null && item.reference === value.reference) ||
+            (item.title != null && item.title === value.title) ||
+            (item.name != null && item.name === value.name)
+        ));
+
+        if (!exists) {
+            values.push(value);
+        }
+
+        return values;
+    }
+
+    const normalized = normalizeText(value);
+
+    if (normalized === "") {
+        return values;
+    }
+
+    if (!values.some(item => normalizeText(item) === normalized)) {
+        values.push(normalized);
+    }
+
+    return values;
+}
+
+function normalizeTraceabilityList(values) {
+    const normalized = [];
+
+    for (const value of values || []) {
+        appendTraceabilityValue(normalized, value);
+    }
+
+    return normalized;
+}
+
+function normalizeEvidenceValues(values) {
+    const normalized = [];
+
+    for (const value of values || []) {
+        appendTraceabilityValue(normalized, value);
+    }
+
+    return normalized;
+}
+
+function normalizeFindingTraceability(finding) {
+    const normalized = typeof finding === "string"
+        ? {
+            type: "finding",
+            title: finding,
+            explanation: finding,
+            confidence: 0.5,
+            severity: "unknown"
+        }
+        : { ...finding };
+
+    const nodeIds = normalizeTraceabilityList([
+        normalized.nodeId,
+        normalized.governingNodeId,
+        ...(normalized.nodeIds || []),
+        ...(normalized.relatedNodeIds || []),
+        ...(normalized.activityIds || [])
+    ]);
+
+    const documents = normalizeTraceabilityList([
+        ...(normalized.documents || []),
+        normalized.document
+    ]);
+
+    const sections = normalizeTraceabilityList([
+        ...(normalized.sections || []),
+        normalized.section
+    ]);
+
+    const sources = normalizeTraceabilityList([
+        ...(normalized.sources || []),
+        normalized.source
+    ]);
+
+    const specifications = normalizeTraceabilityList([
+        ...(normalized.specifications || []),
+        normalized.specification
+    ]);
+
+    const responsibilities = normalizeTraceabilityList([
+        ...(normalized.responsibilities || []),
+        normalized.responsibility
+    ]);
+
+    const evidence = normalizeEvidenceValues(normalized.evidence || []);
+
+    normalized.nodeIds = nodeIds;
+    normalized.edgeIds = normalizeTraceabilityList(normalized.edgeIds || []);
+    normalized.evidence = evidence;
+    normalized.documents = documents;
+    normalized.sections = sections;
+    normalized.sources = sources;
+    normalized.specifications = specifications;
+    normalized.responsibilities = responsibilities;
+
+    if (normalized.nodeId === undefined && nodeIds.length) {
+        normalized.nodeId = nodeIds[0];
+    }
+
+    if (normalized.governingNodeId === undefined && normalized.nodeId) {
+        normalized.governingNodeId = normalized.nodeId;
+    }
+
+    return normalized;
+}
+
 export function normalizeConfidence(value, fallback = 0) {
     const numeric = Number(value);
 
@@ -224,6 +562,7 @@ export class ReasoningResult {
         this.errors = [];
         this.warnings = [];
         this.summary = null;
+        this._findingOrder = new Map();
         this.metadata = {
             createdAt: nowIso(),
             completedAt: null,
@@ -251,25 +590,16 @@ export class ReasoningResult {
             return null;
         }
 
-        const normalized = typeof finding === "string"
-            ? {
-                type: "finding",
-                title: finding,
-                explanation: finding,
-                confidence: 0.5,
-                severity: "unknown"
-            }
-            : {
-                ...finding,
-                confidence: confidenceFrom(finding.confidence, 0.5),
-                severity: normalizeSeverity(finding.severity)
-            };
+        const normalized = normalizeFindingTraceability(finding);
+        normalized.confidence = confidenceFrom(normalized.confidence, 0.5);
+        normalized.severity = normalizeSeverity(normalized.severity);
 
         if (!normalized.id) {
             normalized.id = `finding-${this.findings.length + 1}`;
         }
 
         this.findings.push(normalized);
+        this._findingOrder.set(normalized.id, this.findings.length - 1);
         this.metrics.findingsGenerated = this.findings.length;
         return normalized;
     }
@@ -386,6 +716,149 @@ export class ReasoningResult {
         this.metrics.findingsGenerated = this.findings.length;
         this.metrics.explanationsGenerated = this.explanations.length;
         this.metrics.recommendationsGenerated = this.recommendations.length;
+
+        return this;
+    }
+
+    filterFindings(criteria = {}) {
+        const normalizedCriteria = criteria && typeof criteria === "object" ? criteria : {};
+
+        return this.findings.filter(finding => {
+            const normalized = normalizeFindingTraceability(finding);
+
+            if (normalizedCriteria.id !== undefined && normalized.id !== normalizedCriteria.id) {
+                return false;
+            }
+
+            if (normalizedCriteria.rule !== undefined) {
+                const expectedRule = normalizeFilterValue(normalizedCriteria.rule);
+                const actualRule = normalizeFilterValue(normalized.rule ?? normalized.ruleName ?? "");
+                if (actualRule !== expectedRule) {
+                    return false;
+                }
+            }
+
+            if (normalizedCriteria.type !== undefined) {
+                const expectedType = normalizeFilterValue(normalizedCriteria.type);
+                const actualType = normalizeFilterValue(normalized.type);
+                if (actualType !== expectedType) {
+                    return false;
+                }
+            }
+
+            if (normalizedCriteria.subtype !== undefined) {
+                const expectedSubtype = normalizeFilterValue(normalizedCriteria.subtype);
+                const actualSubtype = normalizeFilterValue(normalized.subtype);
+                if (actualSubtype !== expectedSubtype) {
+                    return false;
+                }
+            }
+
+            if (normalizedCriteria.severity !== undefined) {
+                const expectedSeverity = normalizeFilterValue(normalizedCriteria.severity);
+                const actualSeverity = normalizeFilterValue(normalized.severity);
+                if (actualSeverity !== expectedSeverity) {
+                    return false;
+                }
+            }
+
+            if (normalizedCriteria.nodeId !== undefined) {
+                const expectedNodeId = normalizeFilterValue(normalizedCriteria.nodeId);
+                const actualNodeId = normalizeFilterValue(normalized.nodeId ?? normalized.governingNodeId);
+                if (actualNodeId !== expectedNodeId) {
+                    return false;
+                }
+            }
+
+            if (normalizedCriteria.document !== undefined) {
+                const expectedDocument = normalizeFilterValue(normalizedCriteria.document);
+                const actualDocument = normalizeFilterValue((normalized.documents || [normalized.document]).find(Boolean));
+                if (actualDocument !== expectedDocument) {
+                    return false;
+                }
+            }
+
+            if (normalizedCriteria.section !== undefined) {
+                const expectedSection = normalizeFilterValue(normalizedCriteria.section);
+                const actualSection = normalizeFilterValue((normalized.sections || [normalized.section]).find(Boolean));
+                if (actualSection !== expectedSection) {
+                    return false;
+                }
+            }
+
+            if (normalizedCriteria.source !== undefined) {
+                const expectedSource = normalizeFilterValue(normalizedCriteria.source);
+                const actualSource = normalizeFilterValue((normalized.sources || [normalized.source]).find(Boolean));
+                if (actualSource !== expectedSource) {
+                    return false;
+                }
+            }
+
+            if (normalizedCriteria.specification !== undefined) {
+                const expectedSpecification = normalizeFilterValue(normalizedCriteria.specification);
+                const actualSpecification = normalizeFilterValue((normalized.specifications || [normalized.specification]).find(Boolean));
+                if (actualSpecification !== expectedSpecification) {
+                    return false;
+                }
+            }
+
+            if (normalizedCriteria.responsibility !== undefined) {
+                const expectedResponsibility = normalizeFilterValue(normalizedCriteria.responsibility);
+                const actualResponsibility = normalizeFilterValue((normalized.responsibilities || [normalized.responsibility]).find(Boolean));
+                if (actualResponsibility !== expectedResponsibility) {
+                    return false;
+                }
+            }
+
+            if (normalizedCriteria.minimumConfidence !== undefined) {
+                const minimum = normalizeConfidence(normalizedCriteria.minimumConfidence, 0);
+                const actual = confidenceFrom(normalized.confidence, 0);
+                if (actual < minimum) {
+                    return false;
+                }
+            }
+
+            return true;
+        });
+    }
+
+    sortFindings(sortBy = "severity", direction = "desc") {
+        const normalizedDirection = normalizeKey(direction) === "asc" ? "asc" : "desc";
+        const sortField = normalizeText(sortBy || "severity").toLowerCase();
+
+        this.findings.sort((left, right) => {
+            const leftFinding = normalizeFindingTraceability(left);
+            const rightFinding = normalizeFindingTraceability(right);
+
+            if (sortField === "rule") {
+                const ruleDelta = normalizeText(leftFinding.rule ?? leftFinding.ruleName ?? "")
+                    .localeCompare(normalizeText(rightFinding.rule ?? rightFinding.ruleName ?? ""));
+                return normalizedDirection === "asc" ? ruleDelta : -ruleDelta;
+            }
+
+            if (sortField === "confidence") {
+                const confidenceDelta = confidenceFrom(rightFinding.confidence) - confidenceFrom(leftFinding.confidence);
+                if (confidenceDelta !== 0) {
+                    return normalizedDirection === "asc" ? -confidenceDelta : confidenceDelta;
+                }
+            } else if (sortField === "severity") {
+                const severityDelta = DEFAULT_SEVERITY_ORDER[normalizeSeverity(rightFinding.severity)] - DEFAULT_SEVERITY_ORDER[normalizeSeverity(leftFinding.severity)];
+                if (severityDelta !== 0) {
+                    return normalizedDirection === "asc" ? -severityDelta : severityDelta;
+                }
+            } else if (sortField === "sourceorder") {
+                const leftOrder = this._findingOrder.get(leftFinding.id) ?? 0;
+                const rightOrder = this._findingOrder.get(rightFinding.id) ?? 0;
+                const orderDelta = leftOrder - rightOrder;
+                return normalizedDirection === "asc" ? orderDelta : -orderDelta;
+            }
+
+            const leftId = normalizeText(leftFinding.id || "");
+            const rightId = normalizeText(rightFinding.id || "");
+            return normalizedDirection === "asc"
+                ? leftId.localeCompare(rightId)
+                : rightId.localeCompare(leftId);
+        });
 
         return this;
     }
@@ -528,6 +1001,24 @@ export class ConflictReasoner {
         return removed;
     }
 
+    hasRule(name) {
+        return this.registry.has(name);
+    }
+
+    getRule(name) {
+        return this.registry.get(name);
+    }
+
+    listRules(options = {}) {
+        return this.registry.getRules(options);
+    }
+
+    clearRules() {
+        this.registry.clear();
+        this.clearCache();
+        return this;
+    }
+
     setGraph(graph) {
         this.graph = graph;
         this.clearCache();
@@ -538,7 +1029,7 @@ export class ConflictReasoner {
         const startedAt = Date.now();
         const {
             useCache = true,
-            cacheKey = "default",
+            cacheKey = undefined,
             force = false,
             ruleNames = null,
             tags = null,
@@ -547,24 +1038,59 @@ export class ConflictReasoner {
             deduplicate = this.options.deduplicate,
             correlate = this.options.correlate,
             rankRecommendations = this.options.rankRecommendations,
-            buildSummary = this.options.buildSummary
+            buildSummary = this.options.buildSummary,
+            document = undefined,
+            section = undefined,
+            source = undefined,
+            specification = undefined,
+            responsibility = undefined,
+            type = undefined,
+            nodeId = undefined,
+            criteria = {}
         } = options;
 
-        if (!force && useCache && this.cache.has(cacheKey)) {
-            return this.cache.get(cacheKey);
+        const effectiveCriteria = mergeFilterCriteria({
+            criteria,
+            document,
+            section,
+            source,
+            specification,
+            responsibility,
+            type,
+            nodeId
+        });
+        const hasEffectiveFilters = Object.keys(effectiveCriteria).length > 0;
+        const candidateNodes = resolveGraphNodes(this.graph, effectiveCriteria);
+        const candidateNodeIds = candidateNodes.map(node => node?.id).filter(Boolean);
+
+        const requestedNames = Array.isArray(ruleNames)
+            ? new Set(ruleNames.map(normalizeText))
+            : null;
+        const requestedTags = Array.isArray(tags)
+            ? new Set(tags.map(normalizeText))
+            : null;
+        const baseCacheKey = cacheKey === undefined || cacheKey === null ? "default" : normalizeText(cacheKey);
+        const cacheKeyParts = [
+            baseCacheKey,
+            requestedNames ? [...requestedNames].sort().join(",") : "",
+            requestedTags ? [...requestedTags].sort().join(",") : "",
+            stableSerialize(effectiveCriteria)
+        ];
+        const resolvedCacheKey = hasEffectiveFilters || requestedNames || requestedTags || (cacheKey !== undefined && cacheKey !== null)
+            ? cacheKeyParts.join("::")
+            : baseCacheKey;
+
+        if (!force && useCache && this.cache.has(resolvedCacheKey)) {
+            return this.cache.get(resolvedCacheKey);
         }
 
         const result = new ReasoningResult({
-            cacheKey,
+            cacheKey: resolvedCacheKey,
             graphNodeCount: graphNodes(this.graph).length
         });
 
         const registeredRules = this.registry.getRules({ enabledOnly: false, tags });
         result.metrics.rulesRegistered = registeredRules.length;
-
-        const requestedNames = Array.isArray(ruleNames)
-            ? new Set(ruleNames.map(normalizeText))
-            : null;
 
         const availableNames = new Set(registeredRules.map(ruleName));
 
@@ -656,13 +1182,29 @@ export class ConflictReasoner {
                 recommendations: result.recommendations.length
             };
 
+            const ruleContext = {
+                ...context,
+                reasoner: this,
+                rule,
+                result,
+                criteria: effectiveCriteria,
+                nodes: candidateNodes,
+                nodeIds: candidateNodeIds,
+                filtered: hasEffectiveFilters
+            };
+
+            const originalAddFinding = result.addFinding.bind(result);
+
             try {
-                rule.execute(this.graph, result, {
-                    ...context,
-                    reasoner: this,
-                    rule,
-                    result
-                });
+                result.addFinding = finding => {
+                    const normalizedFinding = originalAddFinding(finding);
+                    if (normalizedFinding && !normalizedFinding.rule) {
+                        normalizedFinding.rule = rule.name || ruleName(rule);
+                    }
+                    return normalizedFinding;
+                };
+
+                rule.execute(this.graph, result, ruleContext);
 
                 result.metrics.rulesExecuted += 1;
                 result.trace.push({
@@ -694,6 +1236,8 @@ export class ConflictReasoner {
                 if (!continueOnRuleError) {
                     throw error;
                 }
+            } finally {
+                result.addFinding = originalAddFinding;
             }
         }
 
@@ -717,10 +1261,14 @@ export class ConflictReasoner {
 
         result.metrics.executionTimeMs = durationMs(startedAt);
         result.metadata.completedAt = nowIso();
+        result.metadata.criteria = cloneSafe(effectiveCriteria);
+        result.metadata.filtered = hasEffectiveFilters;
+        result.metadata.candidateNodeCount = candidateNodes.length;
+        result.metadata.candidateNodeIds = candidateNodeIds;
         this.lastResult = result;
 
         if (useCache) {
-            this.cache.set(cacheKey, result);
+            this.cache.set(resolvedCacheKey, result);
         }
 
         return result;
@@ -734,6 +1282,45 @@ export class ConflictReasoner {
         }
 
         return this;
+    }
+
+    analyze(options = {}) {
+        return this.run(options);
+    }
+
+    analyzeNode(nodeId, options = {}) {
+        return this.analyze({
+            ...options,
+            nodeId: nodeId ?? options.nodeId
+        });
+    }
+
+    analyzeDocument(document, options = {}) {
+        return this.analyze({
+            ...options,
+            document: document ?? options.document
+        });
+    }
+
+    analyzeSection(section, options = {}) {
+        return this.analyze({
+            ...options,
+            section: section ?? options.section
+        });
+    }
+
+    analyzeSpecification(specification, options = {}) {
+        return this.analyze({
+            ...options,
+            specification: specification ?? options.specification
+        });
+    }
+
+    analyzeResponsibility(responsibility, options = {}) {
+        return this.analyze({
+            ...options,
+            responsibility: responsibility ?? options.responsibility
+        });
     }
 
     explainFinding(indexOrId, options = {}) {
@@ -1008,13 +1595,16 @@ export class ConflictReasoner {
     buildSummary(result) {
         const bySeverity = {};
         const byType = {};
+        const findingsByRule = {};
 
         for (const finding of result.findings) {
             const severity = normalizeSeverity(finding.severity);
             const type = normalizeText(finding.type || "unknown");
+            const ruleNameValue = normalizeText(finding.rule || finding.ruleName || "unknown");
 
             bySeverity[severity] = (bySeverity[severity] || 0) + 1;
             byType[type] = (byType[type] || 0) + 1;
+            findingsByRule[ruleNameValue] = (findingsByRule[ruleNameValue] || 0) + 1;
         }
 
         const criticalCount = bySeverity.critical || 0;
@@ -1035,6 +1625,10 @@ export class ConflictReasoner {
             correlatedGroups: result.correlation.length,
             errors: result.errors.length,
             warnings: result.warnings.length,
+            filtered: Boolean(result.metadata.filtered),
+            candidateNodeCount: result.metadata.candidateNodeCount ?? 0,
+            criteria: cloneSafe(result.metadata.criteria || {}),
+            findingsByRule,
             bySeverity,
             byType,
             rules: {
@@ -1066,10 +1660,12 @@ export class OrphanRequirementRule extends ReasoningRule {
         );
     }
 
-    execute(graph, result) {
-        const requirements = typeof graph.getNodesByType === "function"
-            ? graph.getNodesByType("requirement") || []
-            : graphNodes(graph).filter(node => normalizeKey(node?.type) === "requirement");
+    execute(graph, result, context = {}) {
+        const requirements = context.filtered
+            ? (context.nodes || []).filter(node => normalizeKey(node?.type) === "requirement")
+            : typeof graph.getNodesByType === "function"
+                ? graph.getNodesByType("requirement") || []
+                : graphNodes(graph).filter(node => normalizeKey(node?.type) === "requirement");
 
         for (const node of requirements) {
             const incoming = incomingEdges(graph, node.id);
