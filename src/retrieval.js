@@ -1325,6 +1325,1563 @@ function summarizeKnowledge(nodes)
 
     };
 }
+function complianceNormalize(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function complianceKey(value) {
+  return complianceNormalize(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function complianceUnique(values) {
+  return [
+    ...new Set(
+      (values || [])
+        .filter(Boolean)
+        .map(value =>
+          typeof value === 'string'
+            ? complianceNormalize(value)
+            : value
+        )
+    )
+  ];
+}
+
+function compliancePercent(numerator, denominator) {
+  if (!denominator) {
+    return 100;
+  }
+
+  return Math.round(
+    numerator /
+    denominator *
+    100
+  );
+}
+
+function inferRequirementPhase(requirement) {
+  const value = complianceKey([
+    requirement.statement,
+    requirement.action,
+    ...(requirement.deliverables || []),
+    requirement.heading,
+    ...(requirement.path || [])
+  ].join(' '));
+
+  if (
+    /\b(preconstruction|pre construction|before work|prior to work|notice to proceed|kickoff|mobilization)\b/.test(
+      value
+    )
+  ) {
+    return 'preconstruction';
+  }
+
+  if (
+    /\b(submittal|shop drawing|product data|sample|mockup|approval)\b/.test(
+      value
+    )
+  ) {
+    return 'submittal';
+  }
+
+  if (
+    /\b(install|installation|construct|construction|execute work|perform work)\b/.test(
+      value
+    )
+  ) {
+    return 'installation';
+  }
+
+  if (
+    /\b(inspect|inspection|verify|verification|quality control|quality assurance|qc|qa)\b/.test(
+      value
+    )
+  ) {
+    return 'inspection';
+  }
+
+  if (
+    /\b(test|testing|commission|commissioning|functional performance|startup|start up|demonstration)\b/.test(
+      value
+    )
+  ) {
+    return 'testing';
+  }
+
+  if (
+    /\b(acceptance|accepted|approve|approval|turnover|substantial completion)\b/.test(
+      value
+    )
+  ) {
+    return 'acceptance';
+  }
+
+  if (
+    /\b(closeout|warranty|record drawing|as built|as-built|o&m|operation manual|maintenance manual|training|final completion)\b/.test(
+      value
+    )
+  ) {
+    return 'closeout';
+  }
+
+  return 'general';
+}
+
+function inferChecklistCategory(requirement) {
+  const value = complianceKey([
+    requirement.statement,
+    requirement.action,
+    ...(requirement.deliverables || [])
+  ].join(' '));
+
+  if (
+    /\b(submittal|shop drawing|product data|sample|mockup)\b/.test(
+      value
+    )
+  ) {
+    return 'Submittals';
+  }
+
+  if (
+    /\b(icra|pcra|infection control|safety plan|hazard|permit)\b/.test(
+      value
+    )
+  ) {
+    return 'Readiness and Safety';
+  }
+
+  if (
+    /\b(inspect|inspection|verify|verification|qc|qa|quality control|quality assurance)\b/.test(
+      value
+    )
+  ) {
+    return 'Inspection';
+  }
+
+  if (
+    /\b(test|testing|commission|commissioning|startup|functional performance)\b/.test(
+      value
+    )
+  ) {
+    return 'Testing and Commissioning';
+  }
+
+  if (
+    /\b(photo|photograph|record|report|certificate|documentation)\b/.test(
+      value
+    )
+  ) {
+    return 'Documentation';
+  }
+
+  if (
+    /\b(punch|deficien|corrective|nonconform|non-conform)\b/.test(
+      value
+    )
+  ) {
+    return 'Deficiencies';
+  }
+
+  if (
+    /\b(closeout|warranty|training|record drawing|as built|as-built|o&m|operation manual|maintenance manual)\b/.test(
+      value
+    )
+  ) {
+    return 'Closeout';
+  }
+
+  if (
+    /\b(accept|acceptance|approved|approval)\b/.test(
+      value
+    )
+  ) {
+    return 'Acceptance';
+  }
+
+  return 'General';
+}
+
+function inferEvidenceType(requirement) {
+  const deliverables =
+    requirement.deliverables || [];
+
+  if (deliverables.length) {
+    return complianceUnique(
+      deliverables.map(deliverable => {
+        const value =
+          complianceKey(deliverable);
+
+        if (
+          /\b(report)\b/.test(value)
+        ) {
+          return 'Report';
+        }
+
+        if (
+          /\b(photo|photograph)\b/.test(value)
+        ) {
+          return 'Photograph';
+        }
+
+        if (
+          /\b(certificate|certification)\b/.test(value)
+        ) {
+          return 'Certificate';
+        }
+
+        if (
+          /\b(schedule)\b/.test(value)
+        ) {
+          return 'Schedule';
+        }
+
+        if (
+          /\b(submittal|shop drawing|product data|sample)\b/.test(value)
+        ) {
+          return 'Approved Submittal';
+        }
+
+        if (
+          /\b(record drawing|as built|as-built)\b/.test(value)
+        ) {
+          return 'Record Drawing';
+        }
+
+        if (
+          /\b(warranty)\b/.test(value)
+        ) {
+          return 'Warranty';
+        }
+
+        if (
+          /\b(training)\b/.test(value)
+        ) {
+          return 'Training Record';
+        }
+
+        return deliverable;
+      })
+    );
+  }
+
+  const value =
+    complianceKey(requirement.statement);
+
+  const evidence = [];
+
+  if (
+    /\binspect|inspection|verify|verification\b/.test(value)
+  ) {
+    evidence.push('Inspection Record');
+  }
+
+  if (
+    /\btest|testing|commission|commissioning\b/.test(value)
+  ) {
+    evidence.push('Test Record');
+  }
+
+  if (
+    /\bapprove|approval|accepted|acceptance\b/.test(value)
+  ) {
+    evidence.push('Approval Record');
+  }
+
+  if (
+    /\bnotify|notice\b/.test(value)
+  ) {
+    evidence.push('Written Notice');
+  }
+
+  if (
+    /\bcoordinate|meeting\b/.test(value)
+  ) {
+    evidence.push('Meeting Record');
+  }
+
+  return evidence.length
+    ? evidence
+    : ['Supporting Documentation'];
+}
+
+function complianceStatusFromAssessment(
+  requirement,
+  assessment
+) {
+  if (
+    requirement.type === 'prohibited'
+  ) {
+    return assessment?.supported
+      ? 'controlled'
+      : 'review-required';
+  }
+
+  if (!assessment) {
+    return 'not-assessed';
+  }
+
+  return assessment.supported
+    ? 'supported'
+    : 'missing-evidence';
+}
+
+function complianceRiskLevel(
+  requirement,
+  assessment
+) {
+  if (
+    requirement.type === 'prohibited'
+  ) {
+    return assessment?.supported
+      ? 'medium'
+      : 'high';
+  }
+
+  if (
+    requirement.type === 'mandatory' &&
+    !assessment?.supported
+  ) {
+    return 'high';
+  }
+
+  if (
+    requirement.type === 'mandatory' &&
+    assessment?.supported
+  ) {
+    return 'low';
+  }
+
+  if (
+    requirement.type === 'advisory' &&
+    !assessment?.supported
+  ) {
+    return 'medium';
+  }
+
+  return 'low';
+}
+
+export function buildComplianceMatrix(
+  hits,
+  evidenceSections = hits,
+  options = {}
+) {
+  const requirementsResult =
+    extractRequirements(hits);
+
+  const evidenceResult =
+    detectMissingEvidence(
+      hits,
+      evidenceSections,
+      options
+    );
+
+  const assessmentById = new Map(
+    evidenceResult.assessments.map(
+      assessment => [
+        assessment.requirementId,
+        assessment
+      ]
+    )
+  );
+
+  const rows =
+    requirementsResult.requirements.map(
+      requirement => {
+        const assessment =
+          assessmentById.get(
+            requirement.id
+          );
+
+        return {
+          id:
+            requirement.id,
+
+          requirement:
+            requirement.statement,
+
+          type:
+            requirement.type,
+
+          phase:
+            inferRequirementPhase(
+              requirement
+            ),
+
+          category:
+            inferChecklistCategory(
+              requirement
+            ),
+
+          responsibleParty:
+            requirement.responsibleParty ||
+            requirement.subject ||
+            'Unassigned',
+
+          action:
+            requirement.action,
+
+          deliverables:
+            requirement.deliverables,
+
+          expectedEvidence:
+            inferEvidenceType(
+              requirement
+            ),
+
+          timing:
+            requirement.timing,
+
+          conditions:
+            requirement.conditions,
+
+          exceptions:
+            requirement.exceptions,
+
+          references:
+            requirement.references,
+
+          status:
+            complianceStatusFromAssessment(
+              requirement,
+              assessment
+            ),
+
+          risk:
+            complianceRiskLevel(
+              requirement,
+              assessment
+            ),
+
+          evidenceMatches:
+            assessment?.evidenceMatches ||
+            [],
+
+          confidence:
+            assessment?.confidence ??
+            requirement.confidence,
+
+          sourceNumber:
+            requirement.sourceNumber,
+
+          documentName:
+            requirement.documentName,
+
+          heading:
+            requirement.heading,
+
+          path:
+            requirement.path,
+
+          location:
+            requirement.location
+        };
+      }
+    );
+
+  const supported =
+    rows.filter(
+      row =>
+        row.status === 'supported' ||
+        row.status === 'controlled'
+    ).length;
+
+  const missing =
+    rows.filter(
+      row =>
+        row.status === 'missing-evidence' ||
+        row.status === 'review-required'
+    ).length;
+
+  const highRisk =
+    rows.filter(
+      row =>
+        row.risk === 'high'
+    ).length;
+
+  return {
+    rows,
+
+    summary: {
+      totalRequirements:
+        rows.length,
+
+      supported,
+
+      missingEvidence:
+        missing,
+
+      highRisk,
+
+      compliancePercent:
+        compliancePercent(
+          supported,
+          rows.length
+        ),
+
+      byType:
+        rows.reduce(
+          (summary, row) => {
+            summary[row.type] =
+              (summary[row.type] || 0) + 1;
+
+            return summary;
+          },
+          {}
+        ),
+
+      byPhase:
+        rows.reduce(
+          (summary, row) => {
+            summary[row.phase] =
+              (summary[row.phase] || 0) + 1;
+
+            return summary;
+          },
+          {}
+        ),
+
+      byStatus:
+        rows.reduce(
+          (summary, row) => {
+            summary[row.status] =
+              (summary[row.status] || 0) + 1;
+
+            return summary;
+          },
+          {}
+        )
+    }
+  };
+}
+
+function checklistItemFromMatrixRow(
+  row,
+  index,
+  prefix = 'CHK'
+) {
+  return {
+    id:
+      `${prefix}-${index + 1}`,
+
+    requirementId:
+      row.id,
+
+    label:
+      complianceNormalize(
+        row.action ||
+        row.requirement
+      ),
+
+    fullRequirement:
+      row.requirement,
+
+    category:
+      row.category,
+
+    phase:
+      row.phase,
+
+    responsibleParty:
+      row.responsibleParty,
+
+    expectedEvidence:
+      row.expectedEvidence,
+
+    deliverables:
+      row.deliverables,
+
+    timing:
+      row.timing,
+
+    conditions:
+      row.conditions,
+
+    exceptions:
+      row.exceptions,
+
+    references:
+      row.references,
+
+    status:
+      row.status,
+
+    risk:
+      row.risk,
+
+    checked:
+      row.status === 'supported' ||
+      row.status === 'controlled',
+
+    sourceNumber:
+      row.sourceNumber,
+
+    documentName:
+      row.documentName,
+
+    heading:
+      row.heading,
+
+    location:
+      row.location
+  };
+}
+
+function groupChecklistItems(items) {
+  const groups = new Map();
+
+  for (const item of items) {
+    const category =
+      item.category ||
+      'General';
+
+    if (!groups.has(category)) {
+      groups.set(category, {
+        category,
+        items: [],
+        complete: 0,
+        incomplete: 0
+      });
+    }
+
+    const group =
+      groups.get(category);
+
+    group.items.push(item);
+
+    if (item.checked) {
+      group.complete += 1;
+    } else {
+      group.incomplete += 1;
+    }
+  }
+
+  return [
+    ...groups.values()
+  ].map(group => ({
+    ...group,
+
+    completionPercent:
+      compliancePercent(
+        group.complete,
+        group.items.length
+      )
+  }));
+}
+
+export function buildInspectionChecklist(
+  hits,
+  evidenceSections = hits,
+  options = {}
+) {
+  const matrix =
+    buildComplianceMatrix(
+      hits,
+      evidenceSections,
+      options
+    );
+
+  const inspectionRows =
+    matrix.rows.filter(row =>
+      [
+        'inspection',
+        'installation',
+        'testing',
+        'acceptance',
+        'general'
+      ].includes(row.phase) ||
+      [
+        'Inspection',
+        'Testing and Commissioning',
+        'Acceptance',
+        'Documentation',
+        'Deficiencies'
+      ].includes(row.category)
+    );
+
+  const items =
+    inspectionRows.map(
+      (row, index) =>
+        checklistItemFromMatrixRow(
+          row,
+          index,
+          'INS'
+        )
+    );
+
+  return {
+    title:
+      'Inspection Compliance Checklist',
+
+    items,
+
+    groups:
+      groupChecklistItems(items),
+
+    summary: {
+      total:
+        items.length,
+
+      complete:
+        items.filter(
+          item =>
+            item.checked
+        ).length,
+
+      incomplete:
+        items.filter(
+          item =>
+            !item.checked
+        ).length,
+
+      highRisk:
+        items.filter(
+          item =>
+            item.risk === 'high'
+        ).length,
+
+      completionPercent:
+        compliancePercent(
+          items.filter(
+            item =>
+              item.checked
+          ).length,
+          items.length
+        )
+    }
+  };
+}
+
+function commissioningRelevant(row) {
+  const value =
+    complianceKey([
+      row.requirement,
+      row.action,
+      row.phase,
+      row.category,
+      ...(row.deliverables || []),
+      ...(row.references || [])
+    ].join(' '));
+
+  return (
+    row.phase === 'testing' ||
+    row.category ===
+      'Testing and Commissioning' ||
+    /\b(commission|commissioning|startup|start up|functional performance|test|testing|demonstration|training|balance|balancing|sequence of operation|controls verification)\b/.test(
+      value
+    )
+  );
+}
+
+export function buildCommissioningChecklist(
+  hits,
+  evidenceSections = hits,
+  options = {}
+) {
+  const matrix =
+    buildComplianceMatrix(
+      hits,
+      evidenceSections,
+      options
+    );
+
+  const rows =
+    matrix.rows.filter(
+      commissioningRelevant
+    );
+
+  const items =
+    rows.map(
+      (row, index) =>
+        checklistItemFromMatrixRow(
+          row,
+          index,
+          'CXM'
+        )
+    );
+
+  return {
+    title:
+      'Commissioning and Testing Checklist',
+
+    items,
+
+    groups:
+      groupChecklistItems(items),
+
+    summary: {
+      total:
+        items.length,
+
+      complete:
+        items.filter(
+          item =>
+            item.checked
+        ).length,
+
+      incomplete:
+        items.filter(
+          item =>
+            !item.checked
+        ).length,
+
+      highRisk:
+        items.filter(
+          item =>
+            item.risk === 'high'
+        ).length,
+
+      completionPercent:
+        compliancePercent(
+          items.filter(
+            item =>
+              item.checked
+          ).length,
+          items.length
+        )
+    }
+  };
+}
+
+function closeoutRelevant(row) {
+  const value =
+    complianceKey([
+      row.requirement,
+      row.action,
+      row.phase,
+      row.category,
+      ...(row.deliverables || [])
+    ].join(' '));
+
+  return (
+    row.phase === 'closeout' ||
+    row.category === 'Closeout' ||
+    /\b(closeout|turnover|warranty|record drawing|as built|as-built|o&m|operation manual|maintenance manual|training|final completion|final acceptance|punch list|certificate of completion)\b/.test(
+      value
+    )
+  );
+}
+
+export function buildCloseoutChecklist(
+  hits,
+  evidenceSections = hits,
+  options = {}
+) {
+  const matrix =
+    buildComplianceMatrix(
+      hits,
+      evidenceSections,
+      options
+    );
+
+  const rows =
+    matrix.rows.filter(
+      closeoutRelevant
+    );
+
+  const items =
+    rows.map(
+      (row, index) =>
+        checklistItemFromMatrixRow(
+          row,
+          index,
+          'CLO'
+        )
+    );
+
+  return {
+    title:
+      'Closeout and Turnover Checklist',
+
+    items,
+
+    groups:
+      groupChecklistItems(items),
+
+    summary: {
+      total:
+        items.length,
+
+      complete:
+        items.filter(
+          item =>
+            item.checked
+        ).length,
+
+      incomplete:
+        items.filter(
+          item =>
+            !item.checked
+        ).length,
+
+      highRisk:
+        items.filter(
+          item =>
+            item.risk === 'high'
+        ).length,
+
+      completionPercent:
+        compliancePercent(
+          items.filter(
+            item =>
+              item.checked
+          ).length,
+          items.length
+        )
+    }
+  };
+}
+
+function ownerQCRelevant(requirement) {
+  const value =
+    complianceKey([
+      requirement.statement,
+      requirement.action,
+      requirement.responsibleParty,
+      requirement.subject,
+      requirement.heading,
+      ...(requirement.path || [])
+    ].join(' '));
+
+  return (
+    /\b(owner qc|owner quality|government qc|government quality|va qc|quality assurance|owner representative|resident engineer|cor|contracting officer representative)\b/.test(
+      value
+    ) ||
+    (
+      /\b(owner|government|va|cor)\b/.test(
+        value
+      ) &&
+      /\b(verify|inspect|witness|review|accept|approve|document|observe)\b/.test(
+        value
+      )
+    )
+  );
+}
+
+function ownerQCActionType(requirement) {
+  const value =
+    complianceKey([
+      requirement.statement,
+      requirement.action
+    ].join(' '));
+
+  if (
+    /\bverify|verification\b/.test(value)
+  ) {
+    return 'Verify';
+  }
+
+  if (
+    /\bwitness|observe\b/.test(value)
+  ) {
+    return 'Witness';
+  }
+
+  if (
+    /\binspect|inspection\b/.test(value)
+  ) {
+    return 'Inspect';
+  }
+
+  if (
+    /\breview\b/.test(value)
+  ) {
+    return 'Review';
+  }
+
+  if (
+    /\baccept|acceptance\b/.test(value)
+  ) {
+    return 'Accept';
+  }
+
+  if (
+    /\bapprove|approval\b/.test(value)
+  ) {
+    return 'Approve';
+  }
+
+  if (
+    /\bdocument|record|report\b/.test(value)
+  ) {
+    return 'Document';
+  }
+
+  if (
+    /\bcoordinate|meeting\b/.test(value)
+  ) {
+    return 'Coordinate';
+  }
+
+  return 'Monitor';
+}
+
+export function buildOwnerQCMatrix(
+  hits,
+  evidenceSections = hits,
+  options = {}
+) {
+  const requirementResult =
+    extractRequirements(hits);
+
+  const evidenceResult =
+    detectMissingEvidence(
+      hits,
+      evidenceSections,
+      options
+    );
+
+  const assessmentById = new Map(
+    evidenceResult.assessments.map(
+      assessment => [
+        assessment.requirementId,
+        assessment
+      ]
+    )
+  );
+
+  const requirements =
+    requirementResult.requirements.filter(
+      ownerQCRelevant
+    );
+
+  const rows =
+    requirements.map(
+      requirement => {
+        const assessment =
+          assessmentById.get(
+            requirement.id
+          );
+
+        return {
+          requirementId:
+            requirement.id,
+
+          ownerQCAction:
+            ownerQCActionType(
+              requirement
+            ),
+
+          requirement:
+            requirement.statement,
+
+          responsibleParty:
+            requirement.responsibleParty ||
+            requirement.subject ||
+            'Owner QC',
+
+          phase:
+            inferRequirementPhase(
+              requirement
+            ),
+
+          expectedEvidence:
+            inferEvidenceType(
+              requirement
+            ),
+
+          deliverables:
+            requirement.deliverables,
+
+          timing:
+            requirement.timing,
+
+          references:
+            requirement.references,
+
+          status:
+            complianceStatusFromAssessment(
+              requirement,
+              assessment
+            ),
+
+          risk:
+            complianceRiskLevel(
+              requirement,
+              assessment
+            ),
+
+          sourceNumber:
+            requirement.sourceNumber,
+
+          documentName:
+            requirement.documentName,
+
+          heading:
+            requirement.heading,
+
+          location:
+            requirement.location
+        };
+      }
+    );
+
+  return {
+    rows,
+
+    workflow:
+      complianceUnique(
+        rows.map(
+          row =>
+            row.ownerQCAction
+        )
+      ),
+
+    summary: {
+      total:
+        rows.length,
+
+      supported:
+        rows.filter(
+          row =>
+            row.status === 'supported' ||
+            row.status === 'controlled'
+        ).length,
+
+      missingEvidence:
+        rows.filter(
+          row =>
+            row.status === 'missing-evidence' ||
+            row.status === 'review-required'
+        ).length,
+
+      highRisk:
+        rows.filter(
+          row =>
+            row.risk === 'high'
+        ).length,
+
+      byAction:
+        rows.reduce(
+          (summary, row) => {
+            summary[row.ownerQCAction] =
+              (
+                summary[
+                  row.ownerQCAction
+                ] ||
+                0
+              ) + 1;
+
+            return summary;
+          },
+          {}
+        )
+    }
+  };
+}
+
+function graphAddNode(
+  nodeMap,
+  node
+) {
+  if (
+    !node ||
+    !node.id
+  ) {
+    return;
+  }
+
+  if (!nodeMap.has(node.id)) {
+    nodeMap.set(
+      node.id,
+      node
+    );
+  }
+}
+
+function graphAddEdge(
+  edgeMap,
+  edge
+) {
+  if (
+    !edge ||
+    !edge.from ||
+    !edge.to
+  ) {
+    return;
+  }
+
+  const id =
+    edge.id ||
+    `${edge.from}->${edge.to}:${edge.type || 'related'}`;
+
+  if (!edgeMap.has(id)) {
+    edgeMap.set(id, {
+      ...edge,
+      id
+    });
+  }
+}
+
+function phaseNodeId(phase) {
+  return `PHASE-${complianceKey(phase)
+    .replace(/\s+/g, '-')}`;
+}
+
+function categoryNodeId(category) {
+  return `CATEGORY-${complianceKey(category)
+    .replace(/\s+/g, '-')}`;
+}
+
+export function buildKnowledgeGraph(
+  hits,
+  evidenceSections = hits,
+  options = {}
+) {
+  const requirementGraph =
+    buildRequirementGraph(hits);
+
+  const crossReferenceGraph =
+    extractCrossReferenceGraph(hits);
+
+  const complianceMatrix =
+    buildComplianceMatrix(
+      hits,
+      evidenceSections,
+      options
+    );
+
+  const nodes = new Map();
+  const edges = new Map();
+
+  for (const node of requirementGraph.nodes) {
+    graphAddNode(nodes, node);
+  }
+
+  for (const edge of requirementGraph.edges) {
+    graphAddEdge(edges, edge);
+  }
+
+  for (const node of crossReferenceGraph.nodes) {
+    graphAddNode(nodes, node);
+  }
+
+  for (const edge of crossReferenceGraph.edges) {
+    graphAddEdge(edges, edge);
+  }
+
+  for (const row of complianceMatrix.rows) {
+    const phaseId =
+      phaseNodeId(row.phase);
+
+    graphAddNode(nodes, {
+      id:
+        phaseId,
+
+      type:
+        'phase',
+
+      label:
+        row.phase
+    });
+
+    graphAddEdge(edges, {
+      from:
+        phaseId,
+
+      to:
+        row.id,
+
+      type:
+        'contains-requirement'
+    });
+
+    const categoryId =
+      categoryNodeId(
+        row.category
+      );
+
+    graphAddNode(nodes, {
+      id:
+        categoryId,
+
+      type:
+        'category',
+
+      label:
+        row.category
+    });
+
+    graphAddEdge(edges, {
+      from:
+        categoryId,
+
+      to:
+        row.id,
+
+      type:
+        'classifies'
+    });
+
+    for (
+      const evidenceMatch of
+      row.evidenceMatches || []
+    ) {
+      const evidenceId =
+        `EVIDENCE-${complianceKey([
+          evidenceMatch.documentId,
+          evidenceMatch.documentName,
+          evidenceMatch.heading,
+          evidenceMatch.location
+        ].join(' '))
+          .replace(/\s+/g, '-')
+          .slice(0, 100)}`;
+
+      graphAddNode(nodes, {
+        id:
+          evidenceId,
+
+        type:
+          'evidence',
+
+        label:
+          evidenceMatch.heading ||
+          evidenceMatch.documentName ||
+          'Evidence',
+
+        score:
+          evidenceMatch.score,
+
+        documentName:
+          evidenceMatch.documentName,
+
+        heading:
+          evidenceMatch.heading,
+
+        location:
+          evidenceMatch.location
+      });
+
+      graphAddEdge(edges, {
+        from:
+          evidenceId,
+
+        to:
+          row.id,
+
+        type:
+          'supports'
+      });
+    }
+  }
+
+  return {
+    nodes:
+      [...nodes.values()],
+
+    edges:
+      [...edges.values()],
+
+    compliance:
+      complianceMatrix.summary,
+
+    summary: {
+      totalNodes:
+        nodes.size,
+
+      totalEdges:
+        edges.size,
+
+      requirements:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'requirement'
+        ).length,
+
+      parties:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'party'
+        ).length,
+
+      deliverables:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'deliverable'
+        ).length,
+
+      references:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'reference'
+        ).length,
+
+      evidence:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'evidence'
+        ).length,
+
+      phases:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'phase'
+        ).length,
+
+      categories:
+        [...nodes.values()].filter(
+          node =>
+            node.type === 'category'
+        ).length
+    }
+  };
+}
+
+export function summarizeRequirements(
+  hits,
+  evidenceSections = hits,
+  options = {}
+) {
+  const requirements =
+    extractRequirements(hits);
+
+  const responsibilities =
+    extractResponsibilities(hits);
+
+  const deliverables =
+    extractDeliverables(hits);
+
+  const acceptance =
+    extractAcceptanceCriteria(hits);
+
+  const exceptions =
+    extractExceptions(hits);
+
+  const crossReferences =
+    extractCrossReferenceGraph(hits);
+
+  const compliance =
+    buildComplianceMatrix(
+      hits,
+      evidenceSections,
+      options
+    );
+
+  const ownerQC =
+    buildOwnerQCMatrix(
+      hits,
+      evidenceSections,
+      options
+    );
+
+  const mandatory =
+    requirements.requirements.filter(
+      requirement =>
+        requirement.type === 'mandatory'
+    );
+
+  const prohibited =
+    requirements.requirements.filter(
+      requirement =>
+        requirement.type === 'prohibited'
+    );
+
+  const highRisk =
+    compliance.rows.filter(
+      row =>
+        row.risk === 'high'
+    );
+
+  const missingEvidence =
+    compliance.rows.filter(
+      row =>
+        row.status === 'missing-evidence' ||
+        row.status === 'review-required'
+    );
+
+  return {
+    overview: {
+      totalRequirements:
+        requirements.summary.total,
+
+      mandatory:
+        requirements.summary.mandatory,
+
+      prohibited:
+        requirements.summary.prohibited,
+
+      permitted:
+        requirements.summary.permitted,
+
+      advisory:
+        requirements.summary.advisory,
+
+      responsibleParties:
+        responsibilities.summary.parties,
+
+      deliverables:
+        deliverables.summary.uniqueDeliverables,
+
+      acceptanceCriteria:
+        acceptance.summary.total,
+
+      exceptions:
+        exceptions.summary.total,
+
+      crossReferences:
+        crossReferences.summary.referenceNodes,
+
+      compliancePercent:
+        compliance.summary.compliancePercent,
+
+      missingEvidence:
+        compliance.summary.missingEvidence,
+
+      highRisk:
+        compliance.summary.highRisk,
+
+      ownerQCRequirements:
+        ownerQC.summary.total
+    },
+
+    keyMandatoryRequirements:
+      mandatory
+        .sort(
+          (first, second) =>
+            second.confidence -
+            first.confidence
+        )
+        .slice(0, 20),
+
+    keyProhibitions:
+      prohibited
+        .sort(
+          (first, second) =>
+            second.confidence -
+            first.confidence
+        )
+        .slice(0, 20),
+
+    highRiskRequirements:
+      highRisk.slice(0, 20),
+
+    evidenceGaps:
+      missingEvidence.slice(0, 20),
+
+    primaryResponsibilities:
+      responsibilities.responsibilities.slice(
+        0,
+        15
+      ),
+
+    requiredDeliverables:
+      deliverables.deliverables.slice(
+        0,
+        20
+      ),
+
+    ownerQC:
+      ownerQC,
+
+    compliance:
+      compliance
+  };
+}
 function normalizeKnowledgeValue(value) {
   return String(value || '')
     .replace(/\s+/g, ' ')
