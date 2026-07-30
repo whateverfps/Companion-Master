@@ -1,9 +1,6 @@
 import {
   retrieve,
-  buildContext
-} from "./retrieval.js";
-
-import {
+  buildContext,
   extractRequirements,
   extractResponsibilities,
   extractDeliverables,
@@ -13,7 +10,7 @@ import {
   buildKnowledgeGraph,
   detectMissingEvidence,
   summarizeRequirements
-} from "./retrieval.js";
+} from "../retrieval.js";
 
 /* ===========================================================
    Reasoning Session
