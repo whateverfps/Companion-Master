@@ -1,6 +1,6 @@
 import {
   extractRequirements
-} from "./retrieval.js";
+} from "../retrieval.js";
 
 import {
   buildDependencyGraph,
