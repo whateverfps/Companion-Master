@@ -9,6 +9,7 @@ import {
   logger,
   moduleStatus
 } from './diagnostics.js';
+import { analyzeCorpus } from './core/reasoning.js';
 
 const STATE_KEY = 'mc-master-state-v2';
 const DOC_DB = 'mc-master-documents-v2';
@@ -808,13 +809,37 @@ export const engine = {
 
     const hits = await this.search(cleanedPrompt);
 
-    const answer = mode === 'offline'
-      ? callOffline(cleanedPrompt, hits)
-      : await callAI(
-          cleanedPrompt,
-          buildContext(hits),
-          mode
-        );
+    let answer;
+
+    if (mode === 'offline') {
+      answer = callOffline(cleanedPrompt, hits);
+    } else {
+      let structuredAnalysis = '';
+
+      try {
+        const analysis = analyzeCorpus(cleanedPrompt, hits, {
+          preset: 'answer',
+          includeContext: false
+        });
+
+        structuredAnalysis = buildStructuredAnalysisBlock(analysis, hits);
+      } catch (error) {
+        logger.warning('Structured analysis unavailable', {
+          message: error?.message || String(error)
+        });
+      }
+
+      const evidenceContext = buildContext(hits);
+      const context = structuredAnalysis
+        ? `${evidenceContext}\n\n${structuredAnalysis}`
+        : evidenceContext;
+
+      answer = await callAI(
+        cleanedPrompt,
+        context,
+        mode
+      );
+    }
 
     const citationVerification = verifyCitations(
       answer.content,
@@ -1048,6 +1073,129 @@ export const engine = {
     return structuredClone(importedProject);
   }
 };
+
+function compactText(value, maximumLength) {
+  return truncateText(
+    String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim(),
+    maximumLength
+  );
+}
+
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function compactStringList(values) {
+  return safeArray(values)
+    .filter(value => value !== null && value !== undefined)
+    .slice(0, 5)
+    .map(value => compactText(value, 160))
+    .filter(Boolean);
+}
+
+function buildStructuredAnalysisBlock(analysis, hits) {
+  const records = value => safeArray(value)
+    .filter(record => record && typeof record === 'object' && !Array.isArray(record));
+
+  const validSources = new Set(
+    safeArray(hits)
+      .map(hit => Number(hit?.sourceNumber))
+      .filter(sourceNumber => Number.isInteger(sourceNumber) && sourceNumber > 0)
+  );
+
+  const sourceNumber = record => {
+    const value = Number(record?.sourceNumber);
+    return Number.isInteger(value) && value > 0 && validSources.has(value)
+      ? value
+      : null;
+  };
+
+  const sourceBacked = (value, limit, project) => records(value)
+    .filter(record => sourceNumber(record) !== null)
+    .slice(0, limit)
+    .map(record => project(record, sourceNumber(record)));
+
+  const payload = {
+    sourceBacked: {
+      requirements: sourceBacked(
+        analysis?.requirements?.requirements,
+        12,
+        (record, source) => ({
+          statement: compactText(record.statement, 300),
+          type: compactText(record.type, 60),
+          responsibleParty: compactText(record.responsibleParty, 160),
+          timing: compactText(record.timing, 200),
+          deliverables: compactStringList(record.deliverables),
+          exceptions: compactStringList(record.exceptions),
+          sourceNumber: source
+        })
+      ),
+      acceptance: sourceBacked(
+        analysis?.acceptance?.criteria,
+        8,
+        (record, source) => ({
+          statement: compactText(record.statement, 300),
+          sourceNumber: source
+        })
+      ),
+      exceptions: sourceBacked(
+        analysis?.exceptions?.exceptions,
+        8,
+        (record, source) => ({
+          statement: compactText(record.statement, 300),
+          sourceNumber: source
+        })
+      )
+    },
+    aggregates: {
+      responsibilities: records(analysis?.responsibilities?.responsibilities)
+        .slice(0, 8)
+        .map(record => ({
+          party: compactText(record.party, 160),
+          requirementCount: Number.isFinite(Number(record.requirementCount))
+            ? Number(record.requirementCount)
+            : null
+        })),
+      deliverables: records(analysis?.deliverables?.deliverables)
+        .slice(0, 8)
+        .map(record => ({
+          name: compactText(record.name, 200),
+          type: compactText(record.type, 60),
+          responsibleParties: compactStringList(record.responsibleParties)
+        }))
+    }
+  };
+
+  const header = [
+    'STRUCTURED ANALYSIS',
+    'This block is derived from the retrieved evidence.',
+    'It is supplemental and is not an independent source.',
+    'Any source-backed claim must cite the corresponding original [S#] source.',
+    'Aggregate analysis summarizes the source-backed records and must not be treated as direct evidence.',
+    'The evidence context remains authoritative.'
+  ].join('\n');
+
+  const removalOrder = [
+    payload.aggregates.deliverables,
+    payload.aggregates.responsibilities,
+    payload.sourceBacked.exceptions,
+    payload.sourceBacked.acceptance,
+    payload.sourceBacked.requirements
+  ];
+
+  let block = `${header}\n${JSON.stringify(payload)}`;
+
+  for (const category of removalOrder) {
+    while (block.length > 16000 && category.length) {
+      category.pop();
+      block = `${header}\nSTRUCTURED ANALYSIS TRUNCATED\n${JSON.stringify(payload)}`;
+    }
+  }
+
+  return block;
+}
 
 function callOffline(prompt, hits) {
   if (!hits.length) {
