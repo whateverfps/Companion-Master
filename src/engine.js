@@ -1,4 +1,5 @@
 import { parseFiles } from './parsers.js';
+import { arrayValue } from './data-model.js';
 import {
   retrieve,
   buildContext,
@@ -13,7 +14,7 @@ import { analyzeCorpus } from './core/reasoning.js';
 
 const STATE_KEY = 'mc-master-state-v2';
 const DOC_DB = 'mc-master-documents-v2';
-const DOC_DB_VERSION = 2;
+const DOC_DB_VERSION = 3;
 const APP_VERSION = '2.8.1';
 
 const defaults = {
@@ -49,6 +50,12 @@ const defaults = {
 
 let state = loadState();
 let sectionCache = null;
+let documentCache = null;
+
+function invalidateKnowledgeCache() {
+  sectionCache = null;
+  documentCache = null;
+}
 
 moduleStatus('State Manager', 'ready', {
   summary: 'State loaded'
@@ -191,9 +198,15 @@ function openDB() {
       const db = request.result;
 
       if (!db.objectStoreNames.contains('documents')) {
-        db.createObjectStore('documents', {
+        const documents = db.createObjectStore('documents', {
           keyPath: 'id'
         });
+        documents.createIndex('projectId', 'projectId');
+        documents.createIndex('libraryId', 'libraryId');
+      } else {
+        const documents = request.transaction.objectStore('documents');
+        if (!documents.indexNames.contains('projectId')) documents.createIndex('projectId', 'projectId');
+        if (!documents.indexNames.contains('libraryId')) documents.createIndex('libraryId', 'libraryId');
       }
 
       let sections;
@@ -423,7 +436,7 @@ export const engine = {
     }
 
     state.activeProject = id;
-    sectionCache = null;
+    invalidateKnowledgeCache();
 
     state.activeLibrary =
       state.libraries.find(
@@ -486,7 +499,7 @@ export const engine = {
 
     await delByIndex('sections', 'projectId', id);
 
-    const documents = await all('documents');
+    const documents = await all('documents', 'projectId', id);
 
     for (const document of documents.filter(
       item => item.projectId === id
@@ -606,9 +619,7 @@ export const engine = {
       throw new Error('Each project must keep at least one library.');
     }
 
-    const documents = (await all('documents')).filter(
-      document => document.libraryId === id
-    );
+    const documents = await all('documents', 'libraryId', id);
 
     for (const document of documents) {
       await this.removeDocument(document.id);
@@ -629,11 +640,15 @@ export const engine = {
   },
 
   async documents(libraryId = null) {
-    return (await all('documents')).filter(
-      document =>
-        document.projectId === state.activeProject &&
-        (!libraryId || document.libraryId === libraryId)
-    );
+    if (documentCache?.projectId !== state.activeProject) {
+      documentCache = {
+        projectId: state.activeProject,
+        documents: await all('documents', 'projectId', state.activeProject)
+      };
+    }
+    return libraryId
+      ? documentCache.documents.filter(document => document.libraryId === libraryId)
+      : documentCache.documents;
   },
 
   async sections() {
@@ -772,7 +787,7 @@ export const engine = {
 
       await putMany('documents', parsed.documents);
       await putMany('sections', parsed.sections);
-      sectionCache = null;
+      invalidateKnowledgeCache();
 
       if (action === 'replace') {
         for (let index = 0; index < parsed.documents.length; index += 1) {
@@ -822,7 +837,7 @@ export const engine = {
       'documentId',
       id
     );
-    sectionCache = null;
+    invalidateKnowledgeCache();
 
     await tx(
       'documents',
@@ -1278,7 +1293,7 @@ export const engine = {
       'sections',
       importedSections
     );
-    sectionCache = null;
+    invalidateKnowledgeCache();
 
     state.evaluations.push(
       ...(Array.isArray(data.evaluations)
@@ -1310,9 +1325,7 @@ function compactText(value, maximumLength) {
   );
 }
 
-function safeArray(value) {
-  return Array.isArray(value) ? value : [];
-}
+const safeArray = arrayValue;
 
 function compactStringList(values) {
   return safeArray(values)

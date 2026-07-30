@@ -11,18 +11,10 @@ import {
   detectMissingEvidence,
   summarizeRequirements
 } from "../retrieval.js";
+import { normalizedKey as normalizeKey } from "../data-model.js";
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
-}
-
-function normalizeKey(value) {
-  return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
 }
 
 function inferDeliverableType(deliverable) {

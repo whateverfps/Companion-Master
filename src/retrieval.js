@@ -1,3 +1,10 @@
+import {
+  arrayValue,
+  normalizedKey,
+  normalizedText,
+  sectionNumberKey
+} from './data-model.js';
+
 const STOP = new Set(
   [
     'the', 'a', 'an', 'and', 'or', 'but', 'to', 'of', 'in', 'on', 'for',
@@ -197,13 +204,49 @@ function countOccurrences(text, term) {
   return [...String(text).matchAll(pattern)].length;
 }
 
-function sectionText(section) {
-  return [
-    section.heading || '',
-    ...(section.path || []),
-    section.location || '',
-    section.text || ''
-  ].join(' ');
+const sectionAnalysisCache = new WeakMap();
+const corpusStatsCache = new WeakMap();
+
+function analyzeSection(section) {
+  const cached = sectionAnalysisCache.get(section);
+  if (cached) return cached;
+
+  const heading = String(section.heading || '').toLowerCase();
+  const path = (Array.isArray(section.path) ? section.path : []).join(' ').toLowerCase();
+  const location = String(section.location || '').toLowerCase();
+  const text = String(section.text || '').toLowerCase();
+  const headingTerms = tokens(heading).map(stem);
+  const pathTerms = tokens(path).map(stem);
+  const textWords = tokens(text);
+  const textTerms = textWords.map(stem);
+  const bm25Terms = [
+    ...headingTerms,
+    ...headingTerms,
+    ...pathTerms,
+    ...textTerms
+  ];
+  const bm25Frequency = new Map();
+  for (const term of bm25Terms) {
+    bm25Frequency.set(term, (bm25Frequency.get(term) || 0) + 1);
+  }
+
+  const analysis = {
+    heading,
+    path,
+    location,
+    text,
+    combined: `${heading} ${path} ${text}`,
+    headingTokens: new Set(headingTerms),
+    pathTokens: new Set(pathTerms),
+    textTokens: new Set(textTerms),
+    textLength: textWords.length,
+    corpusTerms: new Set([...headingTerms, ...pathTerms, ...tokens(location).map(stem), ...textTerms]),
+    bm25Frequency,
+    bm25Length: Math.max(1, bm25Terms.length),
+    crossReferences: extractReferences(`${heading} ${text}`)
+  };
+  sectionAnalysisCache.set(section, analysis);
+  return analysis;
 }
 
 function classifyQueryIntent(rawQuery) {
@@ -377,18 +420,17 @@ export function expandQuery(query) {
 }
 
 function buildCorpusStats(sections) {
+  const cached = corpusStatsCache.get(sections);
+  if (cached) return cached;
+
   const documentFrequency = new Map();
   let totalLength = 0;
 
   for (const section of sections) {
-    const terms = uniq(
-      tokens(sectionText(section))
-        .map(stem)
-    );
+    const analysis = analyzeSection(section);
+    totalLength += analysis.textLength;
 
-    totalLength += tokens(section.text || '').length;
-
-    for (const term of terms) {
+    for (const term of analysis.corpusTerms) {
       documentFrequency.set(
         term,
         (documentFrequency.get(term) || 0) + 1
@@ -396,7 +438,7 @@ function buildCorpusStats(sections) {
     }
   }
 
-  return {
+  const stats = {
     sectionCount: Math.max(1, sections.length),
     averageLength:
       sections.length
@@ -404,6 +446,8 @@ function buildCorpusStats(sections) {
         : 1,
     documentFrequency
   };
+  corpusStatsCache.set(sections, stats);
+  return stats;
 }
 
 function inverseDocumentFrequency(term, corpus) {
@@ -425,19 +469,9 @@ function inverseDocumentFrequency(term, corpus) {
   );
 }
 
-function bm25Score(text, queryTerms, corpus) {
-  const words = tokens(text);
-  const normalizedWords = words.map(stem);
-  const frequency = new Map();
-
-  for (const word of normalizedWords) {
-    frequency.set(
-      word,
-      (frequency.get(word) || 0) + 1
-    );
-  }
-
-  const sectionLength = Math.max(1, words.length);
+function bm25Score(analysis, queryTerms, corpus) {
+  const frequency = analysis.bm25Frequency;
+  const sectionLength = analysis.bm25Length;
   const k1 = 1.35;
   const b = 0.72;
 
@@ -593,22 +627,8 @@ function intentScore(combinedText, query) {
 }
 
 function scoreSection(section, query, corpus) {
-  const heading = String(section.heading || '').toLowerCase();
-  const path = (section.path || []).join(' ').toLowerCase();
-  const location = String(section.location || '').toLowerCase();
-  const text = String(section.text || '').toLowerCase();
-
-  const headingTokens = new Set(
-    tokens(heading).map(stem)
-  );
-
-  const pathTokens = new Set(
-    tokens(path).map(stem)
-  );
-
-  const textTokens = new Set(
-    tokens(text).map(stem)
-  );
+  const analysis = analyzeSection(section);
+  const { heading, path, location, text, headingTokens, pathTokens, textTokens } = analysis;
 
   let lexical = 0;
   let headingScore = 0;
@@ -731,7 +751,7 @@ function scoreSection(section, query, corpus) {
     matchedTerms
   );
 
-  const combined = `${heading} ${path} ${text}`;
+  const combined = analysis.combined;
 
   const intent = intentScore(
     combined,
@@ -739,7 +759,7 @@ function scoreSection(section, query, corpus) {
   );
 
   const bm25 = bm25Score(
-    `${heading} ${heading} ${path} ${text}`,
+    analysis,
     [
       ...query.base,
       ...query.expanded
@@ -747,9 +767,7 @@ function scoreSection(section, query, corpus) {
     corpus
   );
 
-  const crossReferences = extractReferences(
-    `${heading} ${text}`
-  );
+  const crossReferences = analysis.crossReferences;
 
   const hierarchyBonus =
     section.level === 1
@@ -2890,18 +2908,8 @@ export function summarizeRequirements(
       compliance
   };
 }
-function normalizeKnowledgeValue(value) {
-  return String(value || '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function normalizeKnowledgeKey(value) {
-  return normalizeKnowledgeValue(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .trim();
-}
+const normalizeKnowledgeValue = normalizedText;
+const normalizeKnowledgeKey = normalizedKey;
 
 function requirementType(sentence) {
   const value = String(sentence || '');
@@ -4505,7 +4513,7 @@ export function detectConflicts(hits) {
 
 function buildHierarchyNeighbors(
   selectedHits,
-  allSections
+  hierarchyIndex
 ) {
   const selectedIds = new Set(
     selectedHits.map(hit => hit.id)
@@ -4514,18 +4522,9 @@ function buildHierarchyNeighbors(
   const neighbors = [];
 
   for (const hit of selectedHits) {
-    const sameDocument = allSections
-      .filter(section =>
-        section.documentId === hit.documentId
-      )
-      .sort((a, b) =>
-        a.order - b.order
-      );
+    const sameDocument = hierarchyIndex.byDocument.get(hit.documentId) || [];
 
-    const index = sameDocument.findIndex(
-      section =>
-        section.id === hit.id
-    );
+    const index = hierarchyIndex.documentPosition.get(hit.id) ?? -1;
 
     if (index === -1) {
       continue;
@@ -4590,14 +4589,18 @@ function hierarchySearchIndex(sections) {
   const byId = new Map();
   const children = new Map();
   const bySectionNumber = new Map();
+  const byDocument = new Map();
+  const documentPosition = new Map();
 
   for (const section of sections) {
     byId.set(section.id, section);
+    if (!byDocument.has(section.documentId)) byDocument.set(section.documentId, []);
+    byDocument.get(section.documentId).push(section);
     if (section.parentId) {
       if (!children.has(section.parentId)) children.set(section.parentId, []);
       children.get(section.parentId).push(section);
     }
-    const number = String(section.sectionNumber || section.metadata?.sectionNumber || '').replace(/\D/g, '');
+    const number = sectionNumberKey(section.sectionNumber || section.metadata?.sectionNumber);
     if (number) bySectionNumber.set(number, section);
     const hierarchyText = [
       section.heading,
@@ -4616,7 +4619,12 @@ function hierarchySearchIndex(sections) {
     }
   }
 
-  const index = { byTerm, byId, children, bySectionNumber };
+  for (const documentSections of byDocument.values()) {
+    documentSections.sort((first, second) => first.order - second.order);
+    documentSections.forEach((section, index) => documentPosition.set(section.id, index));
+  }
+
+  const index = { byTerm, byId, children, bySectionNumber, byDocument, documentPosition };
   hierarchyIndexCache.set(sections, index);
   return index;
 }
@@ -4663,9 +4671,9 @@ function hierarchyCandidates(query, sections, limit) {
       queue.push(...(index.children.get(child.id) || []));
     }
     for (const sibling of index.children.get(seed.parentId) || []) add(sibling);
-    for (const referenceId of seed.crossReferenceIds || []) add(index.byId.get(referenceId));
-    for (const reference of seed.crossReferences || []) {
-      add(index.bySectionNumber.get(String(reference).replace(/\D/g, '')));
+    for (const referenceId of arrayValue(seed.crossReferenceIds)) add(index.byId.get(referenceId));
+    for (const reference of arrayValue(seed.crossReferences)) {
+      add(index.bySectionNumber.get(sectionNumberKey(reference)));
     }
   }
   return [...selected.values()];
@@ -4735,7 +4743,7 @@ export function retrieve(
   const hierarchyNeighbors =
     buildHierarchyNeighbors(
       ranked,
-      safeSections
+      hierarchySearchIndex(safeSections)
     );
 
   const finalized = ranked.map(

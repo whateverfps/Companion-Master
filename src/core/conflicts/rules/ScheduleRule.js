@@ -17,6 +17,7 @@
  */
 
 import { ReasoningRule } from "../ConflictReasoner.js";
+import { normalizedText as normalize } from "../../../data-model.js";
 
 export const ScheduleConflictType = Object.freeze({
     DATE_CONTRADICTION: "date_contradiction",
@@ -94,12 +95,6 @@ const MILESTONE_PATTERNS = [
     /\bcommissioning\s+complete\b/i,
     /\bowner\s+acceptance\b/i
 ];
-
-function normalize(value) {
-    return String(value ?? "")
-        .replace(/\s+/g, " ")
-        .trim();
-}
 
 function lower(value) {
     return normalize(value).toLowerCase();

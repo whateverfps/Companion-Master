@@ -26,6 +26,7 @@
  *       - OrphanRequirementRule
  * ============================================================================
  */
+import { normalizedText as normalizeText } from "../../data-model.js";
 
 const DEFAULT_SEVERITY_ORDER = Object.freeze({
     critical: 5,
@@ -35,10 +36,6 @@ const DEFAULT_SEVERITY_ORDER = Object.freeze({
     info: 1,
     unknown: 0
 });
-
-function normalizeText(value) {
-    return String(value ?? "").replace(/\s+/g, " ").trim();
-}
 
 function normalizeKey(value) {
     return normalizeText(value).toLowerCase();

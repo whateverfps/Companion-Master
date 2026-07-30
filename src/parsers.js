@@ -1,4 +1,26 @@
+import { normalizeSectionNumber } from './data-model.js';
+
 const HIERARCHY_VERSION = 1;
+const TRADE_RULES = [
+  ['electrical', /\belectri|\bpower|\blighting|\b26\s/],
+  ['communications', /\btelecom|\bdata cabl|\bcommunications|\b27\s/],
+  ['mechanical', /\bhvac|\bmechanical|\bduct|\b23\s/],
+  ['plumbing', /\bplumb|\bpiping|\b22\s/],
+  ['fire protection', /\bfire suppress|\bsprinkler|\b21\s/],
+  ['concrete', /\bconcrete|\b03\s/],
+  ['masonry', /\bmasonry|\b04\s/],
+  ['metals', /\bstructural steel|\bmetal|\b05\s/],
+  ['finishes', /\bfinish|\bpaint|\bflooring|\b09\s/],
+  ['general requirements', /\bquality control|\bsubmittal|\b01\s/]
+];
+const BUILDING_SYSTEM_RULES = [
+  ['quality control', /quality control|\bqc\b|testing|deficien/],
+  ['commissioning', /commission/],
+  ['life safety', /life safety|fire alarm|egress/],
+  ['building envelope', /envelope|roof|waterproof|air barrier/],
+  ['controls', /control system|automation|\bbas\b/]
+];
+const KEYWORD_STOP = /^(that|this|with|from|shall|will|section|page|have|into|their)$/;
 
 function uid() {
   return crypto.randomUUID();
@@ -10,13 +32,6 @@ function clean(value) {
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{4,}/g, '\n\n\n')
     .trim();
-}
-
-function normalizeSectionNumber(value) {
-  const digits = String(value ?? '').replace(/\D/g, '');
-  return digits.length === 6
-    ? `${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4)}`
-    : '';
 }
 
 function csiHeading(raw) {
@@ -91,29 +106,10 @@ function isHeading(line) {
 
 function semanticMetadata(node, documentName, pageStart, pageEnd) {
   const source = `${node.title} ${node.text}`.toLowerCase();
-  const tradeRules = [
-    ['electrical', /\belectri|\bpower|\blighting|\b26\s/],
-    ['communications', /\btelecom|\bdata cabl|\bcommunications|\b27\s/],
-    ['mechanical', /\bhvac|\bmechanical|\bduct|\b23\s/],
-    ['plumbing', /\bplumb|\bpiping|\b22\s/],
-    ['fire protection', /\bfire suppress|\bsprinkler|\b21\s/],
-    ['concrete', /\bconcrete|\b03\s/],
-    ['masonry', /\bmasonry|\b04\s/],
-    ['metals', /\bstructural steel|\bmetal|\b05\s/],
-    ['finishes', /\bfinish|\bpaint|\bflooring|\b09\s/],
-    ['general requirements', /\bquality control|\bsubmittal|\b01\s/]
-  ];
-  const systemRules = [
-    ['quality control', /quality control|\bqc\b|testing|deficien/],
-    ['commissioning', /commission/],
-    ['life safety', /life safety|fire alarm|egress/],
-    ['building envelope', /envelope|roof|waterproof|air barrier/],
-    ['controls', /control system|automation|\bbas\b/]
-  ];
-  const trades = tradeRules.filter(([, rule]) => rule.test(source)).map(([name]) => name);
-  const buildingSystems = systemRules.filter(([, rule]) => rule.test(source)).map(([name]) => name);
+  const trades = TRADE_RULES.filter(([, rule]) => rule.test(source)).map(([name]) => name);
+  const buildingSystems = BUILDING_SYSTEM_RULES.filter(([, rule]) => rule.test(source)).map(([name]) => name);
   const keywords = [...new Set(source.match(/[a-z][a-z-]{3,}/g) || [])]
-    .filter(word => !/^(that|this|with|from|shall|will|section|page|have|into|their)$/.test(word))
+    .filter(word => !KEYWORD_STOP.test(word))
     .slice(0, 24);
 
   return {

@@ -1,16 +1,21 @@
 import { engine } from './engine.js';
 import { logger, setLifecycle, registerModule, captureError, verifyButtons, runHealthChecks, diagnosticSnapshot, installGlobalHandlers } from './diagnostics.js';
+import {
+  firstText,
+  sectionHeadingValue,
+  sectionLocationValue,
+  sectionNumberKey,
+  sectionSourceLabelValue,
+  sectionTextValue,
+  textValue
+} from './data-model.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
 
 const app = document.querySelector('#app');
-const safeText = value => value == null ? '' : String(value);
-const preferredText = (...values) => safeText(
-  values.find(value =>
-    value != null && safeText(value).trim() !== ''
-  )
-);
+const safeText = textValue;
+const preferredText = firstText;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
   '&': '&amp;',
   '<': '&lt;',
@@ -1516,39 +1521,10 @@ async function renderSources() {
       a.order - b.order
     );
 
-  const sectionText = section => preferredText(
-    section?.text,
-    section?.content,
-    section?.metadata?.text,
-    section?.metadata?.content
-  );
-
-  const sectionHeading = (section, index) => preferredText(
-    section?.heading,
-    section?.label,
-    section?.title,
-    section?.metadata?.heading,
-    section?.metadata?.title,
-    `Section ${Math.max(0, index) + 1}`
-  );
-
-  const sectionLocation = section => preferredText(
-    section?.location,
-    section?.sectionLabel,
-    section?.metadata?.location,
-    section?.metadata?.sectionLabel
-  );
-
-  const sectionSourceLabel = (section, index) => preferredText(
-    section?.sourceLabel,
-    section?.source,
-    section?.metadata?.sourceLabel,
-    section?.metadata?.source,
-    section?.heading,
-    section?.label,
-    section?.title,
-    `Section ${Math.max(0, index) + 1}`
-  );
+  const sectionText = sectionTextValue;
+  const sectionHeading = sectionHeadingValue;
+  const sectionLocation = sectionLocationValue;
+  const sectionSourceLabel = sectionSourceLabelValue;
 
   const totalWords = selectedSections.reduce(
     (total, section) =>
@@ -1673,11 +1649,12 @@ async function renderSources() {
   `;
 
   let activeSectionId = null;
+  let treeToggleHandler = null;
   const sectionsById = new Map(selectedSections.map(section => [section.id, section]));
   const sectionIndexById = new Map(selectedSections.map((section, index) => [section.id, index]));
   const sectionsByNumber = new Map(selectedSections
     .filter(section => section.sectionNumber)
-    .map(section => [safeText(section.sectionNumber).replace(/\D/g, ''), section]));
+    .map(section => [sectionNumberKey(section.sectionNumber), section]));
   const sectionSearchText = new Map(selectedSections.map((section, index) => [
     section.id,
     `${sectionHeading(section, index)} ${sectionText(section)} ${Array.isArray(section.metadata?.keywords) ? section.metadata.keywords.join(' ') : safeText(section.metadata?.keywords)}`.toLowerCase()
@@ -1746,7 +1723,7 @@ async function renderSources() {
             (!query && !level) || visibleIds.has(child.id)
           );
           const references = (section.crossReferences || []).map(reference => {
-            const target = sectionsByNumber.get(safeText(reference).replace(/\D/g, ''));
+            const target = sectionsByNumber.get(sectionNumberKey(reference));
             return target
               ? `<button class="cross-reference" data-jump-section="${esc(target.id)}">${esc(reference)}</button>`
               : `<span>${esc(reference)}</span>`;
@@ -1826,7 +1803,9 @@ async function renderSources() {
       const shownChildren = children.filter(child => (!query && !level) || visibleIds.has(child.id));
       container.innerHTML = shownChildren.map(renderNode).join('');
       container.dataset.loaded = 'true';
-      bindTree(container);
+      if (query || level) {
+        container.querySelectorAll(':scope > details[open]').forEach(populateChildren);
+      }
     };
 
     const activate = sectionId => {
@@ -1836,53 +1815,44 @@ async function renderSources() {
       );
     };
 
-    const bindTree = root => {
-      root.querySelectorAll(':scope > [data-section-node]').forEach(details => {
-        details.ontoggle = () => {
-          if (details.open) populateChildren(details);
-        };
-        if (details.open) populateChildren(details);
-      });
-      root.querySelectorAll('[data-activate-section]').forEach(summary => {
-        summary.onclick = () => activate(summary.dataset.activateSection);
-      });
-      root.querySelectorAll('[data-select-branch]').forEach(button => {
-        button.onclick = event => {
-          event.preventDefault();
-          activate(button.dataset.selectBranch);
-        };
-      });
-      root.querySelectorAll('[data-jump-section]').forEach(button => {
-        button.onclick = () => {
-          const targetId = button.dataset.jumpSection;
-          activeSectionId = targetId;
-          const target = sectionsById.get(targetId);
-          $('#sectionFilter').value = sectionHeading(target, sectionIndexById.get(target.id));
-          drawSections();
-          document.querySelector(`[data-section-node="${CSS.escape(targetId)}"]`)?.scrollIntoView({ block: 'center' });
-        };
-      });
-      root.querySelectorAll('[data-copy-section]').forEach(button => {
-        button.onclick = () => {
-          const section = sectionsById.get(button.dataset.copySection);
-          navigator.clipboard.writeText(sectionText(section));
-        };
-      });
-      root.querySelectorAll('[data-copy-citation]').forEach(button => {
-        button.onclick = () => {
-          const section = sectionsById.get(button.dataset.copyCitation);
-          const sectionIndex = sectionIndexById.get(section.id);
-          const sourceLabel = sectionSourceLabel(section, sectionIndex);
-          const location = sectionLocation(section);
-          navigator.clipboard.writeText([
-            `${documentLabel} — ${sourceLabel}`,
-            location ? `(${location})` : ''
-          ].filter(Boolean).join(' '));
-        };
-      });
+    const tree = $('#sectionResults');
+    if (treeToggleHandler) tree.removeEventListener('toggle', treeToggleHandler, true);
+    treeToggleHandler = event => {
+      const details = event.target.closest('[data-section-node]');
+      if (details?.open) populateChildren(details);
     };
-
-    bindTree($('#sectionResults'));
+    tree.addEventListener('toggle', treeToggleHandler, true);
+    tree.querySelectorAll(':scope > details[open]').forEach(populateChildren);
+    tree.onclick = event => {
+      const action = event.target.closest('button, summary');
+      if (!action) return;
+      if (action.dataset.activateSection) activate(action.dataset.activateSection);
+      if (action.dataset.selectBranch) {
+        event.preventDefault();
+        activate(action.dataset.selectBranch);
+      }
+      if (action.dataset.jumpSection) {
+        const targetId = action.dataset.jumpSection;
+        const target = sectionsById.get(targetId);
+        activeSectionId = targetId;
+        $('#sectionFilter').value = sectionHeading(target, sectionIndexById.get(target.id));
+        drawSections();
+        document.querySelector(`[data-section-node="${CSS.escape(targetId)}"]`)?.scrollIntoView({ block: 'center' });
+      }
+      if (action.dataset.copySection) {
+        void copyText(sectionText(sectionsById.get(action.dataset.copySection)));
+      }
+      if (action.dataset.copyCitation) {
+        const section = sectionsById.get(action.dataset.copyCitation);
+        const sectionIndex = sectionIndexById.get(section.id);
+        const sourceLabel = sectionSourceLabel(section, sectionIndex);
+        const location = sectionLocation(section);
+        void copyText([
+          `${documentLabel} — ${sourceLabel}`,
+          location ? `(${location})` : ''
+        ].filter(Boolean).join(' '));
+      }
+    };
   };
 
   let filterTimer;
@@ -2147,6 +2117,19 @@ function download(name, data, type) {
   setTimeout(() => {
     URL.revokeObjectURL(anchor.href);
   }, 1000);
+}
+
+async function copyText(value) {
+  try {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error('Clipboard access is unavailable in this environment.');
+    }
+    await navigator.clipboard.writeText(textValue(value));
+  } catch (error) {
+    captureError(error, {
+      action: 'clipboard-copy'
+    });
+  }
 }
 
 function openModal(html, ready) {

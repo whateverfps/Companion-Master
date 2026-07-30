@@ -6,6 +6,10 @@ import {
   buildDependencyGraph,
   buildWorkflowSequence
 } from "./dependency.js";
+import {
+  normalizedKey as normalizeKey,
+  normalizedText as normalize
+} from "../data-model.js";
 
 /* =====================================================================
    Constants
@@ -185,19 +189,6 @@ const MILESTONE_TERMS = {
 /* =====================================================================
    Utilities
    ===================================================================== */
-
-function normalize(value) {
-  return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeKey(value) {
-  return normalize(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
 
 function unique(values) {
   return [

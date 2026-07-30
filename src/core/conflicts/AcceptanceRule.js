@@ -16,6 +16,7 @@
  */
 
 import { ReasoningRule } from "./ConflictReasoner.js";
+import { normalizedText as normalize } from "../../data-model.js";
 
 export const AcceptanceAction = Object.freeze({
     ACCEPT: "accept",
@@ -139,12 +140,6 @@ const NEGATION_PATTERNS = [
     /\bnot\s+acceptable\b/i,
     /\bdoes\s+not\s+constitute\s+acceptance\b/i
 ];
-
-function normalize(value) {
-    return String(value ?? "")
-        .replace(/\s+/g, " ")
-        .trim();
-}
 
 function lower(value) {
     return normalize(value).toLowerCase();

@@ -5,6 +5,7 @@
  */
 
 import { ReasoningRule } from "../ConflictReasoner.js";
+import { normalizedText as normalize } from "../../../data-model.js";
 
 export const DocumentType = Object.freeze({
   CONTRACT: "contract",
@@ -123,10 +124,6 @@ const AUTHORITY_BY_TYPE = Object.freeze({
   [DocumentType.ASI]: ["architect", "engineer", "designer"],
   [DocumentType.RFI]: ["architect", "engineer", "designer", "owner", "cor"]
 });
-
-function normalize(value) {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
-}
 
 function lower(value) {
   return normalize(value).toLowerCase();

@@ -14,6 +14,7 @@
  */
 
 import { ReasoningRule } from "../ConflictReasoner.js";
+import { normalizedText as normalize } from "../../../data-model.js";
 
 export const WorkflowStatus = Object.freeze({
     UNKNOWN: "unknown",
@@ -185,10 +186,6 @@ const SEQUENCE = [
 
 const TERMINAL_ACTIONS = new Set(["accept", "closeout", "warranty"]);
 const GATED_ACTIONS = new Set(["procure", "install", "inspect", "test", "commission", "accept", "closeout"]);
-
-function normalize(value) {
-    return String(value ?? "").replace(/\s+/g, " ").trim();
-}
 
 function lower(value) {
     return normalize(value).toLowerCase();

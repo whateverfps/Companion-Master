@@ -4,6 +4,7 @@
  * Phase A production implementation
  */
 import { ReasoningRule } from "../ConflictReasoner.js";
+import { normalizedText as normalize } from "../../../data-model.js";
 
 export const RequirementLevel = Object.freeze({
   SHALL: "shall",
@@ -150,10 +151,6 @@ const PASS_PATTERNS = /\bpass(?:ed|ing)?\b|\bacceptable\b|\bcompliant\b|\bapprov
 const FAIL_PATTERNS = /\bfail(?:ed|ure)?\b|\breject(?:ed|ion)?\b|\bnon[- ]?compliant\b|\bdeficien(?:t|cy)\b|\bunsatisfactory\b/i;
 const WAIVER_PATTERNS = /\bwaiv(?:e|ed|er)\b|\bexception approved\b|\bvariance\b/i;
 const NA_PATTERNS = /\bnot applicable\b|\bn\/a\b/i;
-
-function normalize(value) {
-  return String(value ?? "").replace(/\s+/g, " ").trim();
-}
 
 export function normalizeRequirement(text) {
   return normalize(text).toLowerCase();
