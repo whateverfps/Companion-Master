@@ -1,6 +1,6 @@
 # Mission Companion Master Roadmap
 
-## Current release — v2.1.0 (Build 1)
+## Current release — v2.5.0 (Build 4)
 
 Implemented:
 
@@ -23,7 +23,14 @@ Implemented:
 - Add document and section statistics
 - Add application error reporting panel
 
-### 2.2 — Retrieval accuracy
+### Build 3 — Source Inspector and extraction verification — COMPLETE
+
+- Verify extracted document structure and health
+- Search headings and extracted text
+- Inspect hierarchy levels and source paths
+- Export extraction reports
+
+### Build 4 — Retrieval accuracy — COMPLETE
 
 - Improve exact-term and heading weighting
 - Add query expansion for definitions and cross-references
