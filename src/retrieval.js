@@ -265,6 +265,14 @@ function classifyQueryIntent(rawQuery) {
     intents.push('closeout');
   }
 
+  if (
+    /\b(prerequisites?|predecessor|successor|dependenc(?:y|ies)|downstream|handoffs?)\b/i.test(query) ||
+    /\b(depends on|dependent on|required prior to|must (?:happen|occur) before|what must happen before|what is required before|what comes next|what follows|what happens after|blocked by|what is blocking|cannot proceed until|shall not proceed until|sequence of (?:work|activities)|order of operations|downstream impacts?)\b/i.test(query) ||
+    /\baffected if\b[^.!?\n]{0,120}\bdelayed\b/i.test(query)
+  ) {
+    intents.push('dependency');
+  }
+
   return intents.length
     ? intents
     : ['general'];
