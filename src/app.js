@@ -65,6 +65,10 @@ import {
   createContextClearedEvent
 } from './context-activation.js';
 import {
+  contextBusMetrics,
+  createContextBusSnapshot
+} from './context-bus.js';
+import {
   firstText,
   sectionHeadingValue,
   sectionLocationValue,
@@ -133,28 +137,33 @@ let engineeringTarget = null;
 let workflowTarget = null;
 let activeContextActivation = null;
 let contextClearedEvent = null;
+let contextBusSnapshot = createContextBusSnapshot();
 
 app.innerHTML = `
+<a class="mc-skip-link" href="#workspaceMain">Skip to workspace</a>
 <div class="shell">
   <aside class="rail">
     <div class="brand">
       <div class="mark">M</div>
       <div>
         <strong>Mission Companion</strong>
-        <span>SME Workspace · Master 2.0</span>
+        <span>Engineering Knowledge System</span>
       </div>
     </div>
 
-    <nav>
+    <nav aria-label="Primary navigation">
+      <span class="mc-nav-group-label">Work</span>
       <button data-view="project">Project Workspace</button>
-      <button data-view="chat" class="active">Command Desk</button>
+      <button data-view="chat" class="active" aria-current="page">Command Desk</button>
       <button data-view="knowledge">Knowledge Workspace</button>
+      <button data-view="engineering">Engineering Workspace</button>
+      <button data-view="workflow">Workflow Workspace</button>
+      <span class="mc-nav-group-label">Inspect</span>
       <button data-view="sources">Source Inspector</button>
       <button data-view="evidence">Evidence Explorer</button>
       <button data-view="relationships">Relationship Explorer</button>
-      <button data-view="engineering">Engineering Workspace</button>
-      <button data-view="workflow">Workflow Workspace</button>
       <button data-view="versions">Version Explorer</button>
+      <span class="mc-nav-group-label">Manage</span>
       <button data-view="evaluate">Knowledge Validation</button>
       <button data-view="settings">Settings</button>
       <button data-view="diagnostics">Diagnostics</button>
@@ -172,7 +181,7 @@ app.innerHTML = `
     </div>
   </aside>
 
-  <main>
+  <main id="workspaceMain" tabindex="-1">
     <header class="topbar">
       <div>
         <div class="eyebrow">MISSION COMPANION</div>
@@ -185,7 +194,7 @@ app.innerHTML = `
         <select id="mode">
           <option value="offline">Offline evidence</option>
           <option value="source">Source-only AI</option>
-          <option value="assisted">SME-assisted AI</option>
+          <option value="assisted">Expert-assisted AI</option>
           <option value="general">General assistant AI</option>
         </select>
       </div>
@@ -472,7 +481,7 @@ app.innerHTML = `
           </div>
 
           <div id="importQueue" class="import-queue">
-            <div class="empty">No imports in this session.</div>
+            <div class="empty">No imports in this session. Use Add documents to begin an import.</div>
           </div>
         </aside>
       </div>
@@ -492,7 +501,7 @@ app.innerHTML = `
 
         <section class="panel">
           <div id="sourceDetail" class="source-detail">
-            <div class="empty">Choose a document to inspect its indexed sections.</div>
+            <div class="empty"><strong>No source selected.</strong><br>Choose a document from the list to inspect its extraction checks and indexed sections.</div>
           </div>
         </section>
       </div>
@@ -571,18 +580,18 @@ app.innerHTML = `
     <section id="engineering" class="view">
       <header id="engineeringHeader" class="mc-engineering-header"></header>
       <div class="mc-engineering-workspace">
-        <section class="panel mc-engineering-context-panel" aria-labelledby="engineeringContextTitle"><div class="mc-engineering-heading"><span>TRANSIENT WORK PACKAGE</span><h2 id="engineeringContextTitle">Current Context</h2></div><div id="engineeringContext"></div></section>
-        <section class="panel mc-engineering-knowledge-panel" aria-labelledby="engineeringKnowledgeTitle"><div class="mc-engineering-heading"><span>EXACT COMPOSITION</span><h2 id="engineeringKnowledgeTitle">Inspection Knowledge</h2></div><div id="engineeringKnowledge"></div></section>
-        <aside class="panel mc-engineering-session-panel" aria-labelledby="engineeringSessionTitle"><div class="mc-engineering-heading"><span>UNSAVED SESSION</span><h2 id="engineeringSessionTitle">Inspection Session</h2></div><div id="engineeringSession"></div></aside>
+        <section class="panel mc-engineering-context-panel" aria-labelledby="engineeringContextTitle"><div class="mc-engineering-heading"><span>ACTIVE CONTEXT</span><h2 id="engineeringContextTitle">Engineering Context</h2></div><div id="engineeringContext"></div></section>
+        <section class="panel mc-engineering-knowledge-panel" aria-labelledby="engineeringKnowledgeTitle"><div class="mc-engineering-heading"><span>PROJECT KNOWLEDGE</span><h2 id="engineeringKnowledgeTitle">Related Knowledge</h2></div><div id="engineeringKnowledge"></div></section>
+        <aside class="panel mc-engineering-session-panel" aria-labelledby="engineeringSessionTitle"><div class="mc-engineering-heading"><span>TEMPORARY · UNSAVED</span><h2 id="engineeringSessionTitle">Inspection Session</h2></div><div id="engineeringSession"></div></aside>
       </div>
     </section>
 
     <section id="workflow" class="view">
       <header id="workflowHeader" class="mc-workflow-header"></header>
       <div class="mc-workflow-workspace">
-        <section class="panel mc-workflow-overview" aria-labelledby="workflowOverviewTitle"><div class="mc-workflow-heading"><span>TRANSIENT ORCHESTRATION</span><h2 id="workflowOverviewTitle">Workflow</h2></div><div id="workflowOverview"></div></section>
-        <section class="panel mc-workflow-resources" aria-labelledby="workflowResourcesTitle"><div class="mc-workflow-heading"><span>STABLE IDENTIFIERS</span><h2 id="workflowResourcesTitle">Workflow Resources</h2></div><div id="workflowResources"></div></section>
-        <aside class="panel mc-workflow-session" aria-labelledby="workflowSessionTitle"><div class="mc-workflow-heading"><span>UNSAVED SESSION</span><h2 id="workflowSessionTitle">Workflow Session</h2></div><div id="workflowSession"></div></aside>
+        <section class="panel mc-workflow-overview" aria-labelledby="workflowOverviewTitle"><div class="mc-workflow-heading"><span>CURRENT WORKFLOW</span><h2 id="workflowOverviewTitle">Workflow</h2></div><div id="workflowOverview"></div></section>
+        <section class="panel mc-workflow-resources" aria-labelledby="workflowResourcesTitle"><div class="mc-workflow-heading"><span>AVAILABLE SOURCES</span><h2 id="workflowResourcesTitle">Workflow Resources</h2></div><div id="workflowResources"></div></section>
+        <aside class="panel mc-workflow-session" aria-labelledby="workflowSessionTitle"><div class="mc-workflow-heading"><span>TEMPORARY · UNSAVED</span><h2 id="workflowSessionTitle">Workflow Session</h2></div><div id="workflowSession"></div></aside>
       </div>
     </section>
 
@@ -775,7 +784,7 @@ app.innerHTML = `
           <h3>Mission Companion Master</h3>
           <p>Version <strong>2.8.0 — Build 8, Commit 1</strong></p>
           <p class="notice">
-            Evidence-first SME workspace with local document retrieval,
+            Evidence-first engineering workspace with local document retrieval,
             deterministic offline evidence reports, citation verification,
             conflict detection, and optional AI-assisted analysis.
           </p>
@@ -956,11 +965,15 @@ function show(name) {
   });
 
   $$('nav button').forEach(button => {
-    button.classList.toggle('active', button.dataset.view === name);
+    const active = button.dataset.view === name;
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
   });
 
   $('#pageTitle').textContent = titles[name][0];
   $('#pageSub').textContent = titles[name][1];
+  void renderContextBusBanner(name);
 
   if (name === 'knowledge') {
     if (selectedDoc) void activateSelectedWorkspaceDocument(CONTEXT_ACTIVATION_SOURCES.knowledgeObjectDocument);
@@ -1133,6 +1146,7 @@ async function activateEngineeringContext(request) {
   contextClearedEvent = null;
   engineeringTarget = { ...next, origin: activationOrigin(next.source) };
   startInspectionSession(context, { source: next.source });
+  publishContextSynchronization(context, snapshot.documents, snapshot.sections);
   return result;
 }
 
@@ -1142,6 +1156,65 @@ function clearActiveContext(source, projectId = state().activeProject) {
   engineeringTarget = null;
   clearInspectionSession();
   clearWorkflowWorkspace();
+  contextBusSnapshot = createContextBusSnapshot();
+  void renderContextBusBanner(view);
+}
+
+function publishContextSynchronization(context, documents, sections) {
+  const revisionIds = buildRevisionMetrics({ documents, sections }).comparisons
+    .filter(comparison => comparison.comparable && [comparison.earlierDocument.id, comparison.laterDocument.id].some(id => context.versionIds.includes(id)))
+    .map(comparison => `${comparison.earlierDocument.id}->${comparison.laterDocument.id}`);
+  contextBusSnapshot = createContextBusSnapshot({ engineeringContext: context, activation: activeContextActivation, documents, revisionIds });
+  const reference = contextBusSnapshot.context;
+  if (!reference) return;
+  selectedDoc = reference.documentId;
+  if (reference.evidenceId) selectedEvidenceId = reference.evidenceId;
+  sourceNavigationTarget = createSourceTarget({
+    projectId: reference.projectId, libraryId: reference.libraryId,
+    documentId: reference.documentId, sectionId: reference.sectionId,
+    evidenceId: reference.evidenceId, originatingWorkspace: activationOrigin(reference.activationSource),
+    originatingMessageId: activeRetrievalSession?.messageId || '', destination: 'sources'
+  });
+  relationshipTarget = {
+    ...relationshipNavigationTarget({ documentId: reference.documentId, sectionId: reference.sectionId }),
+    projectId: reference.projectId, libraryId: reference.libraryId,
+    originatingWorkspace: activationOrigin(reference.activationSource)
+  };
+  lineageTarget = { ...lineageNavigationTarget(reference.documentId), originatingWorkspace: activationOrigin(reference.activationSource) };
+  if (reference.revisionIds.length) {
+    const [earlierDocumentId, laterDocumentId] = reference.revisionIds[0].split('->');
+    revisionTarget = revisionNavigationTarget(earlierDocumentId, laterDocumentId, { originatingWorkspace: activationOrigin(reference.activationSource) });
+  } else revisionTarget = null;
+  if (contextBusSnapshot.workflow.status === 'selected') {
+    workflowTarget = workflowNavigationTarget({ workflowType: contextBusSnapshot.workflow.workflowType, origin: activationOrigin(reference.activationSource) });
+  } else {
+    workflowTarget = null;
+    clearWorkflowSession();
+  }
+  void renderContextBusBanner(view);
+}
+
+async function renderContextBusBanner(workspace) {
+  const synchronizedViews = new Set(['chat','engineering','workflow','sources','relationships','versions','revisions','evidence','evaluate']);
+  if (!synchronizedViews.has(workspace)) return;
+  const container = document.getElementById(workspace);
+  container?.querySelector('[data-context-bus-banner]')?.remove();
+  if (!container) return;
+  const reference = contextBusSnapshot.context;
+  if (!reference) {
+    container.insertAdjacentHTML('afterbegin', '<div class="mc-context-bus-banner unavailable" data-context-bus-banner role="status"><strong>No active Engineering Context</strong><span>Open a Knowledge Object or ask an evidence-backed question to synchronize this workspace.</span></div>');
+    return;
+  }
+  const documents = await engine.documents();
+  const sections = await engine.sections();
+  if (contextBusSnapshot.context !== reference || !container.isConnected) return;
+  const project = state().projects.find(item => item.id === reference.projectId);
+  const library = engine.libraries().find(item => item.id === reference.libraryId);
+  const documentRecord = documents.find(item => item.id === reference.documentId);
+  const section = sections.find(item => item.id === reference.sectionId && item.documentId === reference.documentId);
+  const workflow = contextBusSnapshot.workflow.status === 'ambiguous' ? 'Select Workflow' : contextBusSnapshot.workflow.workflowType || 'Unavailable';
+  container.querySelector('[data-context-bus-banner]')?.remove();
+  container.insertAdjacentHTML('afterbegin', `<div class="mc-context-bus-banner synchronized" data-context-bus-banner role="status" aria-label="Synchronized Engineering Context"><dl><div><dt>Project</dt><dd>${esc(project?.name || reference.projectId)}</dd></div><div><dt>Library</dt><dd>${esc(library?.name || reference.libraryId || 'Unavailable')}</dd></div><div><dt>Document</dt><dd>${esc(documentRecord?.title || documentRecord?.name || reference.documentId)}</dd></div><div><dt>Section</dt><dd>${esc(section ? sectionHeadingValue(section) || reference.sectionId : reference.sectionId || 'Unavailable')}</dd></div><div><dt>Activation Source</dt><dd>${esc(reference.activationSource)}</dd></div><div><dt>Current Workflow</dt><dd>${esc(workflow)}</dd></div></dl></div>`);
 }
 
 function reducedMotionPreferred() {
@@ -1444,7 +1517,7 @@ function modeLabel(mode) {
   return {
     offline: 'Offline evidence',
     source: 'Source-only AI',
-    assisted: 'SME-assisted AI',
+    assisted: 'Expert-assisted AI',
     general: 'General assistant AI'
   }[mode] || 'Offline evidence';
 }
@@ -1788,10 +1861,10 @@ function renderAssistantToolbar(message, messageIndex) {
             Explore Relationships
           </button>
           ${message.hits[0]?.documentId
-            ? `<button type="button" data-open-version-explorer="${esc(message.hits[0].documentId)}">Explore Versions</button>`
+            ? `<button type="button" data-open-source-shortcut="${esc(message.hits[0].documentId)}">Open Source</button>`
             : ''}
           ${message.hits[0]?.documentId
-            ? `<button type="button" data-open-engineering="${esc(message.hits[0].documentId)}">Open Engineering Workspace</button>`
+            ? `<button type="button" data-open-version-explorer="${esc(message.hits[0].documentId)}">Explore Versions</button>`
             : ''}
           ${canOpenWorkflow
             ? `<button type="button" data-open-workflow="${esc(message.id)}">Open Workflow</button>`
@@ -2076,9 +2149,17 @@ $('#messages').onclick = event => {
     return;
   }
 
+  const sourceShortcut = event.target.closest('[data-open-source-shortcut]');
+  if (sourceShortcut && activeRetrievalSession) {
+    selectedDoc = sourceShortcut.dataset.openSourceShortcut;
+    show('sources');
+    return;
+  }
+
   const workflowButton = event.target.closest('[data-open-workflow]');
   if (workflowButton && activeRetrievalSession?.messageId === workflowButton.dataset.openWorkflow) {
-    openWorkflowWorkspace('Evidence Review', 'chat');
+    if (contextBusSnapshot.workflow.status === 'ambiguous') show('workflow');
+    else openWorkflowWorkspace(contextBusSnapshot.workflow.workflowType || 'Inspection Preparation', 'chat');
     return;
   }
 
@@ -2173,6 +2254,19 @@ async function ask() {
       sections
     });
     selectedEvidenceId = activeRetrievalSession.evidence[0]?.id || null;
+    const primaryEvidence = activeRetrievalSession.evidence[0];
+    if (primaryEvidence?.documentId) {
+      await activateEngineeringContext({
+        projectId: activeRetrievalSession.project.id,
+        libraryId: primaryEvidence.libraryId || activeRetrievalSession.library.id,
+        documentId: primaryEvidence.documentId,
+        sectionId: primaryEvidence.sectionId,
+        evidenceId: primaryEvidence.id,
+        source: CONTEXT_ACTIVATION_SOURCES.commandDesk
+      });
+    } else {
+      clearActiveContext(CONTEXT_ACTIVATION_SOURCES.commandDesk, activeRetrievalSession.project.id);
+    }
 
     $('#prompt').value = '';
     resizeComposer();
@@ -2188,7 +2282,6 @@ async function ask() {
       message.citationVerification,
       message.retrievalMeta
     );
-
     setChiefState('success');
   } catch (error) {
     setChiefState('error');
@@ -2306,10 +2399,10 @@ function renderEvidenceExplorer() {
     `;
     $('#evidencePipeline').innerHTML = '';
     $('#evidenceExplorerList').innerHTML = `
-      <div class="mc-evidence-empty">No ranked evidence is available.</div>
+      <div class="mc-evidence-empty"><strong>No ranked evidence.</strong><span>Ask an evidence-backed question in Command Desk to populate this list.</span></div>
     `;
     $('#evidenceExplorerDetail').innerHTML = `
-      <div class="mc-evidence-empty">No evidence item is selected.</div>
+      <div class="mc-evidence-empty"><strong>No evidence selected.</strong><span>Select a ranked evidence item to inspect its stored source text.</span></div>
     `;
     return;
   }
@@ -2583,8 +2676,8 @@ async function renderRelationshipExplorer() {
       <p>${requestedDocumentId ? 'The selected relationship document is no longer available.' : 'Add and index project documents to inspect explicit relationships.'}</p>
     `;
     $('#relationshipContext').innerHTML = `<div class="mc-relationship-empty">${requestedDocumentId ? 'The exact selected document could not be resolved.' : 'No documents are available.'}</div>`;
-    $('#relationshipGraph').innerHTML = '<div class="mc-relationship-empty">No graph is available.</div>';
-    $('#relationshipDetail').innerHTML = '<div class="mc-relationship-empty">No relationships are available.</div>';
+    $('#relationshipGraph').innerHTML = '<div class="mc-relationship-empty">A graph appears after an exact document or section establishes Engineering Context.</div>';
+    $('#relationshipDetail').innerHTML = '<div class="mc-relationship-empty">Open a Knowledge Object or select evidence to inspect its explicit relationships.</div>';
     return;
   }
 
@@ -2795,9 +2888,9 @@ async function renderVersionExplorer() {
       <div><span>DOCUMENT HISTORY · READ ONLY</span><h2>${requestedId ? 'Selected version unavailable' : 'No document versions available'}</h2></div>
       <p>${requestedId ? 'The exact document record no longer exists.' : 'Add and index a document to begin recording explicit lineage.'}</p>
     `;
-    $('#lineageCurrent').innerHTML = '<div class="mc-lineage-empty">Current-version status is unavailable.</div>';
-    $('#lineageHistory').innerHTML = '<div class="mc-lineage-empty">No explicit version chain is available.</div>';
-    $('#lineageChanges').innerHTML = '<div class="mc-lineage-empty">No versions are available to compare.</div>';
+    $('#lineageCurrent').innerHTML = '<div class="mc-lineage-empty">Select a Knowledge Object to inspect its current-version status.</div>';
+    $('#lineageHistory').innerHTML = '<div class="mc-lineage-empty">An explicit version chain appears when the selected document contains lineage records.</div>';
+    $('#lineageChanges').innerHTML = '<div class="mc-lineage-empty">Select a document with an explicit previous version to compare revisions.</div>';
     return;
   }
 
@@ -3172,10 +3265,10 @@ async function renderEngineeringWorkspace() {
   }[targetOrigin]);
 
   if (!context) {
-    $('#engineeringHeader').innerHTML = '<div><span>READ-ONLY CONTEXT</span><h2>Engineering context unavailable</h2><p>Select an exact document from a supported workspace to assemble an inspection context.</p></div>';
+    $('#engineeringHeader').innerHTML = '<div><span>ENGINEERING CONTEXT</span><h2>Engineering Context unavailable</h2><p>Open a Knowledge Object or ask an evidence-backed question to synchronize this workbench.</p></div>';
     $('#engineeringContext').innerHTML = `<div class="mc-context-activation-unavailable" role="status"><strong>No active Engineering Context.</strong><span>${contextClearedEvent ? `Current transition: cleared from ${esc(contextClearedEvent.source)}.` : 'Open an exact document, section, or evidence source to activate context.'}</span></div>`;
-    $('#engineeringKnowledge').innerHTML = '<div class="mc-engineering-empty">No project knowledge has been composed.</div>';
-    $('#engineeringSession').innerHTML = '<div class="mc-engineering-empty">Temporary notes become available after a valid context is opened.</div>';
+    $('#engineeringKnowledge').innerHTML = '<div class="mc-engineering-empty">Related project knowledge appears after an exact document establishes Engineering Context.</div>';
+    $('#engineeringSession').innerHTML = '<div class="mc-engineering-empty">The temporary Inspection Session becomes available with an active Engineering Context.</div>';
     return;
   }
   let session = getInspectionSession();
@@ -3190,7 +3283,7 @@ async function renderEngineeringWorkspace() {
   const returnLabel = ({ chat: 'Back to Command Desk', evidence: 'Back to Evidence Explorer', relationships: 'Back to Relationship Explorer', knowledge: 'Back to Knowledge Object', versions: 'Back to Version Explorer', revisions: 'Back to Revision Review' })[targetOrigin] || '';
 
   $('#engineeringHeader').innerHTML = `
-    <div><span>TRANSIENT ENGINEERING CONTEXT</span><h2>${esc(seedDocument.title || seedDocument.name)}</h2><p>Exact project, document, section, relationship, lineage, and active-session evidence identifiers only.</p></div>
+    <div><span>ENGINEERING CONTEXT</span><h2>${esc(seedDocument.title || seedDocument.name)}</h2><p>Project knowledge synchronized from ${esc(target.source)}.</p></div>
     <nav class="mc-engineering-actions" aria-label="Engineering workspace navigation">
       ${originValid ? `<button type="button" data-engineering-return>${esc(returnLabel)}</button>` : ''}
       <button type="button" class="subtle" data-engineering-object>Open Knowledge Object</button>
@@ -3201,14 +3294,13 @@ async function renderEngineeringWorkspace() {
     </nav>
   `;
   $('#engineeringContext').innerHTML = `
-    <div class="mc-context-activation-status" role="status"><strong>Context activated</strong><span>Activated from ${esc(target.source)}</span></div>
     <dl class="mc-engineering-facts">
-      <div><dt>Project ID</dt><dd>${esc(context.projectId)}</dd></div><div><dt>Library ID</dt><dd>${esc(context.libraryId)}</dd></div>
-      <div><dt>Seed document</dt><dd>${esc(seedDocument.title || seedDocument.name)}</dd></div><div><dt>Seed section</dt><dd>${seedSection ? esc(labelSection(seedSection.id)) : 'Unavailable'}</dd></div>
+      <div><dt>Active document</dt><dd>${esc(seedDocument.title || seedDocument.name)}</dd></div><div><dt>Active section</dt><dd>${seedSection ? esc(labelSection(seedSection.id)) : 'Unavailable'}</dd></div>
+      <div><dt>Related documents</dt><dd>${fmt(context.documentIds.length)}</dd></div><div><dt>Related sections</dt><dd>${fmt(context.sectionIds.length)}</dd></div>
       <div><dt>Building</dt><dd>${context.buildingId ? esc(context.buildingId) : 'Unavailable'}</dd></div><div><dt>Room</dt><dd>${context.roomId ? esc(context.roomId) : 'Unavailable'}</dd></div>
       <div><dt>Discipline</dt><dd>${context.discipline ? esc(context.discipline) : 'Unavailable'}</dd></div><div><dt>Trade</dt><dd>${context.trade ? esc(context.trade) : 'Unavailable'}</dd></div>
     </dl>
-    <div class="mc-engineering-status ${context.incomplete ? 'incomplete' : 'complete'}"><strong>${context.incomplete ? 'Incomplete context' : 'Context assembled'}</strong><span>${fmt(context.documentIds.length)} exact document(s) · ${fmt(context.sectionIds.length)} exact section(s)</span></div>
+    <div class="mc-engineering-status ${context.incomplete ? 'incomplete' : 'complete'}"><strong>${context.incomplete ? 'Engineering Context incomplete' : 'Engineering Context ready'}</strong><span>${context.incomplete ? 'Some related evidence or relationship identifiers are unavailable.' : 'Available project knowledge has been synchronized.'}</span></div>
     ${context.unavailableFields.length ? `<div class="mc-engineering-unavailable"><strong>Unavailable context fields</strong><span>${esc(context.unavailableFields.join(', '))}</span></div>` : ''}
   `;
   const evidence = context.evidence.map(item => activeRetrievalSession?.evidence.find(candidate => candidate.id === item.id)).filter(Boolean);
@@ -3247,7 +3339,10 @@ async function renderEngineeringWorkspace() {
   $('[data-engineering-source]')?.addEventListener('click', () => { selectedDoc = context.documentId; show('sources'); });
   $('[data-engineering-relationships]')?.addEventListener('click', () => { relationshipTarget = { ...relationshipNavigationTarget({ documentId: context.documentId, sectionId: context.sectionId }), projectId: context.projectId, libraryId: context.libraryId, originatingWorkspace: 'engineering' }; show('relationships'); });
   $('[data-engineering-versions]')?.addEventListener('click', () => openVersionExplorer(context.documentId));
-  $('[data-engineering-workflow]')?.addEventListener('click', () => openWorkflowWorkspace('Inspection Preparation', 'engineering'));
+  $('[data-engineering-workflow]')?.addEventListener('click', () => {
+    if (contextBusSnapshot.workflow.status === 'ambiguous') show('workflow');
+    else openWorkflowWorkspace(contextBusSnapshot.workflow.workflowType || 'Inspection Preparation', 'engineering');
+  });
 }
 
 async function renderWorkflowWorkspace() {
@@ -3256,6 +3351,17 @@ async function renderWorkflowWorkspace() {
   const documents = await engine.documents();
   const sections = await engine.sections();
   const revisions = buildRevisionMetrics({ documents, sections }).comparisons;
+  if (contextBusSnapshot.workflow.status === 'ambiguous' && !workflowTarget) {
+    $('#workflowHeader').innerHTML = '<div><span>SYNCHRONIZED ORCHESTRATION</span><h2>Select Workflow</h2><p>Multiple deterministic workflow templates qualify. Mission Companion will not guess.</p></div>';
+    $('#workflowOverview').innerHTML = `<div class="mc-context-bus-workflow-choice" role="status"><strong>Select Workflow</strong><span>${esc(contextBusSnapshot.workflow.candidates.join(' · '))}</span><label>Workflow Type<select id="workflowType">${contextBusSnapshot.workflow.candidates.map(type => `<option>${esc(type)}</option>`).join('')}</select></label><button type="button" id="selectSynchronizedWorkflow">Load selected workflow</button></div>`;
+    $('#workflowResources').innerHTML = '<div class="mc-workflow-empty">Workflow resources will appear after an explicit selection.</div>';
+    $('#workflowSession').innerHTML = '<div class="mc-workflow-empty">Temporary notes begin after a workflow is selected.</div>';
+    $('#selectSynchronizedWorkflow')?.addEventListener('click', () => {
+      workflowTarget = workflowNavigationTarget({ workflowType: $('#workflowType').value, origin: activationOrigin(activeContextActivation.source) });
+      renderWorkflowWorkspace();
+    });
+    return;
+  }
   const workflow = createWorkflow({
     workflowType: workflowTarget?.workflowType,
     engineeringContext: context,
@@ -3273,7 +3379,7 @@ async function renderWorkflowWorkspace() {
   }[workflowTarget.origin]);
 
   $('#workflowHeader').innerHTML = `
-    <div><span>IDENTIFIER-ONLY ORCHESTRATION</span><h2>${esc(workflow.workflowType || 'Workflow unavailable')}</h2><p>Status describes deterministic data availability only. It does not indicate compliance, quality, acceptance, approval, or readiness to build.</p></div>
+    <div><span>WORKFLOW</span><h2>${esc(workflow.workflowType || 'Workflow unavailable')}</h2><p>Workflow status describes source availability only; it does not indicate compliance, acceptance, approval, or readiness to build.</p></div>
     <nav class="mc-workflow-actions" aria-label="Workflow navigation">
       ${originValid ? `<button type="button" data-workflow-return>Back to ${esc(workflowTarget.origin === 'chat' ? 'Command Desk' : workflowTarget.origin === 'knowledge' ? 'Knowledge Object' : 'Engineering Workspace')}</button>` : ''}
       ${context ? '<button type="button" class="subtle" data-workflow-engineering>Engineering Workspace</button>' : ''}
@@ -3281,9 +3387,9 @@ async function renderWorkflowWorkspace() {
   `;
   if (workflow.status === 'Unavailable') {
     clearWorkflowSession();
-    $('#workflowOverview').innerHTML = '<div class="mc-workflow-empty">A valid active Engineering Context and supported workflow type are required.</div>';
-    $('#workflowResources').innerHTML = '<div class="mc-workflow-empty">No workflow identifiers are available.</div>';
-    $('#workflowSession').innerHTML = '<div class="mc-workflow-empty">Temporary notes are unavailable.</div>';
+    $('#workflowOverview').innerHTML = '<div class="mc-workflow-empty"><strong>Workflow unavailable.</strong><span>Open a Knowledge Object or ask an evidence-backed question to establish Engineering Context.</span></div>';
+    $('#workflowResources').innerHTML = '<div class="mc-workflow-empty">Workflow resources appear after a valid Engineering Context and Workflow are selected.</div>';
+    $('#workflowSession').innerHTML = '<div class="mc-workflow-empty">Temporary Workflow Session notes become available when a Workflow loads.</div>';
     return;
   }
   let session = getWorkflowSession();
@@ -3692,7 +3798,7 @@ function renderImportQueue() {
           </div>
         </article>
       `).join('')
-    : '<div class="empty">No imports in this session.</div>';
+    : '<div class="empty">No imports in this session. Use Add documents to begin an import.</div>';
 
   $('#importQueue').querySelectorAll('[data-import-action]').forEach(button => {
     button.onclick = () => {
@@ -5791,7 +5897,7 @@ async function renderSources() {
           </button>
         `;
         }).join('')
-      : '<div class="empty">No matching documents.</div>';
+      : '<div class="empty">No documents match this filter. Clear or revise the filter to continue.</div>';
 
     $$('[data-doc]').forEach(button => {
       button.onclick = async () => {
@@ -5830,7 +5936,7 @@ async function renderSources() {
           source document to continue.
         </div>
       `
-      : '<div class="empty">No indexed documents.</div>';
+      : '<div class="empty">No indexed documents. Add documents in Knowledge Workspace, then return here to inspect extraction.</div>';
     selectedDoc = null;
 
     return;
@@ -6637,6 +6743,7 @@ async function renderEvals() {
   const revisionMetrics = buildRevisionMetrics({ documents, sections });
   const engineeringMetrics = engineeringContextMetrics(getInspectionSession()?.context || null);
   const activationMetrics = contextActivationMetrics(activeContextActivation, contextClearedEvent);
+  const synchronizationMetrics = contextBusMetrics(contextBusSnapshot);
   const validationWorkflow = workflowTarget
     ? createWorkflow({
         workflowType: workflowTarget.workflowType,
@@ -6748,6 +6855,9 @@ async function renderEvals() {
     ['Active Engineering Context', activationMetrics.activeEngineeringContext, activationMetrics.activationSource || 'No activation source'],
     ['Context Activated', activationMetrics.currentTransition === 'activated' ? 1 : 0, `Current transition: ${activationMetrics.currentTransition}`],
     ['Context Cleared', activationMetrics.contextCleared, activationMetrics.contextCleared ? `Cleared from ${activationMetrics.activationSource}` : 'Current transient state'],
+    ['Active Synchronization', synchronizationMetrics.activeSynchronization, synchronizationMetrics.activationSource || 'No synchronized context'],
+    ['Synchronized Workspaces', synchronizationMetrics.synchronizedModules, 'Workspaces using the active Engineering Context'],
+    ['Unsynchronized Workspaces', synchronizationMetrics.unsynchronizedModules, 'Workspaces awaiting Engineering Context'],
     ['Context Has Evidence', engineeringMetrics.contextHasEvidence, 'Exact active-session evidence'],
     ['Context Has Relationships', engineeringMetrics.contextHasExplicitRelationships, 'Exact hierarchy or explicit references'],
     ['Context Has Version History', engineeringMetrics.contextHasVersionHistory, 'Explicit lineage records'],
