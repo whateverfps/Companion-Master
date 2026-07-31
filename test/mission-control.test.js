@@ -178,6 +178,27 @@ test('Mission Control presents synchronized deterministic work packages without 
   assert.doesNotMatch(app, /duct routing (?:is|shown)|diffuser quantity (?:is|shown)|clash detected/i);
 });
 
+test('Phase 23C presents drawings as construction evidence with a field-grade hierarchy', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  assert.match(app, /CONSTRUCTION INTELLIGENCE · PLANS/);
+  assert.match(app, /Find a sheet, room, trade, or tag/);
+  assert.match(app, /Matched Room|matchedReason/);
+  assert.match(app, /Sheet Analysis/);
+  assert.match(app, /Supporting Information/);
+  assert.match(app, /Analysis details/);
+  assert.match(app, /Reanalyze Drawing Set/);
+  assert.match(app, /aria-label="Drawing navigation"/);
+  assert.match(app, /aria-label="Drawing view controls"/);
+  assert.match(app, /aria-label="Construction context actions"/);
+  assert.match(app, /Reset View/);
+  assert.match(app, /observationKindLabel/);
+  assert.doesNotMatch(app, /<strong>\$\{esc\(item\.kind\)\}<\/strong>/);
+  assert.match(css, /Phase 23C/);
+  assert.match(css, /#missionDrawingViewer \.mc-drawing-evidence/);
+  assert.match(css, /\.mc-drawing-stage\{min-height:520px/);
+});
+
 test('Mission Control exposes My Projects and an accessible demonstration orientation banner', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.match(app, /data-control-projects>My Projects/);
