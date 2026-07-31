@@ -33,6 +33,12 @@ import {
   lineageNavigationTarget
 } from './document-lineage.js';
 import {
+  buildRevisionMetrics,
+  compareRevisions,
+  revisionNavigationTarget,
+  revisionPairStatus
+} from './revision-comparison.js';
+import {
   firstText,
   sectionHeadingValue,
   sectionLocationValue,
@@ -94,6 +100,9 @@ let answerNavigationTarget = null;
 let sourceNavigationNotice = '';
 let relationshipTarget = null;
 let lineageTarget = null;
+let revisionTarget = null;
+let revisionFilter = 'all';
+let selectedRevisionMatch = 0;
 
 app.innerHTML = `
 <div class="shell">
@@ -527,6 +536,26 @@ app.innerHTML = `
       </div>
     </section>
 
+    <section id="revisions" class="view">
+      <header id="revisionHeader" class="mc-revision-header"></header>
+      <div id="revisionSummary" class="mc-revision-summary"></div>
+      <nav id="revisionFilters" class="mc-revision-filters" aria-label="Revision change filters"></nav>
+      <div class="mc-revision-workspace">
+        <section class="panel mc-revision-list-panel" aria-labelledby="revisionListTitle">
+          <div class="mc-revision-heading"><span>DETERMINISTIC MATCHES</span><h2 id="revisionListTitle">Section Changes</h2></div>
+          <div id="revisionList"></div>
+        </section>
+        <section class="panel mc-revision-detail-panel" aria-labelledby="revisionDetailTitle">
+          <div class="mc-revision-heading"><span>STORED SECTION DATA</span><h2 id="revisionDetailTitle">Side-by-Side Review</h2></div>
+          <div id="revisionDetail"></div>
+        </section>
+        <aside class="panel mc-revision-warning-panel" aria-labelledby="revisionWarningsTitle">
+          <div class="mc-revision-heading"><span>INTEGRITY</span><h2 id="revisionWarningsTitle">Comparison Warnings</h2></div>
+          <div id="revisionWarnings"></div>
+        </aside>
+      </div>
+    </section>
+
     <section id="evaluate" class="view">
       <header class="mc-validation-header">
         <div>
@@ -847,6 +876,10 @@ const titles = {
     'Version Explorer',
     'Inspect explicit document lineage, duplicates, and deterministic revision changes.'
   ],
+  revisions: [
+    'Revision Review',
+    'Inspect objective structural and stored-content changes between explicitly linked revisions.'
+  ],
   evaluate: [
     'Knowledge Validation',
     'Validate knowledge-base readiness, metadata, indexing, and coverage.'
@@ -893,6 +926,10 @@ function show(name) {
 
   if (name === 'versions') {
     renderVersionExplorer();
+  }
+
+  if (name === 'revisions') {
+    renderRevisionReview();
   }
 
   if (name === 'evaluate') {
@@ -1017,6 +1054,22 @@ function openVersionExplorer(documentId, originatingMessageId = '') {
   };
   selectedDoc = documentId;
   show('versions');
+}
+
+function openRevisionReview(earlierDocumentId, laterDocumentId) {
+  const target = revisionNavigationTarget(earlierDocumentId, laterDocumentId, {
+    originatingWorkspace: view
+  });
+  if (!target) return;
+  revisionTarget = target;
+  revisionFilter = 'all';
+  selectedRevisionMatch = 0;
+  show('revisions');
+}
+
+function returnToRevisionReview() {
+  if (revisionTarget) show('revisions');
+  else show('versions');
 }
 
 function returnToOriginatingAnswer() {
@@ -1178,6 +1231,9 @@ $('#projectSelect').onchange = async () => {
   sourceNavigationNotice = '';
   relationshipTarget = null;
   lineageTarget = null;
+  revisionTarget = null;
+  revisionFilter = 'all';
+  selectedRevisionMatch = 0;
   await refresh();
 };
 
@@ -1754,6 +1810,9 @@ $('#clearChat').onclick = () => {
   sourceNavigationNotice = '';
   relationshipTarget = null;
   lineageTarget = null;
+  revisionTarget = null;
+  revisionFilter = 'all';
+  selectedRevisionMatch = 0;
   setChiefState('idle');
   refresh();
 };
@@ -2275,6 +2334,9 @@ async function renderRelationshipExplorer() {
       ${activeRetrievalSession && relationshipTarget.originatingMessageId === activeRetrievalSession.messageId
         ? '<button type="button" data-relationship-return-evidence>Back to Evidence Explorer</button>'
         : ''}
+      ${relationshipTarget.originatingWorkspace === 'revisions' && revisionTarget
+        ? '<button type="button" data-relationship-return-revisions>Back to Revision Review</button>'
+        : ''}
       <button type="button" class="subtle" data-relationship-knowledge>Open Knowledge Object</button>
       <button type="button" class="subtle" data-relationship-source>Open Source Inspector</button>
     </nav>
@@ -2386,6 +2448,7 @@ async function renderRelationshipExplorer() {
     };
   });
   $('[data-relationship-return-evidence]')?.addEventListener('click', returnToEvidenceExplorer);
+  $('[data-relationship-return-revisions]')?.addEventListener('click', returnToRevisionReview);
   $('[data-relationship-knowledge]')?.addEventListener('click', () => openRelationshipSource('knowledge'));
   $('[data-relationship-source]')?.addEventListener('click', () => openRelationshipSource('sources'));
 }
@@ -2433,6 +2496,14 @@ async function renderVersionExplorer() {
   const relevantBroken = model.validation.brokenLineage.filter(item =>
     item.documentId === selected.id || item.targetId === selected.id
   );
+  const exactPrevious = documents.find(document =>
+    document.id === (selected.previousDocumentId || selected.metadata?.previousDocumentId)
+  ) || null;
+  const comparablePrevious = exactPrevious && revisionPairStatus(
+    exactPrevious,
+    selected,
+    documents
+  ).comparable;
   const dateLabel = value => {
     const date = value ? new Date(value) : null;
     return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : 'Unavailable';
@@ -2459,6 +2530,9 @@ async function renderVersionExplorer() {
       <p>Lineage status: ${esc(record?.status || 'unknown')} · Document ID: ${esc(selected.id)}</p>
     </div>
     <nav class="mc-lineage-actions" aria-label="Version navigation">
+      ${comparablePrevious
+        ? '<button type="button" data-lineage-compare>Compare with Previous Version</button>'
+        : ''}
       <button type="button" data-lineage-knowledge>Open Knowledge Object</button>
       <button type="button" class="subtle" data-lineage-source>Open Source Inspector</button>
       ${lineageTarget.originatingMessageId && state().chat.some(message => message.id === lineageTarget.originatingMessageId)
@@ -2553,6 +2627,184 @@ async function renderVersionExplorer() {
     show('sources');
   });
   $('[data-lineage-answer]')?.addEventListener('click', returnToOriginatingAnswer);
+  $('[data-lineage-compare]')?.addEventListener('click', () =>
+    openRevisionReview(exactPrevious.id, selected.id)
+  );
+}
+
+async function renderRevisionReview() {
+  const documents = await engine.documents();
+  const sections = await engine.sections();
+  const earlier = documents.find(document => document.id === revisionTarget?.earlierDocumentId) || null;
+  const later = documents.find(document => document.id === revisionTarget?.laterDocumentId) || null;
+  const comparison = compareRevisions({
+    earlierDocument: earlier,
+    laterDocument: later,
+    documents,
+    sections
+  });
+  const documentName = document => document?.title || document?.name || document?.id || 'Unavailable';
+  const filterOptions = [
+    ['all', 'All'], ['unchanged', 'Unchanged'], ['added', 'Added'], ['removed', 'Removed'],
+    ['content-changed', 'Content'], ['structurally-changed', 'Structure'],
+    ['reference-changed', 'References'], ['extraction-changed', 'Extraction'],
+    ['ambiguous', 'Ambiguous'], ['unmatched', 'Unmatched']
+  ];
+
+  $('#revisionHeader').innerHTML = `
+    <div>
+      <span>EXPLICIT LINEAGE · READ ONLY</span>
+      <h2>${comparison.comparable ? `${esc(documentName(earlier))} → ${esc(documentName(later))}` : 'Revision pair not comparable'}</h2>
+      <p>${comparison.comparable
+        ? `Lineage ${esc(comparison.lineageId)} · Exact previousDocumentId relationship`
+        : esc(comparison.reasons.join(' '))}</p>
+    </div>
+    <nav class="mc-revision-actions" aria-label="Revision review navigation">
+      <button type="button" data-revision-version>Back to Version Explorer</button>
+      ${comparison.comparable ? `
+        <button type="button" class="subtle" data-revision-object="earlier">Earlier Knowledge Object</button>
+        <button type="button" class="subtle" data-revision-object="later">Later Knowledge Object</button>
+        <button type="button" class="subtle" data-revision-relationships>Relationship Explorer</button>
+      ` : ''}
+    </nav>
+  `;
+
+  if (!comparison.comparable) {
+    $('#revisionSummary').innerHTML = '';
+    $('#revisionFilters').innerHTML = '';
+    $('#revisionList').innerHTML = '<div class="mc-revision-empty">Mission Companion compares only exact adjacent records in one explicit lineage.</div>';
+    $('#revisionDetail').innerHTML = '<div class="mc-revision-empty">No section comparison is available.</div>';
+    $('#revisionWarnings').innerHTML = `<ul class="mc-revision-warning-list">${comparison.reasons.map(reason => `<li>${esc(reason)}</li>`).join('')}</ul>`;
+    $('[data-revision-version]')?.addEventListener('click', () => {
+      if (later?.id) openVersionExplorer(later.id);
+      else show('versions');
+    });
+    return;
+  }
+
+  const summaryItems = [
+    ['Unchanged', comparison.summary.unchanged], ['Added', comparison.summary.added],
+    ['Removed', comparison.summary.removed], ['Content', comparison.summary.contentChanged],
+    ['Structure', comparison.summary.structurallyChanged], ['References', comparison.summary.referenceChanged],
+    ['Extraction', comparison.summary.extractionChanged], ['Ambiguous', comparison.summary.ambiguous],
+    ['Unmatched', comparison.summary.unmatched]
+  ];
+  $('#revisionSummary').innerHTML = summaryItems.map(([label, count]) => `
+    <article><span>${esc(label)}</span><strong>${fmt(count)}</strong></article>
+  `).join('');
+  $('#revisionFilters').innerHTML = filterOptions.map(([key, label]) => `
+    <button type="button" data-revision-filter="${key}" class="${revisionFilter === key ? 'active' : ''}" aria-pressed="${revisionFilter === key}">${esc(label)}</button>
+  `).join('');
+
+  const visibleMatch = match => revisionFilter === 'all' || match.flags.includes(revisionFilter);
+  const visibleSingle = flags => revisionFilter === 'all' || flags.includes(revisionFilter);
+  const matchRows = comparison.matches.map((match, index) => ({ match, index })).filter(({ match }) => visibleMatch(match));
+  const addedRows = comparison.added.filter(item => visibleSingle(item.flags));
+  const removedRows = comparison.removed.filter(item => visibleSingle(item.flags));
+  const ambiguousRows = comparison.ambiguous.filter(() => revisionFilter === 'all' || revisionFilter === 'ambiguous');
+  const selected = comparison.matches[selectedRevisionMatch] || comparison.matches[0] || null;
+  if (!comparison.matches[selectedRevisionMatch] && comparison.matches.length) selectedRevisionMatch = 0;
+  const sectionLabel = (section, index = 0) => sectionHeadingValue(section, index) || section.sectionNumber || section.id || 'Untitled section';
+  const flagLabel = flag => ({
+    unchanged: 'Unchanged', 'content-changed': 'Content changed', 'structurally-changed': 'Structure changed',
+    'reference-changed': 'References changed', 'extraction-changed': 'Extraction changed'
+  }[flag] || flag);
+  $('#revisionList').innerHTML = `
+    <div class="mc-revision-list">
+      ${matchRows.map(({ match, index }) => `
+        <button type="button" data-revision-match="${index}" class="${index === selectedRevisionMatch ? 'active' : ''}" ${index === selectedRevisionMatch ? 'aria-current="true"' : ''}>
+          <span>${match.flags.map(flag => `<em>${esc(flagLabel(flag))}</em>`).join('')}</span>
+          <strong>${esc(sectionLabel(match.earlier, index))}</strong>
+          <small>Matched by ${esc(match.matchRule)}</small>
+        </button>
+      `).join('')}
+      ${addedRows.map((item, index) => `<article class="mc-revision-single added"><span>ADDED · UNMATCHED</span><strong>${esc(sectionLabel(item.section, index))}</strong><small>${esc(item.sectionId || 'No section ID')}</small></article>`).join('')}
+      ${removedRows.map((item, index) => `<article class="mc-revision-single removed"><span>REMOVED · UNMATCHED</span><strong>${esc(sectionLabel(item.section, index))}</strong><small>${esc(item.sectionId || 'No section ID')}</small></article>`).join('')}
+      ${ambiguousRows.map(item => `<article class="mc-revision-single ambiguous"><span>AMBIGUOUS · ${esc(item.rule)}</span><strong>${esc(item.key)}</strong><small>Earlier: ${esc(item.earlierSectionIds.join(', '))} · Later: ${esc(item.laterSectionIds.join(', '))}</small></article>`).join('')}
+      ${!matchRows.length && !addedRows.length && !removedRows.length && !ambiguousRows.length ? '<div class="mc-revision-empty">No section records match this filter.</div>' : ''}
+    </div>
+  `;
+
+  const differences = (items, empty) => items.length
+    ? `<ul class="mc-revision-differences">${items.map(item => `<li><strong>${esc(item.field)}</strong><span>${esc(Array.isArray(item.before) ? item.before.join(', ') : item.before ?? 'Unavailable')} → ${esc(Array.isArray(item.after) ? item.after.join(', ') : item.after ?? 'Unavailable')}</span></li>`).join('')}</ul>`
+    : `<p class="mc-revision-no-change">${esc(empty)}</p>`;
+  if (!selected) {
+    $('#revisionDetail').innerHTML = '<div class="mc-revision-empty">No deterministically matched section is available for side-by-side review.</div>';
+  } else {
+    const referenceItems = [
+      ...(selected.referenceDifferences.crossReferences.changed ? [{ field: 'Cross references', before: selected.referenceDifferences.crossReferences.removed, after: selected.referenceDifferences.crossReferences.added }] : []),
+      ...(selected.referenceDifferences.crossReferenceIds.changed ? [{ field: 'Cross-reference IDs', before: selected.referenceDifferences.crossReferenceIds.removed, after: selected.referenceDifferences.crossReferenceIds.added }] : [])
+    ];
+    $('#revisionDetail').innerHTML = `
+      <div class="mc-revision-basis"><strong>Comparison basis</strong><span>${esc(selected.matchRule)} · Earlier ID ${esc(selected.earlierSectionId || 'Unavailable')} · Later ID ${esc(selected.laterSectionId || 'Unavailable')}</span></div>
+      <div class="mc-revision-side-by-side">
+        <article><header><span>EARLIER REVISION</span><h3>${esc(sectionLabel(selected.earlier))}</h3></header><pre>${esc(selected.content.earlierText)}</pre><button type="button" data-revision-source="earlier">Open in Source Inspector</button></article>
+        <article><header><span>LATER REVISION</span><h3>${esc(sectionLabel(selected.later))}</h3></header><pre>${esc(selected.content.laterText)}</pre><button type="button" data-revision-source="later">Open in Source Inspector</button></article>
+      </div>
+      <section class="mc-revision-difference-group"><h3>Metadata and Structure</h3>${differences(selected.structuralDifferences, 'No objective structural differences.')}</section>
+      <section class="mc-revision-difference-group"><h3>References</h3>${differences(referenceItems, 'No exact reference differences.')}</section>
+      <section class="mc-revision-difference-group"><h3>Extraction</h3>${differences(selected.extractionDifferences, 'No extraction-field differences.')}</section>
+    `;
+  }
+  $('#revisionWarnings').innerHTML = comparison.integrityWarnings.length
+    ? `<ul class="mc-revision-warning-list">${comparison.integrityWarnings.map(item => `<li>${esc(item)}</li>`).join('')}</ul>`
+    : '<div class="mc-revision-clear"><strong>No comparison integrity warnings</strong><span>All displayed pairs were resolved by exact deterministic rules.</span></div>';
+
+  $$('[data-revision-filter]').forEach(button => button.onclick = () => {
+    revisionFilter = button.dataset.revisionFilter;
+    renderRevisionReview();
+  });
+  $$('[data-revision-match]').forEach(button => button.onclick = () => {
+    selectedRevisionMatch = Number(button.dataset.revisionMatch);
+    renderRevisionReview();
+  });
+  const openObject = side => {
+    const document = side === 'earlier' ? earlier : later;
+    const matchSection = comparison.matches[selectedRevisionMatch]?.[side];
+    selectedDoc = document.id;
+    selectedKnowledgeSection = 'all';
+    sourceNavigationTarget = createSourceTarget({
+      projectId: state().activeProject,
+      libraryId: document.libraryId,
+      documentId: document.id,
+      sectionId: matchSection?.id || '',
+      originatingWorkspace: 'revisions',
+      destination: 'knowledge'
+    });
+    show('knowledge');
+  };
+  $$('[data-revision-object]').forEach(button => button.onclick = () => openObject(button.dataset.revisionObject));
+  $$('[data-revision-source]').forEach(button => button.onclick = () => {
+    const side = button.dataset.revisionSource;
+    const document = side === 'earlier' ? earlier : later;
+    const matchSection = comparison.matches[selectedRevisionMatch]?.[side];
+    if (!matchSection?.id) return;
+    selectedDoc = document.id;
+    sourceNavigationTarget = createSourceTarget({
+      projectId: state().activeProject,
+      libraryId: document.libraryId,
+      documentId: document.id,
+      sectionId: matchSection.id,
+      originatingWorkspace: 'revisions',
+      destination: 'sources'
+    });
+    show('sources');
+  });
+  $('[data-revision-relationships]')?.addEventListener('click', () => {
+    relationshipTarget = {
+      ...relationshipNavigationTarget({ documentId: later.id, sectionId: selected?.later?.id || '' }),
+      projectId: state().activeProject,
+      libraryId: later.libraryId,
+      originatingWorkspace: 'revisions'
+    };
+    selectedDoc = later.id;
+    show('relationships');
+  });
+  $('[data-revision-version]')?.addEventListener('click', () => {
+    lineageTarget = { ...lineageNavigationTarget(later.id), originatingWorkspace: 'revisions' };
+    selectedDoc = later.id;
+    show('versions');
+  });
 }
 
 $('#upload').onclick = () => $('#fileInput').click();
@@ -4611,6 +4863,9 @@ function renderDocumentMetadata(document, allSections = []) {
             ${sourceNavigationTarget.originatingWorkspace === 'relationships'
               ? '<button type="button" data-source-return-relationships>Back to Relationship Explorer</button>'
               : ''}
+            ${sourceNavigationTarget.originatingWorkspace === 'revisions'
+              ? '<button type="button" data-source-return-revisions>Back to Revision Review</button>'
+              : ''}
             ${sourceNavigationTarget.originatingMessageId && state().chat.some(message => message.id === sourceNavigationTarget.originatingMessageId)
               ? '<button type="button" class="subtle" data-source-return-answer>Back to Answer</button>'
               : ''}
@@ -4885,6 +5140,10 @@ function renderDocumentMetadata(document, allSections = []) {
     'click',
     returnToRelationshipExplorer
   );
+  $('[data-source-return-revisions]')?.addEventListener(
+    'click',
+    returnToRevisionReview
+  );
   $('[data-source-open-inspector]')?.addEventListener('click', () => {
     sourceNavigationTarget = sourceNavigationDestination(
       sourceNavigationTarget,
@@ -5151,6 +5410,9 @@ async function renderSources() {
             ${sourceNavigationTarget.originatingWorkspace === 'relationships'
               ? '<button type="button" data-source-return-relationships>Back to Relationship Explorer</button>'
               : ''}
+            ${sourceNavigationTarget.originatingWorkspace === 'revisions'
+              ? '<button type="button" data-source-return-revisions>Back to Revision Review</button>'
+              : ''}
             ${sourceNavigationTarget.originatingMessageId && state().chat.some(message => message.id === sourceNavigationTarget.originatingMessageId)
               ? '<button type="button" class="subtle" data-source-return-answer>Back to Answer</button>'
               : ''}
@@ -5415,6 +5677,10 @@ async function renderSources() {
   $('[data-source-return-relationships]')?.addEventListener(
     'click',
     returnToRelationshipExplorer
+  );
+  $('[data-source-return-revisions]')?.addEventListener(
+    'click',
+    returnToRevisionReview
   );
   $('[data-source-open-object]')?.addEventListener('click', () => {
     sourceNavigationTarget = sourceNavigationDestination(
@@ -5826,6 +6092,7 @@ async function renderEvals() {
   const relationshipValidation = relationshipModel.validation;
   const lineageModel = buildDocumentLineage({ documents, sections });
   const lineageValidation = lineageModel.validation;
+  const revisionMetrics = buildRevisionMetrics({ documents, sections });
   const lineageIssueCount =
     lineageValidation.brokenLineage.length +
     lineageValidation.circularPreviousLinks.length +
@@ -5916,7 +6183,14 @@ async function renderEvals() {
     ['Duplicate Imports', lineageValidation.duplicateImports, 'Explicit duplicate lineage records'],
     ['Superseded Documents', lineageValidation.supersededDocuments, 'Preserved previous versions'],
     ['Broken Lineage', lineageIssueCount, 'Missing, circular, or ambiguous lineage'],
-    ['Unknown Versions', lineageValidation.unknownVersions, 'No explicit lineage metadata']
+    ['Unknown Versions', lineageValidation.unknownVersions, 'No explicit lineage metadata'],
+    ['Comparable Revision Pairs', revisionMetrics.comparableRevisionPairs, 'Exact adjacent lineage records'],
+    ['Ambiguous Revision Pairs', revisionMetrics.ambiguousRevisionPairs, 'Pairs with duplicate deterministic keys'],
+    ['Broken Revision Links', revisionMetrics.brokenLineageLinks, 'Unavailable or invalid explicit previous links'],
+    ['Added Revision Sections', revisionMetrics.addedSections, 'Unmatched later-revision sections'],
+    ['Removed Revision Sections', revisionMetrics.removedSections, 'Unmatched earlier-revision sections'],
+    ['Changed Revision Sections', revisionMetrics.changedSections, 'Matched sections with objective changes'],
+    ['Unmatched Revision Sections', revisionMetrics.unmatchedSections, 'Sections without a deterministic pair']
   ];
 
   if (activeRetrievalSession) {
@@ -6311,6 +6585,15 @@ async function renderEvals() {
       : []),
     ...(lineageValidation.unknownVersions
       ? [`${fmt(lineageValidation.unknownVersions)} existing document${lineageValidation.unknownVersions === 1 ? ' has' : 's have'} unknown version status because explicit lineage metadata is unavailable.`]
+      : []),
+    ...(revisionMetrics.ambiguousRevisionPairs
+      ? [`${fmt(revisionMetrics.ambiguousRevisionPairs)} comparable revision pair${revisionMetrics.ambiguousRevisionPairs === 1 ? ' contains' : 's contain'} ambiguous exact section keys.`]
+      : []),
+    ...(revisionMetrics.brokenLineageLinks
+      ? [`${fmt(revisionMetrics.brokenLineageLinks)} revision link${revisionMetrics.brokenLineageLinks === 1 ? ' is' : 's are'} unavailable or not valid for deterministic comparison.`]
+      : []),
+    ...(revisionMetrics.unmatchedSections
+      ? [`${fmt(revisionMetrics.unmatchedSections)} revision section${revisionMetrics.unmatchedSections === 1 ? ' has' : 's have'} no deterministic counterpart.`]
       : [])
   ];
 
