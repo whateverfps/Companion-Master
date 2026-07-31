@@ -6,6 +6,10 @@ import {
   failImportQueueItem
 } from './import-queue.js';
 import {
+  aggregateExtractionVerification,
+  verifyExtraction
+} from './extraction-verification.js';
+import {
   firstText,
   sectionHeadingValue,
   sectionLocationValue,
@@ -3348,6 +3352,11 @@ function renderDocumentMetadata(document, allSections = []) {
   );
   const allDocuments =
     knowledgeCatalogContext?.catalog?.all?.documents || [];
+  const extraction = verifyExtraction(
+    document,
+    allSections,
+    allDocuments
+  );
   const normalizedTags = new Set(
     allTags.map(tag => tag.toLowerCase())
   );
@@ -3545,6 +3554,25 @@ function renderDocumentMetadata(document, allSections = []) {
       </dl>
     </section>
 
+    <section class="mc-object-section mc-extraction-object-summary" aria-labelledby="objectExtractionTitle">
+      <div class="mc-extraction-object-heading">
+        <h4 id="objectExtractionTitle">Extraction Health</h4>
+        <button type="button" id="openObjectSourceInspector" class="subtle">
+          Open Source Inspector
+        </button>
+      </div>
+      <div class="mc-source-health-status ${esc(extraction.verificationStatus.toLowerCase().replace(/\s+/g, '-'))}">
+        <strong>${esc(extraction.verificationStatus)}</strong>
+        <span>${esc(extraction.retrievalReadiness)}</span>
+      </div>
+      <dl class="mc-object-facts mc-object-facts-compact">
+        <div><dt>Usable text</dt><dd>${extraction.usableText ? 'Available' : 'Unavailable'}</dd></div>
+        <div><dt>Actual indexed sections</dt><dd>${fmt(extraction.sections.length)}</dd></div>
+        <div><dt>Warnings</dt><dd>${fmt(extraction.warningCount)}</dd></div>
+        <div><dt>Failed checks</dt><dd>${fmt(extraction.failCount)}</dd></div>
+      </dl>
+    </section>
+
     <section class="mc-object-section" aria-labelledby="objectSummaryTitle">
       <h4 id="objectSummaryTitle">Content Summary</h4>
       ${summary
@@ -3641,6 +3669,11 @@ function renderDocumentMetadata(document, allSections = []) {
     renderKnowledgeWorkspace();
   };
 
+  $('#openObjectSourceInspector').onclick = () => {
+    selectedDoc = document.id;
+    show('sources');
+  };
+
   $$('[data-related-object]').forEach(button => {
     button.onclick = () => {
       selectedKnowledgeSection = 'all';
@@ -3695,7 +3728,14 @@ async function renderSources() {
     );
 
     $('#sourceDocumentList').innerHTML = shown.length
-      ? shown.map(document => `
+      ? shown.map(document => {
+          const extraction = verifyExtraction(
+            document,
+            sections,
+            documents
+          );
+
+          return `
           <button
             class="source-doc
               ${document.id === selectedDoc ? 'active' : ''}"
@@ -3707,12 +3747,13 @@ async function renderSources() {
               </strong>
               <small>
                 ${esc(document.category || 'General')}
-                · ${esc((document.health || 'warning').toUpperCase())}
+                · ${esc(extraction.verificationStatus)}
               </small>
             </span>
-            <b>${fmt(document.sectionCount)}</b>
+            <b>${fmt(extraction.sections.length)}</b>
           </button>
-        `).join('')
+        `;
+        }).join('')
       : '<div class="empty">No matching documents.</div>';
 
     $$('[data-doc]').forEach(button => {
@@ -3726,15 +3767,23 @@ async function renderSources() {
   $('#sourceDocumentFilter').oninput = drawDocuments;
   drawDocuments();
 
-  const selected =
-    documents.find(document =>
-      document.id === selectedDoc
-    ) ||
-    documents[0];
+  const requestedDocument = selectedDoc
+    ? documents.find(document => document.id === selectedDoc)
+    : null;
+  const selected = selectedDoc
+    ? requestedDocument
+    : documents[0];
 
   if (!selected) {
-    $('#sourceDetail').innerHTML =
-      '<div class="empty">No indexed documents.</div>';
+    $('#sourceDetail').innerHTML = selectedDoc
+      ? `
+        <div class="mc-section-preview-empty">
+          The selected document is no longer available. Choose another
+          source document to continue.
+        </div>
+      `
+      : '<div class="empty">No indexed documents.</div>';
+    selectedDoc = null;
 
     return;
   }
@@ -3747,13 +3796,15 @@ async function renderSources() {
     'Untitled document'
   );
 
-  const selectedSections = sections
-    .filter(section =>
-      section.documentId === selected.id
-    )
-    .sort((a, b) =>
-      a.order - b.order
-    );
+  const verification = verifyExtraction(
+    selected,
+    sections,
+    documents
+  );
+  const selectedSections = verification.sections;
+  const library = engine.libraries().find(item =>
+    item.id === selected.libraryId
+  );
 
   const sectionText = sectionTextValue;
   const sectionHeading = sectionHeadingValue;
@@ -3772,9 +3823,7 @@ async function renderSources() {
     0
   );
 
-  const emptySections = selectedSections.filter(section =>
-    !sectionText(section).trim()
-  ).length;
+  const emptySections = verification.emptySections.length;
 
   const shortSections = selectedSections.filter(section =>
     (section.characters || 0) < 120
@@ -3802,10 +3851,21 @@ async function renderSources() {
     characters: selected.characterCount || 0,
     words: totalWords,
     emptySections,
+    untitledSections: verification.untitledSections.length,
     shortSections,
     duplicateHeadings,
+    verificationStatus: verification.verificationStatus,
+    retrievalReadiness: verification.retrievalReadiness,
+    sectionCountMismatch: verification.sectionCountMismatch,
     generatedAt: new Date().toISOString()
   };
+  const verificationClass = verification.verificationStatus
+    .toLowerCase()
+    .replace(/\s+/g, '-');
+  const technicalDetails = [
+    selected.error,
+    selected.errorStack
+  ].map(safeText).filter(Boolean).join('\n\n');
 
   $('#sourceDetail').innerHTML = `
     <div class="source-title">
@@ -3816,6 +3876,96 @@ async function renderSources() {
         · ${esc(selected.category || 'General')}
       </p>
     </div>
+
+    <section class="mc-extraction-overview" aria-labelledby="extractionOverviewTitle">
+      <div class="mc-source-health-summary">
+        <div>
+          <span>EXTRACTION VERIFICATION</span>
+          <h3 id="extractionOverviewTitle">${esc(verification.verificationStatus)}</h3>
+          <p>${esc(verification.retrievalReadiness)}</p>
+        </div>
+        <div class="mc-source-health-actions">
+          <button type="button" id="openSourceKnowledgeObject">
+            Open Knowledge Object
+          </button>
+          <button type="button" id="reviewSourceValidation" class="subtle">
+            Review Knowledge Validation
+          </button>
+        </div>
+      </div>
+
+      <div class="mc-source-health-status ${esc(verificationClass)}">
+        <strong>${esc(verification.verificationStatus)}</strong>
+        <span>
+          ${verification.failCount
+            ? `${fmt(verification.failCount)} failed check${verification.failCount === 1 ? '' : 's'}`
+            : verification.warningCount
+              ? `${fmt(verification.warningCount)} warning${verification.warningCount === 1 ? '' : 's'}`
+              : 'No extraction issues detected'}
+        </span>
+      </div>
+
+      <dl class="mc-extraction-facts">
+        <div><dt>Filename</dt><dd>${esc(selected.name)}</dd></div>
+        <div><dt>Library</dt><dd>${library ? esc(library.name) : 'Unavailable'}</dd></div>
+        <div><dt>File type</dt><dd>${esc(documentType(selected))}</dd></div>
+        <div><dt>Parser used</dt><dd>${verification.parser ? esc(verification.parser) : 'Unavailable'}</dd></div>
+        <div><dt>Import status</dt><dd>${esc(documentStatus(selected).label)}</dd></div>
+        <div><dt>Retrieval readiness</dt><dd>${esc(verification.retrievalReadiness)}</dd></div>
+        <div><dt>Character count</dt><dd>${verification.recordedCharacters === null ? 'Unavailable' : fmt(verification.recordedCharacters)}</dd></div>
+        <div><dt>Recorded sections</dt><dd>${verification.recordedSectionCount === null ? 'Unavailable' : fmt(verification.recordedSectionCount)}</dd></div>
+        <div><dt>Stored sections</dt><dd>${fmt(verification.sections.length)}</dd></div>
+        <div><dt>Non-empty sections</dt><dd>${fmt(verification.usableSections.length)}</dd></div>
+        <div><dt>Empty sections</dt><dd>${fmt(verification.emptySections.length)}</dd></div>
+        <div><dt>Untitled sections</dt><dd>${fmt(verification.untitledSections.length)}</dd></div>
+        <div><dt>Hierarchy version</dt><dd>${selected.hierarchyVersion ?? 'Unavailable'}</dd></div>
+        <div><dt>Page metadata</dt><dd>${verification.pageMetadataAvailable ? 'Available' : 'Unavailable'}</dd></div>
+      </dl>
+
+      ${verification.warnings.length
+        ? `
+          <div class="mc-extraction-warnings">
+            <strong>Parser warnings</strong>
+            <ul>
+              ${verification.warnings.map(warning =>
+                `<li>${esc(warning)}</li>`
+              ).join('')}
+            </ul>
+          </div>
+        `
+        : ''}
+
+      ${technicalDetails
+        ? `
+          <details class="mc-extraction-technical">
+            <summary>View technical details</summary>
+            <pre>${esc(technicalDetails)}</pre>
+          </details>
+        `
+        : ''}
+    </section>
+
+    <section class="mc-extraction-check-section" aria-labelledby="extractionChecksTitle">
+      <div class="mc-extraction-section-heading">
+        <div>
+          <span>EXPLICIT CONDITIONS</span>
+          <h3 id="extractionChecksTitle">Extraction Checks</h3>
+        </div>
+      </div>
+      <ul class="mc-extraction-checks">
+        ${verification.checks.map(item => `
+          <li>
+            <span class="mc-extraction-badge ${item.status.toLowerCase()}">
+              ${esc(item.status)}
+            </span>
+            <div>
+              <strong>${esc(item.label)}</strong>
+              <p>${esc(item.detail)}</p>
+            </div>
+          </li>
+        `).join('')}
+      </ul>
+    </section>
 
     <div class="inspection-kpis">
       <article>
@@ -3840,6 +3990,54 @@ async function renderSources() {
         </strong>
       </article>
     </div>
+
+    <section class="mc-section-preview" aria-labelledby="sectionPreviewTitle">
+      <div class="mc-extraction-section-heading">
+        <div>
+          <span>STORED PLAIN TEXT</span>
+          <h3 id="sectionPreviewTitle">Section Preview</h3>
+        </div>
+        <small>
+          ${fmt(Math.min(verification.previews.length, 12))}
+          of ${fmt(verification.previews.length)} shown
+        </small>
+      </div>
+      ${verification.previews.length
+        ? `
+          <ol class="mc-section-preview-list">
+            ${verification.previews.slice(0, 12).map(preview => `
+              <li class="${preview.empty ? 'empty' : ''}">
+                <div class="mc-section-preview-heading">
+                  <strong>${esc(preview.title)}</strong>
+                  <span>
+                    ${preview.hierarchyLevel === null
+                      ? 'Level unavailable'
+                      : `Level ${fmt(preview.hierarchyLevel)}`}
+                    · Order ${fmt(preview.order + 1)}
+                    · ${fmt(preview.characters)} characters
+                  </span>
+                </div>
+                ${preview.parentTitle
+                  ? `<small>Parent: ${esc(preview.parentTitle)}</small>`
+                  : ''}
+                <p>
+                  ${preview.empty
+                    ? 'No usable text is stored for this section.'
+                    : esc(preview.excerpt)}
+                </p>
+                ${preview.empty
+                  ? '<em>EMPTY CONTENT</em>'
+                  : ''}
+              </li>
+            `).join('')}
+          </ol>
+        `
+        : `
+          <div class="mc-section-preview-empty">
+            No stored sections are available for this document.
+          </div>
+        `}
+    </section>
 
     <div class="inspection-toolbar">
       <input
@@ -3881,6 +4079,16 @@ async function renderSources() {
 
     <div id="sectionResults"></div>
   `;
+
+  $('#openSourceKnowledgeObject').onclick = () => {
+    selectedKnowledgeSection = 'all';
+    selectedDoc = selected.id;
+    show('knowledge');
+  };
+
+  $('#reviewSourceValidation').onclick = () => {
+    show('evaluate');
+  };
 
   let activeSectionId = null;
   let treeToggleHandler = null;
@@ -4240,6 +4448,10 @@ async function renderEvals() {
   const documents = await engine.documents();
   const sections = await engine.sections();
   const catalog = knowledgeCatalogData(documents, sections, libraries);
+  const extractionCoverage = aggregateExtractionVerification(
+    documents,
+    sections
+  );
   const enabledLibraries = libraries.filter(library => library.enabled);
   const indexed = documents.filter(document =>
     documentStatus(document).className === 'indexed'
@@ -4286,6 +4498,9 @@ async function renderEvals() {
     ['Indexed Documents', indexed.length, 'Recognized indexed status'],
     ['Pending Documents', pending.length, 'Awaiting or processing'],
     ['Indexed Sections', sections.length, 'Exposed production sections'],
+    ['Retrieval Ready', extractionCoverage.documentsReadyForRetrieval, 'Documents with searchable stored content'],
+    ['Extraction Warnings', extractionCoverage.documentsWithWarnings, 'Documents with objective warnings'],
+    ['No Usable Text', extractionCoverage.documentsWithoutUsableText, 'Documents without searchable content'],
     ['Categories', catalog.entries.length, 'Represented knowledge categories'],
     ['File Types', catalog.types.length, 'Represented file-type groups']
   ];
@@ -4386,13 +4601,79 @@ async function renderEvals() {
         : documents.length
           ? 'All document statuses are recognized.'
           : 'No document statuses are available.'
+    },
+    {
+      label: 'Documents ready for retrieval',
+      status: !documents.length
+        ? 'INFO'
+        : extractionCoverage.documentsReadyForRetrieval === documents.length
+          ? 'PASS'
+          : 'WARNING',
+      detail: !documents.length
+        ? 'Retrieval readiness can be checked after documents are loaded.'
+        : `${fmt(extractionCoverage.documentsReadyForRetrieval)} of ${fmt(documents.length)} document${documents.length === 1 ? ' is' : 's are'} retrieval ready.`
+    },
+    {
+      label: 'Usable extracted text',
+      status: extractionCoverage.documentsWithoutUsableText
+        ? 'FAIL'
+        : documents.length ? 'PASS' : 'INFO',
+      detail: extractionCoverage.documentsWithoutUsableText
+        ? `${fmt(extractionCoverage.documentsWithoutUsableText)} document${extractionCoverage.documentsWithoutUsableText === 1 ? ' contains' : 's contain'} no usable extracted text.`
+        : documents.length
+          ? 'Every loaded document exposes usable text.'
+          : 'No documents are available to inspect.'
+    },
+    {
+      label: 'Document and stored section counts',
+      status: extractionCoverage.documentSectionMismatches
+        ? 'WARNING'
+        : documents.length ? 'PASS' : 'INFO',
+      detail: extractionCoverage.documentSectionMismatches
+        ? `${fmt(extractionCoverage.documentSectionMismatches)} document${extractionCoverage.documentSectionMismatches === 1 ? ' reports' : 's report'} a different section count than storage.`
+        : documents.length
+          ? 'Recorded and stored section counts agree.'
+          : 'No section counts are available to compare.'
+    },
+    {
+      label: 'Section record integrity',
+      status:
+        extractionCoverage.duplicateSectionIds ||
+        extractionCoverage.orphanedSections ||
+        extractionCoverage.invalidDocumentLinks
+          ? 'FAIL'
+          : sections.length ? 'PASS' : 'INFO',
+      detail:
+        extractionCoverage.duplicateSectionIds ||
+        extractionCoverage.orphanedSections ||
+        extractionCoverage.invalidDocumentLinks
+          ? `${fmt(extractionCoverage.duplicateSectionIds)} duplicate ID(s), ${fmt(extractionCoverage.orphanedSections)} orphaned section(s), and ${fmt(extractionCoverage.invalidDocumentLinks)} invalid document link(s) were detected.`
+          : sections.length
+            ? 'Stored section identifiers and document links are consistent.'
+            : 'No stored sections are available to inspect.'
+    },
+    {
+      label: 'Section content',
+      status:
+        extractionCoverage.emptySections ||
+        extractionCoverage.untitledSections
+          ? 'WARNING'
+          : sections.length ? 'PASS' : 'INFO',
+      detail:
+        extractionCoverage.emptySections ||
+        extractionCoverage.untitledSections
+          ? `${fmt(extractionCoverage.emptySections)} empty and ${fmt(extractionCoverage.untitledSections)} untitled section(s) were detected.`
+          : sections.length
+            ? 'Stored sections contain usable text and titles.'
+            : 'No stored section content is available.'
     }
   ];
 
   const statusSymbol = {
     PASS: '✓',
     WARNING: '!',
-    INFO: 'i'
+    INFO: 'i',
+    FAIL: '×'
   };
 
   $('#validationChecks').innerHTML = `
@@ -4439,6 +4720,27 @@ async function renderEvals() {
       : []),
     ...(indexedWithoutSections.length
       ? [`${fmt(indexedWithoutSections.length)} indexed document${indexedWithoutSections.length === 1 ? ' exposes' : 's expose'} zero available sections.`]
+      : []),
+    ...(extractionCoverage.documentsWithoutUsableText
+      ? [`${fmt(extractionCoverage.documentsWithoutUsableText)} document${extractionCoverage.documentsWithoutUsableText === 1 ? ' contains' : 's contain'} no usable extracted text.`]
+      : []),
+    ...(extractionCoverage.emptySections
+      ? [`${fmt(extractionCoverage.emptySections)} stored section${extractionCoverage.emptySections === 1 ? ' contains' : 's contain'} no usable text.`]
+      : []),
+    ...(extractionCoverage.untitledSections
+      ? [`${fmt(extractionCoverage.untitledSections)} stored section${extractionCoverage.untitledSections === 1 ? ' has' : 's have'} no exposed title.`]
+      : []),
+    ...(extractionCoverage.documentSectionMismatches
+      ? [`${fmt(extractionCoverage.documentSectionMismatches)} document${extractionCoverage.documentSectionMismatches === 1 ? ' reports' : 's report'} a different section count than IndexedDB contains.`]
+      : []),
+    ...(extractionCoverage.duplicateSectionIds
+      ? [`${fmt(extractionCoverage.duplicateSectionIds)} duplicate stored section identifier${extractionCoverage.duplicateSectionIds === 1 ? ' was' : 's were'} detected.`]
+      : []),
+    ...(extractionCoverage.orphanedSections
+      ? [`${fmt(extractionCoverage.orphanedSections)} stored section${extractionCoverage.orphanedSections === 1 ? ' references' : 's reference'} no existing document.`]
+      : []),
+    ...(extractionCoverage.invalidDocumentLinks
+      ? [`${fmt(extractionCoverage.invalidDocumentLinks)} stored section${extractionCoverage.invalidDocumentLinks === 1 ? ' has' : 's have'} conflicting project, library, or filename links.`]
       : []),
     ...(unknown.length
       ? [`${fmt(unknown.length)} document${unknown.length === 1 ? ' has' : 's have'} an unrecognized or unavailable indexing status.`]
@@ -4509,6 +4811,19 @@ async function renderEvals() {
       title: 'Indexed Status',
       empty: 'No document statuses are available.',
       items: statusCoverage.map(([label, count]) => [
+        label,
+        `${fmt(count)} document${count === 1 ? '' : 's'}`
+      ])
+    },
+    {
+      title: 'Extraction Status',
+      empty: 'No extraction verification results are available.',
+      items: [
+        ['Retrieval ready', extractionCoverage.documentsReadyForRetrieval],
+        ['With warnings', extractionCoverage.documentsWithWarnings],
+        ['No usable text', extractionCoverage.documentsWithoutUsableText],
+        ['Count mismatch', extractionCoverage.documentSectionMismatches]
+      ].map(([label, count]) => [
         label,
         `${fmt(count)} document${count === 1 ? '' : 's'}`
       ])
