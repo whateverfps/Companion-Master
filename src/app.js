@@ -10,9 +10,17 @@ import {
   verifyExtraction
 } from './extraction-verification.js';
 import {
-  createRetrievalSession,
-  evidenceNavigationTarget
+  createRetrievalSession
 } from './retrieval-session.js';
+import {
+  answerAnchorId,
+  createSourceTarget,
+  resolveSourceTarget,
+  sourceAnchorId,
+  sourceNavigationActions,
+  sourceNavigationDestination,
+  sourceScrollOptions
+} from './source-navigation.js';
 import {
   firstText,
   sectionHeadingValue,
@@ -70,6 +78,9 @@ let busy = false;
 let importQueue = [];
 let activeRetrievalSession = null;
 let selectedEvidenceId = null;
+let sourceNavigationTarget = null;
+let answerNavigationTarget = null;
+let sourceNavigationNotice = '';
 
 app.innerHTML = `
 <div class="shell">
@@ -830,6 +841,146 @@ function state() {
   return engine.state();
 }
 
+function reducedMotionPreferred() {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+}
+
+function revealNavigationTarget(element) {
+  if (!element) return;
+
+  requestAnimationFrame(() => {
+    element.scrollIntoView(sourceScrollOptions(reducedMotionPreferred()));
+    element.focus({ preventScroll: true });
+  });
+}
+
+function showTransientNavigationNotice(message) {
+  sourceNavigationNotice = message;
+  const messages = $('#messages');
+
+  if (!messages || !message) return;
+
+  messages.querySelector('[data-source-navigation-notice]')?.remove();
+  messages.insertAdjacentHTML('afterbegin', `
+    <div class="mc-source-target-notice" data-source-navigation-notice role="status">
+      ${esc(message)}
+    </div>
+  `);
+}
+
+function returnToEvidenceExplorer() {
+  if (
+    activeRetrievalSession &&
+    sourceNavigationTarget?.originatingMessageId === activeRetrievalSession.messageId
+  ) {
+    selectedEvidenceId = sourceNavigationTarget.evidenceId || selectedEvidenceId;
+    show('evidence');
+    return;
+  }
+
+  show('chat');
+  showTransientNavigationNotice(
+    'The retrieval session is no longer available. Ask Chief a new question to inspect evidence.'
+  );
+}
+
+function returnToOriginatingAnswer() {
+  const messageId = sourceNavigationTarget?.originatingMessageId ||
+    activeRetrievalSession?.messageId;
+  const messageExists = state().chat.some(message =>
+    message.role === 'assistant' && message.id === messageId
+  );
+
+  if (!messageId || !messageExists) {
+    show('chat');
+    showTransientNavigationNotice('The originating answer is no longer available.');
+    return;
+  }
+
+  answerNavigationTarget = messageId;
+  show('chat');
+  const answer = document.getElementById(answerAnchorId(messageId));
+  answer?.classList.add('mc-section-highlight-answer');
+  revealNavigationTarget(answer);
+}
+
+async function openEvidenceSource(evidence, destination) {
+  if (!activeRetrievalSession || !evidence) return;
+
+  const actions = sourceNavigationActions(evidence);
+  const actionSupported = destination === 'knowledge'
+    ? actions.viewInDocument
+    : actions.openSourceInspector;
+
+  if (!actionSupported) return;
+
+  const proposedTarget = createSourceTarget({
+    projectId: activeRetrievalSession.project.id,
+    libraryId: evidence.libraryId || activeRetrievalSession.library.id,
+    documentId: evidence.documentId,
+    sectionId: evidence.sectionId,
+    evidenceId: evidence.id,
+    evidenceIndex: evidence.order,
+    originatingWorkspace: 'evidence',
+    originatingMessageId: activeRetrievalSession.messageId,
+    destination
+  });
+  const projects = state().projects;
+  const projectIsValid = proposedTarget.projectId && projects.some(project =>
+    project.id === proposedTarget.projectId
+  );
+
+  if (proposedTarget.projectId && !projectIsValid) {
+    sourceNavigationNotice = 'The source project is no longer available.';
+    renderEvidenceExplorer();
+    return;
+  }
+
+  if (projectIsValid && state().activeProject !== proposedTarget.projectId) {
+    engine.setProject(proposedTarget.projectId);
+    $('#projectSelect').value = proposedTarget.projectId;
+    selectedKnowledgeSection = 'all';
+    knowledgeCatalogContext = null;
+  }
+
+  const documents = await engine.documents();
+  const sections = await engine.sections();
+  const libraries = engine.libraries();
+  const resolution = resolveSourceTarget(proposedTarget, {
+    projects: state().projects,
+    libraries,
+    documents,
+    sections
+  });
+
+  if (resolution.status === 'missing-document') {
+    sourceNavigationNotice = 'The source document is no longer available.';
+    renderEvidenceExplorer();
+    return;
+  }
+
+  if (resolution.status === 'none') return;
+
+  sourceNavigationTarget = sourceNavigationDestination(
+    proposedTarget,
+    destination
+  );
+  sourceNavigationNotice = resolution.status === 'missing-section'
+    ? 'Source section unavailable'
+    : '';
+  selectedDoc = resolution.document.id;
+
+  if (resolution.library?.enabled && state().activeLibrary !== resolution.library.id) {
+    engine.setLibrary(resolution.library.id);
+  }
+
+  if (destination === 'knowledge') {
+    selectedKnowledgeSection = 'all';
+  }
+
+  show(destination);
+}
+
 function modeLabel(mode) {
   return {
     offline: 'Offline evidence',
@@ -887,6 +1038,9 @@ $('#projectSelect').onchange = async () => {
   selectedDoc = null;
   selectedKnowledgeSection = 'all';
   knowledgeCatalogContext = null;
+  sourceNavigationTarget = null;
+  answerNavigationTarget = null;
+  sourceNavigationNotice = '';
   await refresh();
 };
 
@@ -1195,8 +1349,13 @@ function renderMessages(
   const previousScrollTop = $('#messages').scrollTop;
 
   $('#messages').innerHTML = chat.length
-    ? chat.map((message, messageIndex) => `
-        <article class="message ${message.role}">
+      ? chat.map((message, messageIndex) => `
+        <article
+          class="message ${message.role} ${message.id === answerNavigationTarget ? 'mc-section-highlight-answer' : ''}"
+          ${message.role === 'assistant'
+            ? `id="${answerAnchorId(message.id)}" tabindex="-1"`
+            : ''}
+        >
           ${message.role === 'user'
             ? '<div class="avatar">YOU</div>'
             : `
@@ -1395,6 +1554,9 @@ $('#clearChat').onclick = () => {
   engine.clearChat();
   activeRetrievalSession = null;
   selectedEvidenceId = null;
+  sourceNavigationTarget = null;
+  answerNavigationTarget = null;
+  sourceNavigationNotice = '';
   setChiefState('idle');
   refresh();
 };
@@ -1691,24 +1853,42 @@ function renderEvidenceExplorer() {
   }
 
   $('#evidenceExplorerList').innerHTML = session.evidence.length
-    ? session.evidence.map(item => `
-      <button
-        type="button"
-        class="mc-evidence-item ${item.id === selectedEvidenceId ? 'active' : ''}"
-        data-evidence-id="${esc(item.id)}"
-      >
-        <span class="mc-evidence-rank">${fmt(item.order + 1)}</span>
-        <span class="mc-evidence-item-copy">
-          <strong>[${esc(item.citationReference)}] ${esc(item.heading)}</strong>
-          <small>${esc(item.documentName)} · ${esc(item.libraryName)}</small>
-          <em>${esc(item.retrievalStatus)}</em>
-          <p>${item.excerpt ? esc(item.excerpt) : 'No stored section text is available.'}</p>
-        </span>
-        <span class="mc-evidence-score">
-          ${item.retrievalScore === null ? 'Score unavailable' : `Score ${item.retrievalScore.toFixed(1)}`}
-        </span>
-      </button>
-    `).join('')
+    ? session.evidence.map(item => {
+      const actions = sourceNavigationActions(item);
+      return `
+      <article class="mc-evidence-navigation-item">
+        <button
+          type="button"
+          class="mc-evidence-item ${item.id === selectedEvidenceId ? 'active' : ''}"
+          data-evidence-id="${esc(item.id)}"
+          ${item.id === selectedEvidenceId ? 'aria-current="true"' : ''}
+        >
+          <span class="mc-evidence-rank">${fmt(item.order + 1)}</span>
+          <span class="mc-evidence-item-copy">
+            <strong>[${esc(item.citationReference)}] ${esc(item.heading)}</strong>
+            <small>${esc(item.documentName)} · ${esc(item.libraryName)}</small>
+            <em>${esc(item.retrievalStatus)}</em>
+            <p>${item.excerpt ? esc(item.excerpt) : 'No stored section text is available.'}</p>
+          </span>
+          <span class="mc-evidence-score">
+            ${item.retrievalScore === null ? 'Score unavailable' : `Score ${item.retrievalScore.toFixed(1)}`}
+          </span>
+        </button>
+        ${actions.viewInDocument || actions.openSourceInspector
+          ? `
+            <div class="mc-evidence-navigation-actions">
+              ${actions.viewInDocument
+                ? `<button type="button" data-evidence-source="knowledge" data-source-evidence-id="${esc(item.id)}">View in Document</button>`
+                : ''}
+              ${actions.openSourceInspector
+                ? `<button type="button" class="subtle" data-evidence-source="sources" data-source-evidence-id="${esc(item.id)}">Open in Source Inspector</button>`
+                : ''}
+            </div>
+          `
+          : ''}
+      </article>
+    `;
+    }).join('')
     : `
       <div class="mc-evidence-empty">
         No supporting evidence was retrieved for the latest question.
@@ -1718,6 +1898,7 @@ function renderEvidenceExplorer() {
   const selected = session.evidence.find(item =>
     item.id === selectedEvidenceId
   );
+  const selectedActions = sourceNavigationActions(selected || {});
 
   $('#evidenceExplorerDetail').innerHTML = selected
     ? `
@@ -1750,9 +1931,19 @@ function renderEvidenceExplorer() {
             : '<div class="mc-evidence-empty">No stored section text is available.</div>'}
         </section>
         <div class="mc-evidence-detail-actions">
-          <button type="button" data-evidence-navigation="knowledge">Open Knowledge Object</button>
-          <button type="button" data-evidence-navigation="sources" class="subtle">Open Source Inspector</button>
+          ${selectedActions.viewInDocument
+            ? '<button type="button" data-evidence-navigation="knowledge">View in Document</button>'
+            : ''}
+          ${selectedActions.openSourceInspector
+            ? '<button type="button" data-evidence-navigation="sources" class="subtle">Open in Source Inspector</button>'
+            : ''}
+          ${session.messageId && state().chat.some(message => message.id === session.messageId)
+            ? '<button type="button" data-evidence-back-answer class="subtle">Back to Answer</button>'
+            : ''}
         </div>
+        ${sourceNavigationNotice
+          ? `<div class="mc-source-target-unavailable" role="status">${esc(sourceNavigationNotice)}</div>`
+          : ''}
       </article>
     `
     : '<div class="mc-evidence-empty">Select an evidence item to inspect its stored section.</div>';
@@ -1765,26 +1956,26 @@ function renderEvidenceExplorer() {
   });
 
   $$('[data-evidence-navigation]').forEach(button => {
+    button.onclick = () => void openEvidenceSource(
+      selected,
+      button.dataset.evidenceNavigation
+    );
+  });
+
+  $$('[data-evidence-source]').forEach(button => {
     button.onclick = () => {
-      const target = evidenceNavigationTarget(
-        session,
-        selectedEvidenceId
+      const evidence = session.evidence.find(item =>
+        item.id === button.dataset.sourceEvidenceId
       );
-
-      if (!target?.documentId) {
-        return;
-      }
-
-      selectedDoc = target.documentId;
-
-      if (button.dataset.evidenceNavigation === 'knowledge') {
-        selectedKnowledgeSection = 'all';
-        show(target.knowledgeView);
-      } else {
-        show(target.sourceView);
-      }
+      selectedEvidenceId = evidence?.id || selectedEvidenceId;
+      void openEvidenceSource(evidence, button.dataset.evidenceSource);
     };
   });
+
+  $('[data-evidence-back-answer]')?.addEventListener(
+    'click',
+    returnToOriginatingAnswer
+  );
 }
 
 $('#upload').onclick = () => $('#fileInput').click();
@@ -3431,6 +3622,10 @@ function renderDocuments(
   $$('[data-document-select]').forEach(button => {
     button.onclick = () => {
       selectedDoc = button.dataset.documentSelect;
+      if (sourceNavigationTarget?.documentId !== selectedDoc) {
+        sourceNavigationTarget = null;
+        sourceNavigationNotice = '';
+      }
 
       renderDocumentMetadata(
         documents.find(document =>
@@ -3670,6 +3865,18 @@ function renderDocumentMetadata(document, allSections = []) {
     allSections,
     allDocuments
   );
+  const objectSourceResolution = sourceNavigationTarget?.destination === 'knowledge' &&
+    sourceNavigationTarget.documentId === document.id
+    ? resolveSourceTarget(sourceNavigationTarget, {
+        projects: state().projects,
+        libraries: engine.libraries(),
+        documents: allDocuments,
+        sections: allSections
+      })
+    : null;
+  const objectTargetSection = objectSourceResolution?.status === 'section'
+    ? objectSourceResolution.section
+    : null;
   const normalizedTags = new Set(
     allTags.map(tag => tag.toLowerCase())
   );
@@ -3792,6 +3999,20 @@ function renderDocumentMetadata(document, allSections = []) {
   $('#documentDetailsTitle').textContent = 'Knowledge Object';
   $('#documentMetadata').innerHTML = `
     <div class="mc-object-inspector">
+    ${objectSourceResolution
+      ? `
+        <nav class="mc-source-target-return" aria-label="Source navigation">
+          <strong>Evidence source context</strong>
+          <div>
+            <button type="button" data-source-return-evidence>Back to Evidence Explorer</button>
+            ${sourceNavigationTarget.originatingMessageId && state().chat.some(message => message.id === sourceNavigationTarget.originatingMessageId)
+              ? '<button type="button" class="subtle" data-source-return-answer>Back to Answer</button>'
+              : ''}
+            <button type="button" class="subtle" data-source-open-inspector>Open in Source Inspector</button>
+          </div>
+        </nav>
+      `
+      : ''}
     <header class="mc-object-header">
       <div class="mc-object-header-actions">
         <span>READ-ONLY KNOWLEDGE OBJECT</span>
@@ -3910,10 +4131,23 @@ function renderDocumentMetadata(document, allSections = []) {
         ? `
           <ol class="mc-object-outline">
             ${sections.map((section, index) => `
-              <li>
+              <li
+                id="${sourceAnchorId('knowledge-section', section.id)}"
+                class="${objectTargetSection?.id === section.id ? 'mc-section-highlight-active' : ''}"
+                ${objectTargetSection?.id === section.id ? 'tabindex="-1" aria-current="true"' : ''}
+              >
+                ${objectTargetSection?.id === section.id
+                  ? '<em class="mc-source-target-indicator">Evidence source</em>'
+                  : ''}
                 <strong>${esc(sectionHeadingValue(section, index))}</strong>
+                ${Array.isArray(section.path) && section.path.length
+                  ? `<small>${esc(section.path.map(safeText).join(' › '))}</small>`
+                  : ''}
                 ${sectionLocationValue(section)
                   ? `<span>${esc(sectionLocationValue(section))}</span>`
+                  : ''}
+                ${objectTargetSection?.id === section.id
+                  ? `<pre>${esc(sectionTextValue(section))}</pre>`
                   : ''}
               </li>
             `).join('')}
@@ -3924,6 +4158,14 @@ function renderDocumentMetadata(document, allSections = []) {
             No indexed sections are currently available.
           </div>
         `}
+      ${objectSourceResolution?.status === 'missing-section'
+        ? `
+          <div class="mc-source-target-unavailable" role="status">
+            <strong>Source section unavailable</strong>
+            <span>The document is available, but the exact stored section no longer exists.</span>
+          </div>
+        `
+        : ''}
     </section>
 
     <section class="mc-object-section mc-object-section-wide" aria-labelledby="objectRelationshipsTitle">
@@ -3984,8 +4226,38 @@ function renderDocumentMetadata(document, allSections = []) {
 
   $('#openObjectSourceInspector').onclick = () => {
     selectedDoc = document.id;
+    if (sourceNavigationTarget?.documentId === document.id) {
+      sourceNavigationTarget = sourceNavigationDestination(
+        sourceNavigationTarget,
+        'sources'
+      );
+    }
     show('sources');
   };
+
+  $('[data-source-return-evidence]')?.addEventListener(
+    'click',
+    returnToEvidenceExplorer
+  );
+  $('[data-source-return-answer]')?.addEventListener(
+    'click',
+    returnToOriginatingAnswer
+  );
+  $('[data-source-open-inspector]')?.addEventListener('click', () => {
+    sourceNavigationTarget = sourceNavigationDestination(
+      sourceNavigationTarget,
+      'sources'
+    );
+    show('sources');
+  });
+
+  if (objectTargetSection) {
+    revealNavigationTarget(
+      globalThis.document.getElementById(
+        sourceAnchorId('knowledge-section', objectTargetSection.id)
+      )
+    );
+  }
 
   $$('[data-related-object]').forEach(button => {
     button.onclick = () => {
@@ -4072,6 +4344,10 @@ async function renderSources() {
     $$('[data-doc]').forEach(button => {
       button.onclick = () => {
         selectedDoc = button.dataset.doc;
+        if (sourceNavigationTarget?.documentId !== selectedDoc) {
+          sourceNavigationTarget = null;
+          sourceNavigationNotice = '';
+        }
         renderSources();
       };
     });
@@ -4115,9 +4391,19 @@ async function renderSources() {
     documents
   );
   const selectedSections = verification.sections;
-  const library = engine.libraries().find(item =>
+  const sourceLibraries = engine.libraries();
+  const library = sourceLibraries.find(item =>
     item.id === selected.libraryId
   );
+  const sourceTargetResolution = sourceNavigationTarget?.destination === 'sources' &&
+    sourceNavigationTarget.documentId === selected.id
+    ? resolveSourceTarget(sourceNavigationTarget, {
+        projects: state().projects,
+        libraries: sourceLibraries,
+        documents,
+        sections
+      })
+    : null;
 
   const sectionText = sectionTextValue;
   const sectionHeading = sectionHeadingValue;
@@ -4181,6 +4467,20 @@ async function renderSources() {
   ].map(safeText).filter(Boolean).join('\n\n');
 
   $('#sourceDetail').innerHTML = `
+    ${sourceTargetResolution
+      ? `
+        <nav class="mc-source-target-return" aria-label="Source navigation">
+          <strong>Evidence source context</strong>
+          <div>
+            <button type="button" data-source-return-evidence>Back to Evidence Explorer</button>
+            ${sourceNavigationTarget.originatingMessageId && state().chat.some(message => message.id === sourceNavigationTarget.originatingMessageId)
+              ? '<button type="button" class="subtle" data-source-return-answer>Back to Answer</button>'
+              : ''}
+            <button type="button" class="subtle" data-source-open-object>Back to Knowledge Object</button>
+          </div>
+        </nav>
+      `
+      : ''}
     <div class="source-title">
       <span>EXTRACTION VERIFICATION</span>
       <h2>${esc(documentLabel)}</h2>
@@ -4352,6 +4652,15 @@ async function renderSources() {
         `}
     </section>
 
+    ${sourceTargetResolution?.status === 'missing-section'
+      ? `
+        <div class="mc-source-target-unavailable" role="status">
+          <strong>Source section unavailable</strong>
+          <span>The document is available, but the exact stored section no longer exists.</span>
+        </div>
+      `
+      : ''}
+
     <div class="inspection-toolbar">
       <input
         id="sectionFilter"
@@ -4403,7 +4712,24 @@ async function renderSources() {
     show('evaluate');
   };
 
-  let activeSectionId = null;
+  $('[data-source-return-evidence]')?.addEventListener(
+    'click',
+    returnToEvidenceExplorer
+  );
+  $('[data-source-return-answer]')?.addEventListener(
+    'click',
+    returnToOriginatingAnswer
+  );
+  $('[data-source-open-object]')?.addEventListener('click', () => {
+    sourceNavigationTarget = sourceNavigationDestination(
+      sourceNavigationTarget,
+      'knowledge'
+    );
+    selectedKnowledgeSection = 'all';
+    show('knowledge');
+  });
+
+  let activeSectionId = sourceTargetResolution?.section?.id || null;
   let treeToggleHandler = null;
   const sectionsById = new Map(selectedSections.map(section => [section.id, section]));
   const sectionIndexById = new Map(selectedSections.map((section, index) => [section.id, index]));
@@ -4419,6 +4745,14 @@ async function renderSources() {
     const parentId = sectionsById.has(section.parentId) ? section.parentId : null;
     if (!childrenByParent.has(parentId)) childrenByParent.set(parentId, []);
     childrenByParent.get(parentId).push(section);
+  }
+  const targetedBranchIds = new Set();
+  let targetedBranchSection = activeSectionId
+    ? sectionsById.get(activeSectionId)
+    : null;
+  while (targetedBranchSection) {
+    targetedBranchIds.add(targetedBranchSection.id);
+    targetedBranchSection = sectionsById.get(targetedBranchSection.parentId);
   }
 
   const branchSections = sectionId => {
@@ -4486,15 +4820,20 @@ async function renderSources() {
 
           return `
           <details
-            class="source-section ${section.id === activeSectionId ? 'active' : ''}"
+            id="${sourceAnchorId('source-section', section.id)}"
+            class="source-section ${section.id === activeSectionId ? 'active mc-section-highlight-active' : ''}"
             data-section-node="${esc(section.id)}"
-            ${query || section.id === activeSectionId ? 'open' : ''}
+            ${section.id === activeSectionId ? 'tabindex="-1" aria-current="true"' : ''}
+            ${query || targetedBranchIds.has(section.id) ? 'open' : ''}
           >
             <summary data-activate-section="${esc(section.id)}">
               <b>${section.order + 1}</b>
 
               <span style="--level:${Math.max(0, (section.level || 1) - 1)}">
                 <strong>${esc(heading)}</strong>
+                ${section.id === activeSectionId
+                  ? '<i class="mc-source-target-indicator">Evidence source</i>'
+                  : ''}
                 <small>
                   ${esc(
                     (Array.isArray(section.path)
@@ -4558,9 +4897,7 @@ async function renderSources() {
       const shownChildren = children.filter(child => (!query && !level) || visibleIds.has(child.id));
       container.innerHTML = shownChildren.map(renderNode).join('');
       container.dataset.loaded = 'true';
-      if (query || level) {
-        container.querySelectorAll(':scope > details[open]').forEach(populateChildren);
-      }
+      container.querySelectorAll(':scope > details[open]').forEach(populateChildren);
     };
 
     const activate = sectionId => {
@@ -4608,6 +4945,14 @@ async function renderSources() {
         ].filter(Boolean).join(' '));
       }
     };
+
+    if (activeSectionId) {
+      revealNavigationTarget(
+        globalThis.document.getElementById(
+          sourceAnchorId('source-section', activeSectionId)
+        )
+      );
+    }
   };
 
   let filterTimer;
