@@ -60,7 +60,7 @@ function createIndexedDB() {
           const records = ensureStore(operation.store).records;
 
           if (operation.type === 'put') {
-            records.set(operation.value.id, structuredClone(operation.value));
+            records.set(operation.value.id || operation.value.inspectionId, structuredClone(operation.value));
           } else {
             records.delete(operation.key);
           }
@@ -100,8 +100,8 @@ function createIndexedDB() {
       getAllKeys: key => {
         const request = {};
         setTimeout(() => {
-          request.result = matchingRecords(storeName, indexName, key)
-            .map(record => record.id);
+              request.result = matchingRecords(storeName, indexName, key)
+                .map(record => record.id || record.inspectionId);
           request.onsuccess?.();
         }, 0);
         return request;
@@ -141,12 +141,12 @@ function createIndexedDB() {
             const request = {};
             setTimeout(() => {
               request.result = matchingRecords(name, indexName, key)
-                .map(record => record.id);
+                .map(record => record.id || record.inspectionId);
               request.onsuccess?.();
 
               for (const record of matchingRecords(name, indexName, key)) {
                 operations.push({
-                  key: record.id,
+                  key: record.id || record.inspectionId,
                   store: name,
                   type: 'delete'
                 });
@@ -432,6 +432,9 @@ test('approved deterministic project import preserves fixture identifiers and me
   assert.deepEqual(documents.map(item => item.id).sort(), fixture.documents.map(item => item.id).sort());
   assert.deepEqual(sections.map(item => item.id).sort(), fixture.sections.map(item => item.id).sort());
   assert.equal(documents.find(item => item.id === 'mc-demo-doc-drawing-a201-r2').lineageId, 'mc-demo-lineage-a201');
+  const inspectionRecords = await engine.inspectionRecords({ includeArchived: true });
+  assert.equal(inspectionRecords.length, 5);
+  assert.deepEqual(inspectionRecords.map(item => item.inspectionId).sort(), fixture.inspectionRecords.map(item => item.inspectionId).sort());
   const questions = [
     'What is required for Telecom Room TR-1 readiness?',
     'What inspection requirements apply to penetration firestopping under 07 84 13?',
@@ -482,11 +485,40 @@ test('ordinary project imports retain identifier remapping and imported naming b
     manifest: { project: { id: 'ordinary-source-project', name: 'Ordinary Source', custom: 'not promoted' } },
     libraries: [{ id: 'ordinary-source-library', projectId: 'ordinary-source-project', name: 'Source Library', enabled: true }],
     documents: [{ id: 'ordinary-source-document', projectId: 'ordinary-source-project', libraryId: 'ordinary-source-library', name: 'Source.txt', status: 'verified', sectionCount: 1 }],
-    sections: [{ id: 'ordinary-source-section', projectId: 'ordinary-source-project', libraryId: 'ordinary-source-library', documentId: 'ordinary-source-document', text: 'Ordinary import content.', crossReferenceIds: [] }]
+    sections: [{ id: 'ordinary-source-section', projectId: 'ordinary-source-project', libraryId: 'ordinary-source-library', documentId: 'ordinary-source-document', text: 'Ordinary import content.', crossReferenceIds: [] }],
+    inspectionRecords: [{ inspectionId: 'ordinary-inspection', projectId: 'ordinary-source-project', inspectionNumber: 'INS-004', title: 'Imported inspection', inspectionDate: '2026-07-30', status: 'Complete', result: 'Acceptable', sourceDocumentIds: ['ordinary-source-document'], sourceSectionIds: ['ordinary-source-section'], evidenceReferences: [{ documentId: 'ordinary-source-document', sectionId: 'ordinary-source-section' }] }]
   };
   const imported = await engine.importProject(ordinary);
   assert.notEqual(imported.id, ordinary.manifest.project.id);
   assert.equal(imported.name, 'Ordinary Source (Imported)');
   assert.notEqual((await engine.documents())[0].id, ordinary.documents[0].id);
   assert.notEqual((await engine.sections())[0].id, ordinary.sections[0].id);
+  const importedInspection = (await engine.inspectionRecords())[0];
+  assert.notEqual(importedInspection.inspectionId, ordinary.inspectionRecords[0].inspectionId);
+  assert.deepEqual(importedInspection.sourceDocumentIds, [(await engine.documents())[0].id]);
+  assert.deepEqual(importedInspection.sourceSectionIds, [(await engine.sections())[0].id]);
+});
+
+test('Inspection Record CRUD is project-isolated, archived numbers are not reused, and export includes records', async () => {
+  const project = engine.addProject('Inspection CRUD Project');
+  const created = await engine.createInspectionRecord({ title: 'Initial inspection', inspectionDate: '2026-07-31' });
+  assert.equal(created.inspectionNumber, 'INS-001');
+  assert.equal((await engine.inspectionRecord(created.inspectionId)).title, 'Initial inspection');
+  const updated = await engine.updateInspectionRecord(created.inspectionId, { status: 'Complete', result: 'Acceptable', observedConditions: 'User-entered condition.' });
+  assert.equal(updated.result, 'Acceptable');
+  await engine.archiveInspectionRecord(created.inspectionId);
+  assert.equal((await engine.inspectionRecords()).length, 0);
+  assert.equal(await engine.nextInspectionNumber(project.id), 'INS-002');
+  assert.equal((await engine.exportProject()).inspectionRecords.length, 1);
+  const other = engine.addProject('Other Inspection Project');
+  assert.equal((await engine.inspectionRecords({ includeArchived: true })).length, 0);
+  engine.setProject(project.id);
+  await engine.deleteProject(project.id);
+  engine.setProject(other.id);
+  assert.equal(await engine.inspectionRecord(created.inspectionId), null);
+});
+
+test('ordinary import remains backward compatible when Inspection Records are absent', async () => {
+  await engine.importProject({ manifest: { project: { name: 'Legacy without inspections' } }, libraries: [], documents: [], sections: [] });
+  assert.deepEqual(await engine.inspectionRecords({ includeArchived: true }), []);
 });

@@ -130,6 +130,41 @@ for (const [key, libraryId, name, category, type, number, title, content, refs, 
   sections.push(section(secId, docId, libraryId, number, title, content, refs, metadata));
 }
 
+const inspectionRecords = [
+  {
+    inspectionId: 'mc-demo-inspection-record-001', projectId: DEMO_PROJECT_ID, inspectionNumber: 'INS-001',
+    title: 'Above-ceiling coordination inspection', inspectionType: 'Coordination', status: 'Complete', result: 'Acceptable', inspectionDate: '2026-02-24',
+    createdAt: '2026-02-24T19:00:00.000Z', updatedAt: '2026-02-24T20:00:00.000Z', inspectorName: 'Demonstration Inspector',
+    building: 'Clinic Building', area: 'Exam Wing A', room: 'Room 112 Exam', trade: 'Coordination', discipline: 'Architectural',
+    description: 'Fictional above-ceiling coordination inspection.', scope: 'Verify the approved cable-tray reroute before ceiling closure.',
+    observedConditions: 'The installed route clears the existing duct and follows A201 Revision 2.', correctiveActionRequired: false, followUpRequired: false, followUpDate: '', notes: '',
+    sourceDocumentIds: ['mc-demo-doc-inspection-001'], sourceSectionIds: ['mc-demo-sec-inspection-001'], evidenceReferences: [{ documentId: 'mc-demo-doc-evidence-003', sectionId: 'mc-demo-sec-evidence-003' }],
+    relatedDrawingIds: ['mc-demo-doc-drawing-a201-r2','mc-demo-doc-drawing-m101','mc-demo-doc-drawing-t101'], relatedSpecificationIds: ['mc-demo-doc-spec-271000'], relatedRfiIds: ['mc-demo-doc-rfi-002'], relatedSubmittalIds: ['mc-demo-doc-sub-005'], relatedDeficiencyIds: ['mc-demo-doc-def-002'],
+    relationshipIds: [], versionIds: ['mc-demo-doc-drawing-a201-r2'], revisionIds: ['mc-demo-doc-drawing-a201-r1->mc-demo-doc-drawing-a201-r2'], workflowTemplateId: 'Inspection Preparation', archivedAt: ''
+  },
+  {
+    inspectionId: 'mc-demo-inspection-record-002', projectId: DEMO_PROJECT_ID, inspectionNumber: 'INS-002',
+    title: 'Firestopping inspection', inspectionType: 'Quality Control', status: 'Closed', result: 'Deficient', inspectionDate: '2026-03-12',
+    createdAt: '2026-03-12T18:00:00.000Z', updatedAt: '2026-03-18T18:00:00.000Z', inspectorName: 'Demonstration Inspector', building: 'Clinic Building', area: 'Corridor C-100', room: '', trade: 'Firestopping', discipline: 'Architectural',
+    description: 'Fictional rated-penetration inspection.', scope: 'Verify listed systems before concealment.', observedConditions: 'One conduit penetration was unsealed at the initial inspection.', correctiveActionRequired: true, followUpRequired: false, followUpDate: '', notes: 'Closed after documented correction.',
+    sourceDocumentIds: ['mc-demo-doc-inspection-002'], sourceSectionIds: ['mc-demo-sec-inspection-002'], evidenceReferences: [{ documentId: 'mc-demo-doc-evidence-004', sectionId: 'mc-demo-sec-evidence-004' },{ documentId: 'mc-demo-doc-evidence-005', sectionId: 'mc-demo-sec-evidence-005' }],
+    relatedDrawingIds: [], relatedSpecificationIds: ['mc-demo-doc-spec-078413'], relatedRfiIds: ['mc-demo-doc-rfi-005'], relatedSubmittalIds: ['mc-demo-doc-sub-002'], relatedDeficiencyIds: ['mc-demo-doc-def-001'], relationshipIds: [], versionIds: [], revisionIds: [], workflowTemplateId: 'Inspection Preparation', archivedAt: ''
+  },
+  {
+    inspectionId: 'mc-demo-inspection-record-003', projectId: DEMO_PROJECT_ID, inspectionNumber: 'INS-003',
+    title: 'Telecom-room readiness inspection', inspectionType: 'Readiness', status: 'Follow-Up Required', result: 'Acceptable with Comments', inspectionDate: '2026-03-15',
+    createdAt: '2026-03-15T18:00:00.000Z', updatedAt: '2026-03-15T19:00:00.000Z', inspectorName: 'Demonstration Inspector', building: 'Clinic Building', area: 'Telecom Room TR-1', room: 'Room 130 Telecom', trade: 'Telecommunications', discipline: 'Telecommunications',
+    description: 'Fictional telecom-room readiness inspection.', scope: 'Verify room, rack, tray, grounding, and labeling readiness.', observedConditions: 'Room was ready except rack bonding required correction.', correctiveActionRequired: true, followUpRequired: true, followUpDate: '2026-03-19', notes: '',
+    sourceDocumentIds: ['mc-demo-doc-inspection-003'], sourceSectionIds: ['mc-demo-sec-inspection-003'], evidenceReferences: [{ documentId: 'mc-demo-doc-evidence-007', sectionId: 'mc-demo-sec-evidence-007' }], relatedDrawingIds: ['mc-demo-doc-drawing-t101'], relatedSpecificationIds: ['mc-demo-doc-spec-271000'], relatedRfiIds: ['mc-demo-doc-rfi-006'], relatedSubmittalIds: ['mc-demo-doc-sub-005'], relatedDeficiencyIds: ['mc-demo-doc-def-004'], relationshipIds: [], versionIds: [], revisionIds: [], workflowTemplateId: 'Inspection Preparation', archivedAt: ''
+  },
+  {
+    inspectionId: 'mc-demo-inspection-record-004', projectId: DEMO_PROJECT_ID, inspectionNumber: 'INS-004', title: 'Fire alarm rough-in inspection', inspectionType: 'Rough-In', status: 'Complete', result: 'Deficient', inspectionDate: '2026-03-16', createdAt: '2026-03-16T18:00:00.000Z', updatedAt: '2026-03-16T19:00:00.000Z', inspectorName: 'Demonstration Inspector', building: 'Clinic Building', area: 'Pharmacy', room: 'Room 121 Pharmacy', trade: 'Fire Alarm', discipline: 'Fire Alarm', description: 'Fictional fire alarm rough-in inspection.', scope: 'Verify device rough-in against approved sources.', observedConditions: 'The pharmacy device mounting height required correction.', correctiveActionRequired: true, followUpRequired: true, followUpDate: '2026-03-20', notes: '', sourceDocumentIds: ['mc-demo-doc-inspection-004'], sourceSectionIds: ['mc-demo-sec-inspection-004'], evidenceReferences: [{ documentId: 'mc-demo-doc-evidence-006', sectionId: 'mc-demo-sec-evidence-006' }], relatedDrawingIds: ['mc-demo-doc-drawing-fa101'], relatedSpecificationIds: ['mc-demo-doc-spec-283100'], relatedRfiIds: ['mc-demo-doc-rfi-003'], relatedSubmittalIds: ['mc-demo-doc-sub-004'], relatedDeficiencyIds: ['mc-demo-doc-def-003'], relationshipIds: [], versionIds: [], revisionIds: [], workflowTemplateId: 'Inspection Preparation', archivedAt: ''
+  },
+  {
+    inspectionId: 'mc-demo-inspection-record-005', projectId: DEMO_PROJECT_ID, inspectionNumber: 'INS-005', title: 'HVAC startup observation', inspectionType: 'Startup', status: 'Closed', result: 'Acceptable with Comments', inspectionDate: '2026-03-19', createdAt: '2026-03-19T18:00:00.000Z', updatedAt: '2026-03-21T18:00:00.000Z', inspectorName: 'Demonstration Inspector', building: 'Clinic Building', area: 'Exam Wing A', room: '', trade: 'HVAC', discipline: 'Mechanical', description: 'Fictional HVAC startup observation.', scope: 'Observe startup and service-access conditions.', observedConditions: 'Operation was acceptable; one access-clearance correction was documented.', correctiveActionRequired: true, followUpRequired: false, followUpDate: '', notes: 'Closed after access correction.', sourceDocumentIds: ['mc-demo-doc-inspection-005'], sourceSectionIds: ['mc-demo-sec-inspection-005'], evidenceReferences: [], relatedDrawingIds: ['mc-demo-doc-drawing-m101'], relatedSpecificationIds: ['mc-demo-doc-spec-230500'], relatedRfiIds: [], relatedSubmittalIds: ['mc-demo-doc-sub-003'], relatedDeficiencyIds: ['mc-demo-doc-def-008'], relationshipIds: [], versionIds: [], revisionIds: [], workflowTemplateId: 'Inspection Preparation', archivedAt: ''
+  }
+];
+
 const fixture = {
   manifest: { version: 'demo-1', project: {
     id: DEMO_PROJECT_ID, name: DEMO_PROJECT_NAME, canonicalName: 'Mission Companion Demonstration Project',
@@ -144,6 +179,7 @@ const fixture = {
   ],
   documents,
   sections,
+  inspectionRecords,
   evaluations: []
 };
 
@@ -161,11 +197,13 @@ export function validateDemonstrationProject(value = DEMONSTRATION_PROJECT) {
   const libraries = Array.isArray(value?.libraries) ? value.libraries : [];
   const docs = Array.isArray(value?.documents) ? value.documents : [];
   const secs = Array.isArray(value?.sections) ? value.sections : [];
+  const inspections = Array.isArray(value?.inspectionRecords) ? value.inspectionRecords : [];
   const unique = (records, label) => {
     const ids = records.map(item => item?.id).filter(Boolean);
     if (ids.length !== records.length || new Set(ids).size !== ids.length) errors.push(`${label} identifiers must be present and unique.`);
   };
   unique(libraries, 'Library'); unique(docs, 'Document'); unique(secs, 'Section');
+  unique(inspections.map(item => ({ id: item.inspectionId })), 'Inspection Record');
   if (project?.id !== DEMO_PROJECT_ID || !project?.isDemonstration) errors.push('Canonical demonstration project metadata is invalid.');
   const libraryIds = new Set(libraries.map(item => item.id));
   const documentIds = new Set(docs.map(item => item.id));
@@ -183,8 +221,13 @@ export function validateDemonstrationProject(value = DEMONSTRATION_PROJECT) {
     if (!Array.isArray(item.path) || item.path.some(part => typeof part !== 'string')) errors.push(`Section ${item.id} has an invalid hierarchy path.`);
     (item.crossReferenceIds || []).forEach(id => { if (!sectionIds.has(id)) errors.push(`Section ${item.id} has a broken cross reference ${id}.`); });
   });
+  inspections.forEach(item => {
+    if (item.projectId !== project?.id) errors.push(`Inspection Record ${item.inspectionId} has an invalid project link.`);
+    [...(item.sourceDocumentIds || []), ...(item.relatedDrawingIds || []), ...(item.relatedSpecificationIds || []), ...(item.relatedRfiIds || []), ...(item.relatedSubmittalIds || []), ...(item.relatedDeficiencyIds || [])].forEach(id => { if (!documentIds.has(id)) errors.push(`Inspection Record ${item.inspectionId} has a broken document reference ${id}.`); });
+    [...(item.sourceSectionIds || []), ...(item.evidenceReferences || []).map(reference => reference.sectionId)].filter(Boolean).forEach(id => { if (!sectionIds.has(id)) errors.push(`Inspection Record ${item.inspectionId} has a broken section reference ${id}.`); });
+  });
   if (!documentIds.has(DEMO_INITIAL_DOCUMENT_ID) || !sectionIds.has(DEMO_INITIAL_SECTION_ID)) errors.push('Initial demonstration context is unavailable.');
-  return { valid: errors.length === 0, errors, counts: { libraries: libraries.length, documents: docs.length, sections: secs.length } };
+  return { valid: errors.length === 0, errors, counts: { libraries: libraries.length, documents: docs.length, sections: secs.length, inspectionRecords: inspections.length } };
 }
 
 export function createDemonstrationProjectFixture() {

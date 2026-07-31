@@ -39,6 +39,13 @@ test('activates workflows, catalog documents, and Engineering Workspace launches
   assert.equal(exact(S.knowledgeCatalog).available, true);
   assert.equal(exact(S.engineeringWorkspace).available, true);
 });
+test('activates an Inspection Record through exact document and section identifiers', () => {
+  const result = exact(S.inspectionRecord, { sectionId: 's' });
+  assert.equal(result.available, true);
+  assert.equal(result.activation.source, 'Inspection Record');
+  assert.equal(result.activation.documentId, 'd');
+  assert.equal(result.activation.sectionId, 's');
+});
 test('rejects invalid optional and required identifiers', () => {
   for (const [field, value] of [['documentId','x'],['sectionId','x'],['evidenceId','x'],['relationshipId','x'],['lineageId','x'],['revisionId','x']]) {
     assert.equal(createContextActivation(request(S.evidence, { [field]: value }), records).available, false);
