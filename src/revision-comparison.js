@@ -3,6 +3,16 @@ const text = value => value === null || value === undefined ? '' : String(value)
 const compact = value => text(value).replace(/\s+/g, ' ');
 const id = value => text(value);
 const numeric = value => Number.isFinite(Number(value)) ? Number(value) : null;
+const matchRuleLabels = Object.freeze({
+  'exact-section-id': 'Matched by exact section ID',
+  'unique-section-number': 'Matched by section number',
+  'unique-hierarchy-path': 'Matched by hierarchy path',
+  'unique-content-fingerprint': 'Matched by exact content fingerprint'
+});
+
+export function revisionMatchRuleLabel(rule) {
+  return matchRuleLabels[text(rule)] || '';
+}
 
 function sectionDocumentId(section) {
   return id(section?.documentId || section?.docId || section?.metadata?.documentId);

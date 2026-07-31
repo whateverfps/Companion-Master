@@ -35,6 +35,7 @@ import {
 import {
   buildRevisionMetrics,
   compareRevisions,
+  revisionMatchRuleLabel,
   revisionNavigationTarget,
   revisionPairStatus
 } from './revision-comparison.js';
@@ -2715,7 +2716,7 @@ async function renderRevisionReview() {
         <button type="button" data-revision-match="${index}" class="${index === selectedRevisionMatch ? 'active' : ''}" ${index === selectedRevisionMatch ? 'aria-current="true"' : ''}>
           <span>${match.flags.map(flag => `<em>${esc(flagLabel(flag))}</em>`).join('')}</span>
           <strong>${esc(sectionLabel(match.earlier, index))}</strong>
-          <small>Matched by ${esc(match.matchRule)}</small>
+          <small class="mc-revision-match-rule">${esc(revisionMatchRuleLabel(match.matchRule))}</small>
         </button>
       `).join('')}
       ${addedRows.map((item, index) => `<article class="mc-revision-single added"><span>ADDED · UNMATCHED</span><strong>${esc(sectionLabel(item.section, index))}</strong><small>${esc(item.sectionId || 'No section ID')}</small></article>`).join('')}
@@ -2736,7 +2737,7 @@ async function renderRevisionReview() {
       ...(selected.referenceDifferences.crossReferenceIds.changed ? [{ field: 'Cross-reference IDs', before: selected.referenceDifferences.crossReferenceIds.removed, after: selected.referenceDifferences.crossReferenceIds.added }] : [])
     ];
     $('#revisionDetail').innerHTML = `
-      <div class="mc-revision-basis"><strong>Comparison basis</strong><span>${esc(selected.matchRule)} · Earlier ID ${esc(selected.earlierSectionId || 'Unavailable')} · Later ID ${esc(selected.laterSectionId || 'Unavailable')}</span></div>
+      <div class="mc-revision-basis"><strong>Comparison basis</strong><span><b class="mc-revision-match-rule">${esc(revisionMatchRuleLabel(selected.matchRule))}</b> · Earlier ID ${esc(selected.earlierSectionId || 'Unavailable')} · Later ID ${esc(selected.laterSectionId || 'Unavailable')}</span></div>
       <div class="mc-revision-side-by-side">
         <article><header><span>EARLIER REVISION</span><h3>${esc(sectionLabel(selected.earlier))}</h3></header><pre>${esc(selected.content.earlierText)}</pre><button type="button" data-revision-source="earlier">Open in Source Inspector</button></article>
         <article><header><span>LATER REVISION</span><h3>${esc(sectionLabel(selected.later))}</h3></header><pre>${esc(selected.content.laterText)}</pre><button type="button" data-revision-source="later">Open in Source Inspector</button></article>

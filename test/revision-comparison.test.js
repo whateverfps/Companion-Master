@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   compareRevisions,
+  revisionMatchRuleLabel,
   revisionNavigationTarget
 } from '../src/revision-comparison.js';
 
@@ -111,4 +112,22 @@ test('generates transient navigation targets only for two exact IDs', () => {
     view: 'revisions', earlierDocumentId: 'old', laterDocumentId: 'new', originatingWorkspace: 'versions'
   });
   assert.equal(revisionNavigationTarget('', 'new'), null);
+});
+
+test('maps stored matching rules to clear presentation labels', () => {
+  assert.deepEqual(
+    [
+      'exact-section-id',
+      'unique-section-number',
+      'unique-hierarchy-path',
+      'unique-content-fingerprint'
+    ].map(revisionMatchRuleLabel),
+    [
+      'Matched by exact section ID',
+      'Matched by section number',
+      'Matched by hierarchy path',
+      'Matched by exact content fingerprint'
+    ]
+  );
+  assert.equal(revisionMatchRuleLabel('unsupported-rule'), '');
 });
