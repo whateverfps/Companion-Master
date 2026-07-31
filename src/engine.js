@@ -2,6 +2,12 @@ import { parseFiles } from './parsers.js';
 import { arrayValue } from './data-model.js';
 import { createIdentifier } from './identifiers.js';
 import {
+  nextInspectionNumber,
+  normalizeInspectionRecord,
+  validateInspectionRecord,
+  validateStatusTransition
+} from './inspection-records.js';
+import {
   retrieve,
   invalidateRetrievalCaches,
   buildContext,
@@ -16,7 +22,7 @@ import { analyzeCorpus } from './core/reasoning.js';
 
 const STATE_KEY = 'mc-master-state-v2';
 const DOC_DB = 'mc-master-documents-v2';
-const DOC_DB_VERSION = 3;
+const DOC_DB_VERSION = 4;
 const APP_VERSION = '2.8.1';
 
 const defaults = {
@@ -223,6 +229,16 @@ function openDB() {
       if (!sections.indexNames.contains('documentId')) sections.createIndex('documentId', 'documentId');
       if (!sections.indexNames.contains('parentId')) sections.createIndex('parentId', 'parentId');
       if (!sections.indexNames.contains('sectionNumber')) sections.createIndex('sectionNumber', 'sectionNumber');
+
+      let inspectionRecords;
+      if (!db.objectStoreNames.contains('inspectionRecords')) {
+        inspectionRecords = db.createObjectStore('inspectionRecords', { keyPath: 'inspectionId' });
+      } else {
+        inspectionRecords = request.transaction.objectStore('inspectionRecords');
+      }
+      if (!inspectionRecords.indexNames.contains('projectId')) inspectionRecords.createIndex('projectId', 'projectId');
+      if (!inspectionRecords.indexNames.contains('inspectionNumber')) inspectionRecords.createIndex('inspectionNumber', 'inspectionNumber');
+      if (!inspectionRecords.indexNames.contains('status')) inspectionRecords.createIndex('status', 'status');
     };
 
     request.onsuccess = () => resolve(request.result);
@@ -375,7 +391,7 @@ async function delByIndex(store, index, key) {
     const objectStore = transaction.objectStore(store);
 
     for (const row of rows) {
-      objectStore.delete(row.id);
+      objectStore.delete(row.id || row.inspectionId);
     }
 
     transaction.oncomplete = () => {
@@ -547,6 +563,7 @@ export const engine = {
     }
 
     await delByIndex('sections', 'projectId', id);
+    await delByIndex('inspectionRecords', 'projectId', id);
 
     const documents = await all('documents', 'projectId', id);
 
@@ -698,6 +715,55 @@ export const engine = {
     return libraryId
       ? documentCache.documents.filter(document => document.libraryId === libraryId)
       : documentCache.documents;
+  },
+
+  async inspectionRecords({ includeArchived = false } = {}) {
+    const records = await all('inspectionRecords', 'projectId', state.activeProject);
+    return records
+      .filter(record => includeArchived || !record.archivedAt)
+      .sort((a, b) => String(a.inspectionNumber).localeCompare(String(b.inspectionNumber)));
+  },
+
+  async inspectionRecord(inspectionId) {
+    const records = await all('inspectionRecords');
+    return records.find(record => record.inspectionId === inspectionId) || null;
+  },
+
+  async nextInspectionNumber(projectId = state.activeProject) {
+    return nextInspectionNumber(await all('inspectionRecords'), projectId);
+  },
+
+  async createInspectionRecord(input) {
+    const now = new Date().toISOString();
+    const existingRecords = await all('inspectionRecords');
+    const candidate = normalizeInspectionRecord({
+      ...input,
+      inspectionId: input?.inspectionId || createIdentifier(),
+      projectId: input?.projectId || state.activeProject,
+      inspectionNumber: input?.inspectionNumber || nextInspectionNumber(existingRecords, input?.projectId || state.activeProject),
+      createdAt: input?.createdAt || now,
+      updatedAt: now
+    });
+    const validation = validateInspectionRecord(candidate, { projectIds: state.projects.map(project => project.id), existingRecords });
+    if (!validation.valid) throw new Error(validation.errors.join(' '));
+    await tx('inspectionRecords', 'readwrite', store => store.put(validation.record));
+    return structuredClone(validation.record);
+  },
+
+  async updateInspectionRecord(inspectionId, patch, options = {}) {
+    const current = await this.inspectionRecord(inspectionId);
+    if (!current || current.projectId !== state.activeProject) throw new Error('Inspection Record not found.');
+    const transition = validateStatusTransition(current.status, patch?.status || current.status, { reopen: options.reopen === true });
+    if (!transition.valid) throw new Error(transition.reason);
+    const candidate = normalizeInspectionRecord({ ...current, ...patch, inspectionId: current.inspectionId, projectId: current.projectId, inspectionNumber: current.inspectionNumber, createdAt: current.createdAt, updatedAt: new Date().toISOString() });
+    const validation = validateInspectionRecord(candidate, { projectIds: state.projects.map(project => project.id), existingRecords: await all('inspectionRecords'), currentInspectionId: inspectionId });
+    if (!validation.valid) throw new Error(validation.errors.join(' '));
+    await tx('inspectionRecords', 'readwrite', store => store.put(validation.record));
+    return structuredClone(validation.record);
+  },
+
+  async archiveInspectionRecord(inspectionId) {
+    return this.updateInspectionRecord(inspectionId, { archivedAt: new Date().toISOString() });
   },
 
   async sections() {
@@ -1319,11 +1385,12 @@ export const engine = {
       libraries: this.libraries(),
       documents: await this.documents(),
       sections: await this.sections(),
+      inspectionRecords: await this.inspectionRecords({ includeArchived: true }),
       evaluations: structuredClone(state.evaluations)
     };
   },
 
-  async importProject(data) {
+  async importProject(data, options = {}) {
     if (
       !data?.manifest ||
       !Array.isArray(data.documents) ||
@@ -1334,9 +1401,58 @@ export const engine = {
       );
     }
 
-    const importedProject = this.addProject(
-      `${data.manifest.project?.name || 'Imported'} (Imported)`
-    );
+    const preserveIdentifiers = options.preserveIdentifiers === true;
+    const sourceProject = data.manifest.project || {};
+    const sourceInspectionRecords = Array.isArray(data.inspectionRecords) ? data.inspectionRecords : [];
+    const existingInspectionRecords = await all('inspectionRecords');
+    const sourceInspectionValidationRecords = sourceInspectionRecords.map(normalizeInspectionRecord);
+    const sourceInspectionIds = new Set();
+    for (const record of sourceInspectionValidationRecords) {
+      if (record.projectId !== sourceProject.id) throw new Error(`Invalid imported Inspection Record: ${record.inspectionId} does not belong to the exported project.`);
+      if (sourceInspectionIds.has(record.inspectionId)) throw new Error(`Duplicate imported Inspection Record identifier: ${record.inspectionId}`);
+      sourceInspectionIds.add(record.inspectionId);
+      const validation = validateInspectionRecord(record, {
+        projectIds: [record.projectId],
+        existingRecords: sourceInspectionValidationRecords,
+        currentInspectionId: record.inspectionId
+      });
+      if (!validation.valid) throw new Error(`Invalid imported Inspection Record: ${validation.errors.join(' ')}`);
+    }
+    const sourceNumbers = new Set();
+    for (const record of sourceInspectionValidationRecords) {
+      const key = `${record.projectId}:${record.inspectionNumber}`;
+      if (sourceNumbers.has(key)) throw new Error(`Duplicate imported Inspection Record number: ${record.inspectionNumber}`);
+      sourceNumbers.add(key);
+    }
+    let importedProject;
+
+    if (preserveIdentifiers) {
+      const requiredIds = [sourceProject.id, ...data.documents.map(item => item.id), ...data.sections.map(item => item.id)];
+      const sourceLibraries = Array.isArray(data.libraries) ? data.libraries : [];
+      requiredIds.push(...sourceLibraries.map(item => item.id));
+      requiredIds.push(...sourceInspectionRecords.map(item => item.inspectionId));
+      if (requiredIds.some(id => !String(id || '').trim()) || new Set(requiredIds).size !== requiredIds.length) {
+        throw new Error('Deterministic project imports require unique project, library, document, section, and Inspection Record identifiers.');
+      }
+      const existingDocuments = await all('documents');
+      const existingSections = await all('sections');
+      const existingIds = new Set([
+        ...state.projects.map(item => item.id),
+        ...state.libraries.map(item => item.id),
+        ...existingDocuments.map(item => item.id),
+        ...existingSections.map(item => item.id),
+        ...existingInspectionRecords.map(item => item.inspectionId)
+      ]);
+      const collision = requiredIds.find(id => existingIds.has(id));
+      if (collision) throw new Error(`Project import identifier collision: ${collision}`);
+      importedProject = { ...sourceProject };
+      state.projects.push(importedProject);
+      state.activeProject = importedProject.id;
+    } else {
+      importedProject = this.addProject(
+        `${sourceProject.name || 'Imported'} (Imported)`
+      );
+    }
 
     const importedLibraries = Array.isArray(data.libraries)
       ? data.libraries
@@ -1351,8 +1467,9 @@ export const engine = {
       );
 
       for (const sourceLibrary of importedLibraries) {
-        const newLibraryId =
-          sourceLibrary === importedLibraries[0] &&
+        const newLibraryId = preserveIdentifiers
+          ? sourceLibrary.id
+          : sourceLibrary === importedLibraries[0] &&
           defaultLibrary
             ? defaultLibrary.id
             : createIdentifier();
@@ -1393,10 +1510,12 @@ export const engine = {
           library.projectId === importedProject.id
       )?.id || null;
 
+    if (preserveIdentifiers) state.activeLibrary = fallbackLibraryId;
+
     const documentIdMap = new Map();
 
     const importedDocuments = data.documents.map(document => {
-      const newId = createIdentifier();
+      const newId = preserveIdentifiers ? document.id : createIdentifier();
 
       documentIdMap.set(
         document.id,
@@ -1413,13 +1532,8 @@ export const engine = {
       };
     });
 
-    await putMany(
-      'documents',
-      importedDocuments
-    );
-
     const sectionIdMap = new Map(
-      data.sections.map(section => [section.id, createIdentifier()])
+      data.sections.map(section => [section.id, preserveIdentifiers ? section.id : createIdentifier()])
     );
     const importedSections = data.sections.map(section => ({
       ...section,
@@ -1441,10 +1555,43 @@ export const engine = {
         section.documentId
     }));
 
+    const mapDocumentIds = value => (Array.isArray(value) ? value : []).map(id => documentIdMap.get(id)).filter(Boolean);
+    const mapSectionIds = value => (Array.isArray(value) ? value : []).map(id => sectionIdMap.get(id)).filter(Boolean);
+    const importedInspectionRecords = sourceInspectionRecords.map(record => normalizeInspectionRecord({
+      ...record,
+      inspectionId: preserveIdentifiers ? record.inspectionId : createIdentifier(),
+      projectId: importedProject.id,
+      sourceDocumentIds: mapDocumentIds(record.sourceDocumentIds),
+      sourceSectionIds: mapSectionIds(record.sourceSectionIds),
+      evidenceReferences: (record.evidenceReferences || []).map(reference => ({ documentId: documentIdMap.get(reference.documentId) || '', sectionId: sectionIdMap.get(reference.sectionId) || '' })).filter(reference => reference.documentId || reference.sectionId),
+      relatedDrawingIds: mapDocumentIds(record.relatedDrawingIds),
+      relatedSpecificationIds: mapDocumentIds(record.relatedSpecificationIds),
+      relatedRfiIds: mapDocumentIds(record.relatedRfiIds),
+      relatedSubmittalIds: mapDocumentIds(record.relatedSubmittalIds),
+      relatedDeficiencyIds: mapDocumentIds(record.relatedDeficiencyIds),
+      relationshipIds: preserveIdentifiers ? record.relationshipIds : [],
+      versionIds: mapDocumentIds(record.versionIds),
+      revisionIds: preserveIdentifiers
+        ? record.revisionIds
+        : (record.revisionIds || []).map(value => {
+            const [earlier, later] = String(value).split('->');
+            const mappedEarlier = documentIdMap.get(earlier);
+            const mappedLater = documentIdMap.get(later);
+            return mappedEarlier && mappedLater ? `${mappedEarlier}->${mappedLater}` : '';
+          }).filter(Boolean)
+    }));
+    for (const record of importedInspectionRecords) {
+      const validation = validateInspectionRecord(record, { projectIds: [importedProject.id], existingRecords: [...existingInspectionRecords, ...importedInspectionRecords], currentInspectionId: record.inspectionId });
+      if (!validation.valid) throw new Error(`Invalid imported Inspection Record: ${validation.errors.join(' ')}`);
+    }
+
+    await putMany('documents', importedDocuments);
+
     await putMany(
       'sections',
       importedSections
     );
+    await putMany('inspectionRecords', importedInspectionRecords);
     invalidateKnowledgeCache();
 
     state.evaluations.push(

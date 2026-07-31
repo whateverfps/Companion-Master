@@ -60,7 +60,7 @@ function createIndexedDB() {
           const records = ensureStore(operation.store).records;
 
           if (operation.type === 'put') {
-            records.set(operation.value.id, structuredClone(operation.value));
+            records.set(operation.value.id || operation.value.inspectionId, structuredClone(operation.value));
           } else {
             records.delete(operation.key);
           }
@@ -100,8 +100,8 @@ function createIndexedDB() {
       getAllKeys: key => {
         const request = {};
         setTimeout(() => {
-          request.result = matchingRecords(storeName, indexName, key)
-            .map(record => record.id);
+              request.result = matchingRecords(storeName, indexName, key)
+                .map(record => record.id || record.inspectionId);
           request.onsuccess?.();
         }, 0);
         return request;
@@ -141,12 +141,12 @@ function createIndexedDB() {
             const request = {};
             setTimeout(() => {
               request.result = matchingRecords(name, indexName, key)
-                .map(record => record.id);
+                .map(record => record.id || record.inspectionId);
               request.onsuccess?.();
 
               for (const record of matchingRecords(name, indexName, key)) {
                 operations.push({
-                  key: record.id,
+                  key: record.id || record.inspectionId,
                   store: name,
                   type: 'delete'
                 });
@@ -226,6 +226,11 @@ globalThis.CustomEvent = class {
 };
 
 const { engine } = await import('../src/engine.js');
+const {
+  createDemonstrationProjectFixture,
+  DEMO_PROJECT_ID
+} = await import('../src/demo-project.js');
+const { retrieve } = await import('../src/retrieval.js');
 
 test('successful imports atomically register one document and its sections', async () => {
   const stages = [];
@@ -411,4 +416,109 @@ test('failed replacement leaves the existing lineage current and unchanged', asy
   assert.equal(family[0].id, originalDocument.id);
   assert.equal(family[0].lineageStatus, 'current');
   assert.equal(family[0].supersededByDocumentId, undefined);
+});
+
+test('approved deterministic project import preserves fixture identifiers and metadata', async () => {
+  if (engine.state().projects.some(project => project.id === DEMO_PROJECT_ID)) await engine.deleteProject(DEMO_PROJECT_ID);
+  const fixture = createDemonstrationProjectFixture();
+  const imported = await engine.importProject(fixture, { preserveIdentifiers: true });
+  const current = engine.state();
+  const documents = await engine.documents();
+  const sections = await engine.sections();
+
+  assert.equal(imported.id, fixture.manifest.project.id);
+  assert.equal(current.activeProject, DEMO_PROJECT_ID);
+  assert.equal(current.projects.find(project => project.id === DEMO_PROJECT_ID).dataLabel, 'Fictional Sample Data');
+  assert.deepEqual(documents.map(item => item.id).sort(), fixture.documents.map(item => item.id).sort());
+  assert.deepEqual(sections.map(item => item.id).sort(), fixture.sections.map(item => item.id).sort());
+  assert.equal(documents.find(item => item.id === 'mc-demo-doc-drawing-a201-r2').lineageId, 'mc-demo-lineage-a201');
+  const inspectionRecords = await engine.inspectionRecords({ includeArchived: true });
+  assert.equal(inspectionRecords.length, 5);
+  assert.deepEqual(inspectionRecords.map(item => item.inspectionId).sort(), fixture.inspectionRecords.map(item => item.inspectionId).sort());
+  const questions = [
+    'What is required for Telecom Room TR-1 readiness?',
+    'What inspection requirements apply to penetration firestopping under 07 84 13?',
+    'How was RFI-002 Existing duct conflicts with new cable tray resolved?',
+    'What evidence documents the cable tray conflict above Exam Room 112?'
+  ];
+  for (const question of questions) {
+    const answer = await engine.ask(question, 'offline');
+    assert.ok(answer.content);
+    assert.ok(answer.hits.length);
+    assert.ok(answer.hits.every(hit =>
+      Array.isArray(hit.path) && hit.path.every(part => typeof part === 'string')
+    ));
+  }
+});
+
+test('final retrieval hits canonicalize legacy string and missing paths without mutating sources', () => {
+  const legacy = { id: 'legacy-path', documentId: 'legacy-document', heading: 'Legacy', text: 'legacy path searchable evidence', path: 'Specifications / 01 45 00' };
+  const missing = { id: 'missing-path', documentId: 'legacy-document', heading: 'Missing', text: 'missing path searchable evidence' };
+  const hits = retrieve('searchable evidence', [legacy, missing], 2);
+  assert.deepEqual(hits.find(hit => hit.id === legacy.id).path, ['Specifications / 01 45 00']);
+  assert.deepEqual(hits.find(hit => hit.id === missing.id).path, []);
+  assert.equal(legacy.path, 'Specifications / 01 45 00');
+  assert.equal(Object.hasOwn(missing, 'path'), false);
+});
+
+test('deterministic import rejects collisions before duplicating fixture records', async () => {
+  const beforeDocuments = await engine.documents();
+  await assert.rejects(
+    engine.importProject(createDemonstrationProjectFixture(), { preserveIdentifiers: true }),
+    /identifier collision/
+  );
+  assert.equal((await engine.documents()).length, beforeDocuments.length);
+});
+
+test('reset deletes only the deterministic demonstration project and restores canonical records', async () => {
+  const unrelated = engine.addProject('Unaffected import test project');
+  const unrelatedId = unrelated.id;
+  await engine.deleteProject(DEMO_PROJECT_ID);
+  assert.ok(engine.state().projects.some(project => project.id === unrelatedId));
+  await engine.importProject(createDemonstrationProjectFixture(), { preserveIdentifiers: true });
+  assert.ok(engine.state().projects.some(project => project.id === DEMO_PROJECT_ID));
+  assert.ok(engine.state().projects.some(project => project.id === unrelatedId));
+});
+
+test('ordinary project imports retain identifier remapping and imported naming behavior', async () => {
+  const ordinary = {
+    manifest: { project: { id: 'ordinary-source-project', name: 'Ordinary Source', custom: 'not promoted' } },
+    libraries: [{ id: 'ordinary-source-library', projectId: 'ordinary-source-project', name: 'Source Library', enabled: true }],
+    documents: [{ id: 'ordinary-source-document', projectId: 'ordinary-source-project', libraryId: 'ordinary-source-library', name: 'Source.txt', status: 'verified', sectionCount: 1 }],
+    sections: [{ id: 'ordinary-source-section', projectId: 'ordinary-source-project', libraryId: 'ordinary-source-library', documentId: 'ordinary-source-document', text: 'Ordinary import content.', crossReferenceIds: [] }],
+    inspectionRecords: [{ inspectionId: 'ordinary-inspection', projectId: 'ordinary-source-project', inspectionNumber: 'INS-004', title: 'Imported inspection', inspectionDate: '2026-07-30', status: 'Complete', result: 'Acceptable', sourceDocumentIds: ['ordinary-source-document'], sourceSectionIds: ['ordinary-source-section'], evidenceReferences: [{ documentId: 'ordinary-source-document', sectionId: 'ordinary-source-section' }] }]
+  };
+  const imported = await engine.importProject(ordinary);
+  assert.notEqual(imported.id, ordinary.manifest.project.id);
+  assert.equal(imported.name, 'Ordinary Source (Imported)');
+  assert.notEqual((await engine.documents())[0].id, ordinary.documents[0].id);
+  assert.notEqual((await engine.sections())[0].id, ordinary.sections[0].id);
+  const importedInspection = (await engine.inspectionRecords())[0];
+  assert.notEqual(importedInspection.inspectionId, ordinary.inspectionRecords[0].inspectionId);
+  assert.deepEqual(importedInspection.sourceDocumentIds, [(await engine.documents())[0].id]);
+  assert.deepEqual(importedInspection.sourceSectionIds, [(await engine.sections())[0].id]);
+});
+
+test('Inspection Record CRUD is project-isolated, archived numbers are not reused, and export includes records', async () => {
+  const project = engine.addProject('Inspection CRUD Project');
+  const created = await engine.createInspectionRecord({ title: 'Initial inspection', inspectionDate: '2026-07-31' });
+  assert.equal(created.inspectionNumber, 'INS-001');
+  assert.equal((await engine.inspectionRecord(created.inspectionId)).title, 'Initial inspection');
+  const updated = await engine.updateInspectionRecord(created.inspectionId, { status: 'Complete', result: 'Acceptable', observedConditions: 'User-entered condition.' });
+  assert.equal(updated.result, 'Acceptable');
+  await engine.archiveInspectionRecord(created.inspectionId);
+  assert.equal((await engine.inspectionRecords()).length, 0);
+  assert.equal(await engine.nextInspectionNumber(project.id), 'INS-002');
+  assert.equal((await engine.exportProject()).inspectionRecords.length, 1);
+  const other = engine.addProject('Other Inspection Project');
+  assert.equal((await engine.inspectionRecords({ includeArchived: true })).length, 0);
+  engine.setProject(project.id);
+  await engine.deleteProject(project.id);
+  engine.setProject(other.id);
+  assert.equal(await engine.inspectionRecord(created.inspectionId), null);
+});
+
+test('ordinary import remains backward compatible when Inspection Records are absent', async () => {
+  await engine.importProject({ manifest: { project: { name: 'Legacy without inspections' } }, libraries: [], documents: [], sections: [] });
+  assert.deepEqual(await engine.inspectionRecords({ includeArchived: true }), []);
 });

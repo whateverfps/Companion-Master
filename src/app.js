@@ -69,6 +69,19 @@ import {
   createContextBusSnapshot
 } from './context-bus.js';
 import {
+  INSPECTION_RESULTS,
+  INSPECTION_STATUSES,
+  inspectionContextSeed
+} from './inspection-records.js';
+import {
+  createDemonstrationProjectFixture,
+  DEMO_INITIAL_DOCUMENT_ID,
+  DEMO_INITIAL_SECTION_ID,
+  DEMO_PROJECT_ID,
+  DEMO_QUESTIONS,
+  validateDemonstrationProject
+} from './demo-project.js';
+import {
   firstText,
   sectionHeadingValue,
   sectionLocationValue,
@@ -138,6 +151,9 @@ let workflowTarget = null;
 let activeContextActivation = null;
 let contextClearedEvent = null;
 let contextBusSnapshot = createContextBusSnapshot();
+let demoGuideDismissed = false;
+let selectedInspectionId = null;
+let modalCloseGuard = null;
 
 app.innerHTML = `
 <a class="mc-skip-link" href="#workspaceMain">Skip to workspace</a>
@@ -158,6 +174,7 @@ app.innerHTML = `
       <button data-view="knowledge">Knowledge Workspace</button>
       <button data-view="engineering">Engineering Workspace</button>
       <button data-view="workflow">Workflow Workspace</button>
+      <button data-view="inspections">Inspection Records</button>
       <span class="mc-nav-group-label">Inspect</span>
       <button data-view="sources">Source Inspector</button>
       <button data-view="evidence">Evidence Explorer</button>
@@ -173,6 +190,8 @@ app.innerHTML = `
       <label>ACTIVE PROJECT</label>
       <select id="projectSelect"></select>
       <button id="newProject" class="subtle">＋ New project</button>
+      <button id="loadDemoProject" class="mc-demo-load">Load Demonstration Project</button>
+      <button id="resetDemoProject" class="subtle mc-demo-reset" hidden>Reset Demonstration Project</button>
     </div>
 
     <div class="rail-foot">
@@ -595,6 +614,24 @@ app.innerHTML = `
       </div>
     </section>
 
+    <section id="inspections" class="view">
+      <header class="mc-inspection-header">
+        <div><span>PROJECT OPERATIONS</span><h2>Inspection Records</h2><p>Persistent, source-linked construction inspection records for the active project.</p></div>
+        <button id="createInspectionRecord">Create Inspection Record</button>
+      </header>
+      <div class="mc-inspection-toolbar">
+        <label><span>Search</span><input id="inspectionSearch" type="search" placeholder="Search number, title, location, or trade"></label>
+        <label><span>Status</span><select id="inspectionStatusFilter"><option value="">All active statuses</option>${INSPECTION_STATUSES.map(status => `<option>${status}</option>`).join('')}</select></label>
+        <label><span>Location</span><input id="inspectionLocationFilter" type="search" placeholder="Building, area, or room"></label>
+        <label><span>Sort</span><select id="inspectionSort"><option value="number">Inspection number</option><option value="date">Inspection date</option></select></label>
+        <label class="mc-inspection-archive-toggle"><input id="inspectionShowArchived" type="checkbox"> Show archived</label>
+      </div>
+      <div class="mc-inspection-workspace">
+        <section class="panel" aria-labelledby="inspectionListTitle"><div class="mc-inspection-heading"><span>ACTIVE PROJECT</span><h2 id="inspectionListTitle">Inspection Register</h2></div><div id="inspectionList"></div></section>
+        <aside class="panel" aria-labelledby="inspectionDetailTitle"><div class="mc-inspection-heading"><span>RECORD DETAIL</span><h2 id="inspectionDetailTitle">Inspection Detail</h2></div><div id="inspectionDetail"></div></aside>
+      </div>
+    </section>
+
     <section id="revisions" class="view">
       <header id="revisionHeader" class="mc-revision-header"></header>
       <div id="revisionSummary" class="mc-revision-summary"></div>
@@ -880,6 +917,8 @@ app.innerHTML = `
   </main>
 </div>
 
+<aside id="demoGuide" class="mc-demo-guide" aria-labelledby="demoGuideTitle" hidden></aside>
+
 <div id="modal" class="modal" hidden>
   <div class="modal-card">
     <button id="closeModal" class="modal-x">×</button>
@@ -946,6 +985,10 @@ const titles = {
   workflow: [
     'Workflow Workspace',
     'Orchestrate exact construction knowledge through deterministic workflow templates.'
+  ],
+  inspections: [
+    'Inspection Records',
+    'Create and manage persistent, source-linked project inspection records.'
   ],
   evaluate: [
     'Knowledge Validation',
@@ -1023,6 +1066,9 @@ function show(name) {
   if (name === 'workflow') {
     renderWorkflowWorkspace();
   }
+  if (name === 'inspections') {
+    renderInspectionRecords();
+  }
 
   if (name === 'evaluate') {
     renderEvals();
@@ -1062,6 +1108,7 @@ function activationOrigin(source) {
   if (source.includes('Source Inspector')) return 'sources';
   if (source.includes('Workflow')) return 'workflow';
   if (source.includes('Command Desk')) return 'chat';
+  if (source.includes('Inspection Record')) return 'inspections';
   return 'knowledge';
 }
 
@@ -1327,6 +1374,7 @@ function openRevisionReview(earlierDocumentId, laterDocumentId) {
   revisionTarget = target;
   revisionFilter = 'all';
   selectedRevisionMatch = 0;
+  selectedInspectionId = null;
   void engine.documents().then(documents => {
     const later = documents.find(document => document.id === laterDocumentId);
     if (!later) return;
@@ -1555,18 +1603,44 @@ async function refresh() {
   renderMessages(documents, sections);
   renderProjectWorkspace(documents, sections);
   await renderKnowledgeWorkspace(documents);
+  renderDemonstrationControls();
 }
 
-$('#mode').onchange = () => {
-  engine.saveSettings({
-    mode: $('#mode').value
+function renderDemonstrationControls() {
+  const currentState = state();
+  const demoExists = currentState.projects.some(project => project.id === DEMO_PROJECT_ID);
+  const demoActive = currentState.activeProject === DEMO_PROJECT_ID;
+  $('#loadDemoProject').textContent = demoExists ? 'Open Demonstration Project' : 'Load Demonstration Project';
+  $('#resetDemoProject').hidden = !demoExists;
+  const guide = $('#demoGuide');
+  if (!demoActive || demoGuideDismissed) {
+    guide.hidden = true;
+    return;
+  }
+  guide.hidden = false;
+  guide.innerHTML = `
+    <button class="mc-demo-guide-close" data-demo-dismiss aria-label="Dismiss demonstration guide">×</button>
+    <span>FICTIONAL SAMPLE DATA</span>
+    <h2 id="demoGuideTitle">Explore the Demonstration Project</h2>
+    <p>Try an exact question or open a connected inspection surface.</p>
+    <div class="mc-demo-guide-actions">
+      ${DEMO_QUESTIONS.map((question, index) => `<button data-demo-question="${index}">${esc(question)}</button>`).join('')}
+      <button data-demo-view="versions">Compare drawing revisions</button>
+      <button data-demo-view="relationships">Inspect relationships</button>
+      <button data-demo-view="workflow">Open the synchronized workflow</button>
+    </div>`;
+  $('[data-demo-dismiss]').onclick = () => { demoGuideDismissed = true; renderDemonstrationControls(); };
+  $$('[data-demo-question]').forEach(button => button.onclick = () => {
+    show('chat');
+    $('#prompt').value = DEMO_QUESTIONS[Number(button.dataset.demoQuestion)];
+    resizeComposer();
+    $('#prompt').focus();
   });
+  $$('[data-demo-view]').forEach(button => button.onclick = () => show(button.dataset.demoView));
+}
 
-  refresh();
-};
-
-$('#projectSelect').onchange = async () => {
-  engine.setProject($('#projectSelect').value);
+async function selectProjectThroughProductionPath(projectId) {
+  engine.setProject(projectId);
   selectedDoc = null;
   selectedKnowledgeSection = 'all';
   knowledgeCatalogContext = null;
@@ -1578,8 +1652,60 @@ $('#projectSelect').onchange = async () => {
   revisionTarget = null;
   revisionFilter = 'all';
   selectedRevisionMatch = 0;
-  clearActiveContext(CONTEXT_ACTIVATION_SOURCES.projectSwitch, $('#projectSelect').value);
+  clearActiveContext(CONTEXT_ACTIVATION_SOURCES.projectSwitch, projectId);
   await refresh();
+}
+
+async function openDemonstrationProject({ reset = false } = {}) {
+  const existing = state().projects.some(project => project.id === DEMO_PROJECT_ID);
+  if (reset && existing) await engine.deleteProject(DEMO_PROJECT_ID);
+  if (!existing || reset) {
+    const fixture = createDemonstrationProjectFixture();
+    const validation = validateDemonstrationProject(fixture);
+    if (!validation.valid) throw new Error(validation.errors.join(' '));
+    await engine.importProject(fixture, { preserveIdentifiers: true });
+  }
+  await selectProjectThroughProductionPath(DEMO_PROJECT_ID);
+  selectedDoc = DEMO_INITIAL_DOCUMENT_ID;
+  demoGuideDismissed = false;
+  const demoDocument = (await engine.documents()).find(document => document.id === DEMO_INITIAL_DOCUMENT_ID);
+  await activateEngineeringContext({
+    projectId: DEMO_PROJECT_ID,
+    libraryId: demoDocument?.libraryId || '',
+    documentId: DEMO_INITIAL_DOCUMENT_ID,
+    sectionId: DEMO_INITIAL_SECTION_ID,
+    source: CONTEXT_ACTIVATION_SOURCES.knowledgeCatalog
+  });
+  await refresh();
+  show('engineering');
+  renderDemonstrationControls();
+}
+
+$('#mode').onchange = () => {
+  engine.saveSettings({
+    mode: $('#mode').value
+  });
+
+  refresh();
+};
+
+$('#projectSelect').onchange = async () => {
+  await selectProjectThroughProductionPath($('#projectSelect').value);
+};
+
+$('#loadDemoProject').onclick = () => {
+  const exists = state().projects.some(project => project.id === DEMO_PROJECT_ID);
+  if (exists) return void openDemonstrationProject().catch(error => alert(error.message));
+  openModal(`
+    <h2>Load Demonstration Project</h2>
+    <p class="mc-demo-disclosure"><strong>Fictional Sample Data</strong>This offline project contains original sample construction records for product exploration. It does not represent a real facility, contract, or project.</p>
+    <button id="confirmLoadDemo">Load Demonstration Project</button>
+  `, () => { $('#confirmLoadDemo').onclick = async () => { closeModal(); try { await openDemonstrationProject(); } catch (error) { alert(error.message); } }; });
+};
+
+$('#resetDemoProject').onclick = async () => {
+  if (!confirm('Reset the Demonstration Project? This deletes only the loaded fictional demonstration project and reloads its canonical sample data. Any changes made to that demo copy will be lost.')) return;
+  try { await openDemonstrationProject({ reset: true }); } catch (error) { alert(error.message); }
 };
 
 $('#newProject').onclick = () => openModal(
@@ -3261,7 +3387,8 @@ async function renderEngineeringWorkspace() {
     relationships: relationshipTarget?.documentId === target.documentId,
     knowledge: selectedDoc === target.documentId,
     versions: lineageTarget?.documentId === target.documentId,
-    revisions: Boolean(revisionTarget && [revisionTarget.earlierDocumentId, revisionTarget.laterDocumentId].includes(target.documentId))
+    revisions: Boolean(revisionTarget && [revisionTarget.earlierDocumentId, revisionTarget.laterDocumentId].includes(target.documentId)),
+    inspections: Boolean(selectedInspectionId)
   }[targetOrigin]);
 
   if (!context) {
@@ -3280,7 +3407,7 @@ async function renderEngineeringWorkspace() {
   const renderDocuments = (items, empty) => items.length
     ? `<ul>${items.map(item => `<li><strong>${esc(labelDocument(item.documentId))}</strong><span>${item.basis ? `Exact classification: ${esc(item.basis)}` : esc(item.documentId)}</span></li>`).join('')}</ul>`
     : `<div class="mc-engineering-empty">${esc(empty)}</div>`;
-  const returnLabel = ({ chat: 'Back to Command Desk', evidence: 'Back to Evidence Explorer', relationships: 'Back to Relationship Explorer', knowledge: 'Back to Knowledge Object', versions: 'Back to Version Explorer', revisions: 'Back to Revision Review' })[targetOrigin] || '';
+  const returnLabel = ({ chat: 'Back to Command Desk', evidence: 'Back to Evidence Explorer', relationships: 'Back to Relationship Explorer', knowledge: 'Back to Knowledge Object', versions: 'Back to Version Explorer', revisions: 'Back to Revision Review', inspections: 'Back to Inspection Records' })[targetOrigin] || '';
 
   $('#engineeringHeader').innerHTML = `
     <div><span>ENGINEERING CONTEXT</span><h2>${esc(seedDocument.title || seedDocument.name)}</h2><p>Project knowledge synchronized from ${esc(target.source)}.</p></div>
@@ -3290,6 +3417,7 @@ async function renderEngineeringWorkspace() {
       <button type="button" class="subtle" data-engineering-source>Open Source Inspector</button>
       <button type="button" class="subtle" data-engineering-relationships>Relationship Explorer</button>
       <button type="button" class="subtle" data-engineering-versions>Version Explorer</button>
+      <button type="button" class="subtle" data-engineering-inspection>Create Inspection Record</button>
       <button type="button" data-engineering-workflow>Open Workflow</button>
     </nav>
   `;
@@ -3343,6 +3471,7 @@ async function renderEngineeringWorkspace() {
     if (contextBusSnapshot.workflow.status === 'ambiguous') show('workflow');
     else openWorkflowWorkspace(contextBusSnapshot.workflow.workflowType || 'Inspection Preparation', 'engineering');
   });
+  $('[data-engineering-inspection]')?.addEventListener('click', () => openInspectionForm());
 }
 
 async function renderWorkflowWorkspace() {
@@ -3383,6 +3512,7 @@ async function renderWorkflowWorkspace() {
     <nav class="mc-workflow-actions" aria-label="Workflow navigation">
       ${originValid ? `<button type="button" data-workflow-return>Back to ${esc(workflowTarget.origin === 'chat' ? 'Command Desk' : workflowTarget.origin === 'knowledge' ? 'Knowledge Object' : 'Engineering Workspace')}</button>` : ''}
       ${context ? '<button type="button" class="subtle" data-workflow-engineering>Engineering Workspace</button>' : ''}
+      ${workflow.workflowType === 'Inspection Preparation' ? '<button type="button" data-workflow-inspection>Create Inspection Record</button>' : ''}
     </nav>
   `;
   if (workflow.status === 'Unavailable') {
@@ -3425,6 +3555,178 @@ async function renderWorkflowWorkspace() {
   $('#workflowNotes')?.addEventListener('input', event => updateWorkflowNotes(event.target.value));
   $('[data-workflow-return]')?.addEventListener('click', () => show(workflowTarget.origin === 'knowledge' ? 'knowledge' : workflowTarget.origin));
   $('[data-workflow-engineering]')?.addEventListener('click', () => show('engineering'));
+  $('[data-workflow-inspection]')?.addEventListener('click', () => openInspectionForm());
+}
+
+function inspectionLocation(record) {
+  return [record.building, record.area, record.room].filter(Boolean).join(' · ') || 'Location unavailable';
+}
+
+function inspectionPrefill() {
+  const context = getInspectionSession()?.context;
+  if (!context || context.projectId !== state().activeProject) return {};
+  return {
+    projectId: context.projectId,
+    building: context.buildingId,
+    room: context.roomId,
+    trade: context.trade,
+    discipline: context.discipline,
+    sourceDocumentIds: context.documentIds,
+    sourceSectionIds: context.sectionIds,
+    relatedDrawingIds: context.classification.drawings.map(item => item.documentId),
+    relatedSpecificationIds: context.classification.specifications.map(item => item.documentId),
+    relationshipIds: context.relationshipIds,
+    versionIds: context.versionIds,
+    workflowTemplateId: workflowTarget?.workflowType === 'Inspection Preparation' ? 'Inspection Preparation' : '',
+    evidenceReferences: []
+  };
+}
+
+async function openInspectionForm(record = null) {
+  const prefill = record || inspectionPrefill();
+  const context = getInspectionSession()?.context;
+  const evidenceCandidates = record ? [] : (activeRetrievalSession?.evidence || []).filter(item =>
+    context && (context.documentIds.includes(item.documentId) || context.sectionIds.includes(item.sectionId))
+  ).map(item => ({ documentId: item.documentId, sectionId: item.sectionId }));
+  const number = record?.inspectionNumber || await engine.nextInspectionNumber();
+  openModal(`
+    <form id="inspectionRecordForm" class="mc-inspection-form">
+      <h2>${record ? `Edit ${esc(record.inspectionNumber)}` : 'Create Inspection Record'}</h2>
+      <p>Conclusions, observations, results, and follow-up decisions are entered deliberately by the inspector.</p>
+      <div class="mc-inspection-form-grid">
+        <label>Inspection number<input value="${esc(number)}" disabled></label>
+        <label>Inspection date<input id="inspectionDate" type="date" value="${esc(record?.inspectionDate || '')}" required></label>
+        <label class="wide">Title<input id="inspectionTitle" value="${esc(record?.title || '')}" required></label>
+        <label>Inspection type<input id="inspectionType" value="${esc(record?.inspectionType || '')}"></label>
+        <label>Inspector name<input id="inspectionInspector" value="${esc(record?.inspectorName || '')}"></label>
+        <label>Status<select id="inspectionStatus">${INSPECTION_STATUSES.map(value => `<option ${value === (record?.status || 'Draft') ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+        <label>Result<select id="inspectionResult">${INSPECTION_RESULTS.map(value => `<option ${value === (record?.result || 'Not Evaluated') ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
+        ${['building','area','room','trade','discipline'].map(field => `<label>${field[0].toUpperCase() + field.slice(1)}<input id="inspection${field[0].toUpperCase() + field.slice(1)}" value="${esc(record?.[field] || prefill[field] || '')}"></label>`).join('')}
+        <label class="wide">Description<textarea id="inspectionDescription">${esc(record?.description || '')}</textarea></label>
+        <label class="wide">Scope<textarea id="inspectionScope">${esc(record?.scope || '')}</textarea></label>
+        <label class="wide">Observed conditions<textarea id="inspectionObserved">${esc(record?.observedConditions || '')}</textarea></label>
+        <label class="wide">Notes<textarea id="inspectionNotes">${esc(record?.notes || '')}</textarea></label>
+        <label class="check"><input id="inspectionCorrective" type="checkbox" ${record?.correctiveActionRequired ? 'checked' : ''}> Corrective action required</label>
+        <label class="check"><input id="inspectionFollowUp" type="checkbox" ${record?.followUpRequired ? 'checked' : ''}> Follow-up required</label>
+        ${evidenceCandidates.length ? `<label class="check wide"><input id="inspectionAttachEvidence" type="checkbox"> Attach ${evidenceCandidates.length} exact source reference(s) from the active retrieval session</label>` : ''}
+        <label>Follow-up date<input id="inspectionFollowUpDate" type="date" value="${esc(record?.followUpDate || '')}"></label>
+      </div>
+      <div class="mc-inspection-reference-note"><strong>Exact source references</strong><span>${(record?.sourceDocumentIds || prefill.sourceDocumentIds || []).length} documents · ${(record?.sourceSectionIds || prefill.sourceSectionIds || []).length} sections · ${(record?.evidenceReferences || []).length} saved evidence source references</span></div>
+      <div class="mc-inspection-form-actions"><button type="button" class="subtle" data-inspection-cancel>Cancel</button><button type="submit">Save Inspection Record</button></div>
+    </form>`, () => {
+      let dirty = false;
+      modalCloseGuard = () => !dirty || confirm('Discard unsaved Inspection Record changes?');
+      $('#inspectionRecordForm').addEventListener('input', () => { dirty = true; });
+      $('[data-inspection-cancel]').onclick = () => closeModal();
+      $('#inspectionRecordForm').onsubmit = async event => {
+        event.preventDefault();
+        const base = record || prefill;
+        const input = {
+          ...base,
+          inspectionNumber: number,
+          title: $('#inspectionTitle').value,
+          inspectionType: $('#inspectionType').value,
+          status: $('#inspectionStatus').value,
+          result: $('#inspectionResult').value,
+          inspectionDate: $('#inspectionDate').value,
+          inspectorName: $('#inspectionInspector').value,
+          building: $('#inspectionBuilding').value,
+          area: $('#inspectionArea').value,
+          room: $('#inspectionRoom').value,
+          trade: $('#inspectionTrade').value,
+          discipline: $('#inspectionDiscipline').value,
+          description: $('#inspectionDescription').value,
+          scope: $('#inspectionScope').value,
+          observedConditions: $('#inspectionObserved').value,
+          notes: $('#inspectionNotes').value,
+          correctiveActionRequired: $('#inspectionCorrective').checked,
+          followUpRequired: $('#inspectionFollowUp').checked,
+          followUpDate: $('#inspectionFollowUpDate').value,
+          evidenceReferences: record?.evidenceReferences || ($('#inspectionAttachEvidence')?.checked ? evidenceCandidates : [])
+        };
+        try {
+          const saved = record
+            ? await engine.updateInspectionRecord(record.inspectionId, input)
+            : await engine.createInspectionRecord(input);
+          selectedInspectionId = saved.inspectionId;
+          closeModal(true);
+          await renderInspectionRecords();
+        } catch (error) { alert(error.message); }
+      };
+    });
+}
+
+async function activateInspectionRecord(record) {
+  const [documents, sections] = await Promise.all([engine.documents(), engine.sections()]);
+  const seed = inspectionContextSeed(record, { documents, sections });
+  if (!seed) return false;
+  const result = await activateEngineeringContext({ ...seed, source: CONTEXT_ACTIVATION_SOURCES.inspectionRecord });
+  return result.available;
+}
+
+async function renderInspectionRecords() {
+  const includeArchived = $('#inspectionShowArchived')?.checked === true;
+  const [records, documents, sections] = await Promise.all([
+    engine.inspectionRecords({ includeArchived }), engine.documents(), engine.sections()
+  ]);
+  const query = ($('#inspectionSearch')?.value || '').trim().toLowerCase();
+  const locationQuery = ($('#inspectionLocationFilter')?.value || '').trim().toLowerCase();
+  const status = $('#inspectionStatusFilter')?.value || '';
+  const sort = $('#inspectionSort')?.value || 'number';
+  const visible = records.filter(record =>
+    (!status || record.status === status) &&
+    (!query || [record.inspectionNumber, record.title, inspectionLocation(record), record.trade].join(' ').toLowerCase().includes(query)) &&
+    (!locationQuery || inspectionLocation(record).toLowerCase().includes(locationQuery))
+  ).sort((a, b) => sort === 'date'
+    ? b.inspectionDate.localeCompare(a.inspectionDate) || a.inspectionNumber.localeCompare(b.inspectionNumber)
+    : a.inspectionNumber.localeCompare(b.inspectionNumber));
+  if (selectedInspectionId && !records.some(record => record.inspectionId === selectedInspectionId)) selectedInspectionId = null;
+  $('#inspectionList').innerHTML = visible.length ? `<div class="mc-inspection-list">${visible.map(record => `
+    <button class="mc-inspection-card ${record.inspectionId === selectedInspectionId ? 'active' : ''}" data-inspection-id="${esc(record.inspectionId)}" ${record.inspectionId === selectedInspectionId ? 'aria-current="true"' : ''}>
+      <span><strong>${esc(record.inspectionNumber)}</strong><small>${esc(record.status)}${record.archivedAt ? ' · Archived' : ''}</small></span>
+      <h3>${esc(record.title)}</h3><p>${esc(record.inspectionDate)} · ${esc(inspectionLocation(record))}</p>
+      <footer><span>${esc(record.trade || 'Trade unavailable')}</span><span>${esc(record.result)}</span>${record.followUpRequired ? '<b>Follow-up</b>' : ''}</footer>
+    </button>`).join('')}</div>` : '<div class="mc-inspection-empty"><strong>No matching Inspection Records.</strong><span>Create a record or adjust the active filters.</span></div>';
+  $$('[data-inspection-id]').forEach(button => button.onclick = async () => {
+    selectedInspectionId = button.dataset.inspectionId;
+    const record = records.find(item => item.inspectionId === selectedInspectionId);
+    await activateInspectionRecord(record);
+    renderInspectionRecords();
+  });
+  const record = records.find(item => item.inspectionId === selectedInspectionId);
+  if (!record) {
+    $('#inspectionDetail').innerHTML = '<div class="mc-inspection-empty"><strong>No Inspection Record selected.</strong><span>Select a record to review its user-authored observations and exact source links.</span></div>';
+    return;
+  }
+  const documentLink = id => documents.find(item => item.id === id);
+  const sectionLink = id => sections.find(item => item.id === id);
+  const links = (ids, resolver) => ids.length ? `<ul>${ids.map(id => { const item = resolver(id); const label = item ? item.title || item.name || sectionHeadingValue(item) : id; return `<li class="${item ? '' : 'unavailable'}"><strong>${esc(label)}</strong><span>${item ? esc(id) : `Unavailable reference: ${esc(id)}`}</span></li>`; }).join('')}</ul>` : '<p>None linked.</p>';
+  $('#inspectionDetail').innerHTML = `
+    <article class="mc-inspection-detail">
+      <header><span>${esc(record.inspectionNumber)}</span><h2>${esc(record.title)}</h2><p>${esc(record.status)} · ${esc(record.result)}</p></header>
+      <div class="mc-inspection-actions"><button data-inspection-edit>Edit</button>${record.archivedAt ? '' : '<button class="danger" data-inspection-archive>Archive</button>'}${['Closed','Cancelled'].includes(record.status) ? '<button class="subtle" data-inspection-reopen>Explicitly reopen</button>' : ''}</div>
+      <dl><div><dt>Date</dt><dd>${esc(record.inspectionDate)}</dd></div><div><dt>Inspector</dt><dd>${esc(record.inspectorName || 'Unavailable')}</dd></div><div><dt>Location</dt><dd>${esc(inspectionLocation(record))}</dd></div><div><dt>Trade / discipline</dt><dd>${esc([record.trade, record.discipline].filter(Boolean).join(' · ') || 'Unavailable')}</dd></div><div><dt>Workflow</dt><dd>${esc(record.workflowTemplateId || 'Unavailable')}</dd></div><div><dt>Updated</dt><dd>${esc(record.updatedAt || 'Unavailable')}</dd></div></dl>
+      ${[['Scope',record.scope],['Observed Conditions',record.observedConditions],['Notes',record.notes]].map(([label,value]) => `<section><h3>${label}</h3><p>${esc(value || 'Not recorded.')}</p></section>`).join('')}
+      <section><h3>Corrective Action and Follow-Up</h3><p>${record.correctiveActionRequired ? 'Corrective action required.' : 'No corrective action marked.'} ${record.followUpRequired ? `Follow-up required${record.followUpDate ? ` on ${esc(record.followUpDate)}` : ''}.` : 'No follow-up marked.'}</p></section>
+      <section><h3>Source Documents</h3>${links(record.sourceDocumentIds, documentLink)}</section>
+      <section><h3>Source Sections</h3>${links(record.sourceSectionIds, sectionLink)}</section>
+      <section><h3>Evidence References</h3>${record.evidenceReferences.length ? links(record.evidenceReferences.map(item => item.sectionId), sectionLink) : '<p>None linked from the active retrieval session.</p>'}</section>
+      <section><h3>Related Records</h3>${links([...record.relatedDrawingIds,...record.relatedSpecificationIds,...record.relatedRfiIds,...record.relatedSubmittalIds,...record.relatedDeficiencyIds], documentLink)}</section>
+      <nav class="mc-inspection-navigation" aria-label="Inspection source navigation"><button data-inspection-engineering>Engineering Workspace</button><button data-inspection-source>Source Inspector</button><button data-inspection-evidence>Evidence Explorer</button><button data-inspection-relationships>Relationship Explorer</button><button data-inspection-workflow>Workflow Workspace</button></nav>
+    </article>`;
+  $('[data-inspection-edit]').onclick = () => openInspectionForm(record);
+  $('[data-inspection-archive]')?.addEventListener('click', async () => { if (confirm(`Archive ${record.inspectionNumber}? Its number will not be reused.`)) { await engine.archiveInspectionRecord(record.inspectionId); selectedInspectionId = null; await renderInspectionRecords(); } });
+  $('[data-inspection-reopen]')?.addEventListener('click', async () => { if (confirm(`Explicitly reopen ${record.inspectionNumber} as In Progress?`)) { await engine.updateInspectionRecord(record.inspectionId, { status: 'In Progress' }, { reopen: true }); await renderInspectionRecords(); } });
+  $('[data-inspection-engineering]').onclick = async () => { if (await activateInspectionRecord(record)) show('engineering'); else alert('No exact source reference is available to establish Engineering Context.'); };
+  $('[data-inspection-source]').onclick = async () => { if (!(await activateInspectionRecord(record))) return alert('No exact source reference is available.'); selectedDoc = activeContextActivation.documentId; sourceNavigationTarget = createSourceTarget({ ...activeContextActivation, originatingWorkspace: 'inspections', destination: 'sources' }); show('sources'); };
+  $('[data-inspection-evidence]').onclick = () => show('evidence');
+  $('[data-inspection-relationships]').onclick = async () => { if (!(await activateInspectionRecord(record))) return; relationshipTarget = { ...relationshipNavigationTarget({ documentId: activeContextActivation.documentId, sectionId: activeContextActivation.sectionId }), originatingWorkspace: 'inspections' }; show('relationships'); };
+  $('[data-inspection-workflow]').onclick = async () => { if (await activateInspectionRecord(record)) openWorkflowWorkspace(record.workflowTemplateId || 'Inspection Preparation', 'inspections'); };
+}
+
+$('#createInspectionRecord').onclick = () => openInspectionForm();
+for (const id of ['inspectionSearch','inspectionStatusFilter','inspectionLocationFilter','inspectionSort','inspectionShowArchived']) {
+  $(`#${id}`).addEventListener(id.includes('Search') || id.includes('Location') ? 'input' : 'change', renderInspectionRecords);
 }
 
 $('#upload').onclick = () => $('#fileInput').click();
@@ -4669,6 +4971,7 @@ async function renderProjectWorkspace(
     ? `
       <div class="mc-project-header-copy">
         <span>ACTIVE PROJECT</span>
+        ${project.isDemonstration ? '<div class="mc-demo-project-label"><strong>Demonstration Project</strong><small>Fictional Sample Data</small></div>' : ''}
         <h2>${esc(project.name)}</h2>
         <p>
           ${project.description
@@ -7605,16 +7908,19 @@ async function copyText(value) {
 }
 
 function openModal(html, ready) {
+  modalCloseGuard = null;
   $('#modalBody').innerHTML = html;
   $('#modal').hidden = false;
   ready?.();
 }
 
-function closeModal() {
+function closeModal(force = false) {
+  if (!force && modalCloseGuard && !modalCloseGuard()) return;
   $('#modal').hidden = true;
+  modalCloseGuard = null;
 }
 
-$('#closeModal').onclick = closeModal;
+$('#closeModal').onclick = () => closeModal();
 
 $('#modal').onclick = event => {
   if (event.target === $('#modal')) {

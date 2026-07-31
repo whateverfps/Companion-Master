@@ -15,6 +15,17 @@ const STOP = new Set(
   ]
 );
 
+function canonicalHitPath(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(part => String(part ?? '').trim())
+      .filter(Boolean);
+  }
+
+  const legacyPath = String(value ?? '').trim();
+  return legacyPath ? [legacyPath] : [];
+}
+
 const SYNONYMS = {
   definition: [
     'means',
@@ -4756,6 +4767,7 @@ export function retrieve(
   const finalized = ranked.map(
     (section, index) => ({
       ...section,
+      path: canonicalHitPath(section.path),
       score: roundScore(
         section.rerankScore
       ),
