@@ -67,7 +67,7 @@ app.innerHTML = `
 
     <nav>
       <button data-view="chat" class="active">Command Desk</button>
-      <button data-view="knowledge">Knowledge Base</button>
+      <button data-view="knowledge">Knowledge Workspace</button>
       <button data-view="sources">Source Inspector</button>
       <button data-view="evaluate">SME Evaluations</button>
       <button data-view="settings">Settings</button>
@@ -185,12 +185,20 @@ app.innerHTML = `
     </section>
 
     <section id="knowledge" class="view">
+      <header class="mc-knowledge-heading">
+        <div>
+          <span>PROJECT KNOWLEDGE</span>
+          <h2>Knowledge Workspace</h2>
+        </div>
+        <p>Browse libraries, inspect documents, and review indexed structure.</p>
+      </header>
+
       <div class="knowledge-grid">
         <aside class="panel library-panel">
           <div class="panel-head">
             <div>
               <span>KNOWLEDGE ORGANIZATION</span>
-              <h2>Libraries</h2>
+              <h2>Knowledge Library</h2>
             </div>
             <button id="newLibrary" class="subtle">＋ New</button>
           </div>
@@ -200,8 +208,8 @@ app.innerHTML = `
         <section class="panel knowledge-main">
           <div class="panel-head">
             <div>
-              <span>INGESTION PIPELINE</span>
-              <h2 id="activeLibraryTitle">Knowledge library</h2>
+              <span id="activeLibraryTitle">KNOWLEDGE LIBRARY</span>
+              <h2>Document Browser</h2>
             </div>
             <div>
               <input
@@ -230,31 +238,41 @@ app.innerHTML = `
           <div id="ingestStatus"></div>
 
           <div class="knowledge-toolbar">
-            <input id="documentFilter" placeholder="Filter documents…">
-            <select id="categoryFilter">
+            <label class="mc-knowledge-search">
+              <span>Knowledge Search</span>
+              <input
+                id="documentFilter"
+                type="search"
+                placeholder="Search documents and metadata…"
+              >
+            </label>
+            <select
+              id="categoryFilter"
+              aria-label="Filter documents by category"
+            >
               <option value="">All categories</option>
-              <option>Specifications</option>
-              <option>Drawings</option>
-              <option>SOPs</option>
-              <option>Reports</option>
-              <option>Photos</option>
-              <option>General</option>
             </select>
           </div>
 
-          <div id="documents" class="document-list"></div>
+          <div
+            id="documents"
+            class="document-list"
+            aria-live="polite"
+          ></div>
         </section>
 
         <aside class="panel metadata-panel">
           <div class="panel-head">
             <div>
               <span>DOCUMENT CONTROL</span>
-              <h2>Metadata</h2>
+              <h2 id="documentDetailsTitle">Document Details</h2>
             </div>
           </div>
 
           <div id="documentMetadata" class="document-metadata">
-            <div class="empty">Select a document to review its health and metadata.</div>
+            <div class="empty">
+              Select a document to review its metadata and indexed structure.
+            </div>
           </div>
 
           <div class="queue-head">
@@ -516,8 +534,8 @@ const titles = {
     'Ask project-specific questions and receive source-grounded answers.'
   ],
   knowledge: [
-    'Knowledge Base',
-    'Build a structured, section-aware project library.'
+    'Knowledge Workspace',
+    'Browse project documents, metadata, and indexed structure.'
   ],
   sources: [
     'Source Inspector',
@@ -665,7 +683,7 @@ function promptSuggestions(documents = [], sections = []) {
   if (!documents.length) {
     return [
       { label: 'Add project documents', view: 'knowledge' },
-      { label: 'Open the Knowledge Base', view: 'knowledge' },
+      { label: 'Open the Knowledge Workspace', view: 'knowledge' },
       { label: 'Configure this project', view: 'settings' }
     ];
   }
@@ -673,7 +691,7 @@ function promptSuggestions(documents = [], sections = []) {
   if (!sections.length || indexingIncomplete) {
     return [
       { label: 'Inspect document extraction', view: 'sources' },
-      { label: 'Review the Knowledge Base', view: 'knowledge' },
+      { label: 'Review the Knowledge Workspace', view: 'knowledge' },
       { label: 'Check diagnostics', view: 'diagnostics' }
     ];
   }
@@ -1572,6 +1590,7 @@ async function renderKnowledgeWorkspace(prefetched = null) {
   const currentState = state();
   const libraries = engine.libraries();
   const allDocuments = prefetched || await engine.documents();
+  const allSections = await engine.sections();
 
   const activeLibrary =
     libraries.find(library => library.id === currentState.activeLibrary) ||
@@ -1637,7 +1656,7 @@ async function renderKnowledgeWorkspace(prefetched = null) {
 
   $('#activeLibraryTitle').textContent =
     activeLibrary?.name ||
-    'Knowledge library';
+    'Knowledge Library';
 
   let documents = activeLibrary
     ? allDocuments.filter(document =>
@@ -1645,18 +1664,46 @@ async function renderKnowledgeWorkspace(prefetched = null) {
       )
     : [];
 
+  const categoryFilter = $('#categoryFilter');
+  const selectedCategory = categoryFilter.value;
+  const categories = [...new Set(
+    documents
+      .map(document => safeText(document.category).trim())
+      .filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b));
+
+  categoryFilter.innerHTML = `
+    <option value="">All categories</option>
+    ${categories.map(category => `
+      <option
+        value="${esc(category)}"
+        ${category === selectedCategory ? 'selected' : ''}
+      >
+        ${esc(category)}
+      </option>
+    `).join('')}
+  `;
+
   const query = $('#documentFilter').value
     .trim()
     .toLowerCase();
 
-  const category = $('#categoryFilter').value;
+  const category = categoryFilter.value;
 
   if (query) {
     documents = documents.filter(document =>
       `
         ${document.name}
         ${document.title || ''}
-        ${(document.tags || []).join(' ')}
+        ${document.category || ''}
+        ${document.extension || ''}
+        ${document.type || ''}
+        ${Array.isArray(document.tags)
+          ? document.tags.join(' ')
+          : document.tags || ''}
+        ${document.metadata
+          ? JSON.stringify(document.metadata)
+          : ''}
       `
         .toLowerCase()
         .includes(query)
@@ -1669,7 +1716,7 @@ async function renderKnowledgeWorkspace(prefetched = null) {
     );
   }
 
-  renderDocuments(documents);
+  renderDocuments(documents, allSections);
   renderImportQueue();
 
   $$('[data-library-select]').forEach(button => {
@@ -1755,79 +1802,162 @@ async function renderKnowledgeWorkspace(prefetched = null) {
   });
 }
 
-function renderDocuments(documents) {
+function documentStatus(document) {
+  const status = safeText(document.status).toLowerCase();
+
+  if (['verified', 'indexed', 'complete', 'ready'].includes(status)) {
+    return {
+      className: 'indexed',
+      label: 'Indexed'
+    };
+  }
+
+  if (['waiting', 'processing', 'pending'].includes(status)) {
+    return {
+      className: 'pending',
+      label: 'Pending'
+    };
+  }
+
+  if (['error', 'failed', 'unavailable'].includes(status)) {
+    return {
+      className: 'unavailable',
+      label: 'Unavailable'
+    };
+  }
+
+  return {
+    className: 'unknown',
+    label: status
+      ? status.charAt(0).toUpperCase() + status.slice(1)
+      : 'Status unavailable'
+  };
+}
+
+function documentType(document) {
+  return preferredText(
+    document.extension?.toUpperCase(),
+    document.type,
+    'Type unavailable'
+  );
+}
+
+function documentPageCount(document) {
+  const value = preferredText(
+    document.pageCount,
+    document.pages,
+    document.metadata?.pageCount,
+    document.metadata?.pages
+  );
+  const count = Number(value);
+
+  return Number.isFinite(count) && count > 0 ? count : null;
+}
+
+function documentModifiedAt(document) {
+  const value =
+    document.lastModified ??
+    document.modifiedAt ??
+    document.updatedAt ??
+    document.metadata?.lastModified;
+  const date = value ? new Date(value) : null;
+
+  return date && !Number.isNaN(date.getTime())
+    ? date.toLocaleString()
+    : '';
+}
+
+function renderDocuments(documents, allSections = []) {
   $('#documents').innerHTML = documents.length
-    ? documents.map(document => `
+    ? documents.map(document => {
+        const status = documentStatus(document);
+        const pageCount = documentPageCount(document);
+        const modifiedAt = documentModifiedAt(document);
+
+        return `
         <article
-          class="doc
-            ${document.status}
+          class="doc mc-knowledge-document
             ${document.id === selectedDoc ? 'selected' : ''}"
           data-document-row="${document.id}"
         >
-          <div class="file-icon">
-            ${(
-              document.extension ||
-              document.name.split('.').pop() ||
-              'DOC'
-            )
-              .toUpperCase()
-              .slice(0, 4)}
-          </div>
-
-          <div class="doc-main">
-            <strong>${esc(document.title || document.name)}</strong>
-            <span>
-              ${esc(document.category || 'General')}
-              · ${fmt(document.sectionCount)} sections
-              · ${formatBytes(document.size)}
+          <button
+            type="button"
+            class="mc-knowledge-document-select"
+            data-document-select="${document.id}"
+            aria-pressed="${document.id === selectedDoc}"
+          >
+            <span class="file-icon">
+              ${(
+                document.extension ||
+                document.name.split('.').pop() ||
+                'DOC'
+              )
+                .toUpperCase()
+                .slice(0, 4)}
             </span>
-            <small class="health ${esc(document.health || 'warning')}">
-              ${esc(document.health || document.status)}
-              —
-              ${esc(
-                document.healthDetail ||
-                document.error ||
-                'No health details'
-              )}
-            </small>
+
+            <span class="doc-main">
+              <span class="mc-knowledge-document-title">
+                ${esc(document.title || document.name)}
+              </span>
+              <span class="mc-knowledge-document-chips">
+                <span>${esc(documentType(document))}</span>
+                ${pageCount
+                  ? `<span>${fmt(pageCount)} page${pageCount === 1 ? '' : 's'}</span>`
+                  : ''}
+                <span>${fmt(document.sectionCount)} sections</span>
+                ${Number(document.size) > 0
+                  ? `<span>${formatBytes(document.size)}</span>`
+                  : ''}
+              </span>
+              ${modifiedAt
+                ? `<small>Last modified ${esc(modifiedAt)}</small>`
+                : ''}
+            </span>
+
+            <span class="mc-knowledge-status ${status.className}">
+              ${esc(status.label)}
+            </span>
+          </button>
+
+          <div class="mc-knowledge-document-actions">
+            <button
+              type="button"
+              class="subtle"
+              data-inspect="${document.id}"
+            >
+              Inspect source
+            </button>
+
+            <button
+              type="button"
+              class="danger"
+              data-remove="${document.id}"
+            >
+              Remove
+            </button>
           </div>
-
-          <button
-            class="subtle"
-            data-inspect="${document.id}"
-          >
-            Inspect
-          </button>
-
-          <button
-            class="danger"
-            data-remove="${document.id}"
-          >
-            Remove
-          </button>
         </article>
-      `).join('')
+      `;
+      }).join('')
     : `
       <div class="empty">
         No documents in this library match the current filter.
       </div>
     `;
 
-  $$('[data-document-row]').forEach(row => {
-    row.onclick = event => {
-      if (event.target.closest('button')) {
-        return;
-      }
-
-      selectedDoc = row.dataset.documentRow;
+  $$('[data-document-select]').forEach(button => {
+    button.onclick = () => {
+      selectedDoc = button.dataset.documentSelect;
 
       renderDocumentMetadata(
         documents.find(document =>
           document.id === selectedDoc
-        )
+        ),
+        allSections
       );
 
-      renderDocuments(documents);
+      renderDocuments(documents, allSections);
     };
   });
 
@@ -1861,67 +1991,145 @@ function renderDocuments(documents) {
   renderDocumentMetadata(
     documents.find(document =>
       document.id === selectedDoc
-    )
+    ),
+    allSections
   );
 }
 
-function renderDocumentMetadata(document) {
+function renderDocumentMetadata(document, allSections = []) {
+  const sections = document
+    ? allSections.filter(section => section.documentId === document.id)
+    : [];
+  const status = document ? documentStatus(document) : null;
+  const pageCount = document ? documentPageCount(document) : null;
+  const modifiedAt = document ? documentModifiedAt(document) : '';
+  const summary = document
+    ? preferredText(
+        document.summary,
+        document.metadata?.summary,
+        document.description,
+        document.metadata?.description
+      )
+    : '';
+  const tags = document
+    ? Array.isArray(document.tags)
+      ? document.tags
+      : Array.isArray(document.metadata?.tags)
+        ? document.metadata.tags
+        : []
+    : [];
+  const library = document
+    ? engine.libraries().find(item => item.id === document.libraryId)
+    : null;
+
   $('#documentMetadata').innerHTML = document
     ? `
-      <div class="metadata-health ${esc(document.health || 'warning')}">
-        <span>
-          ${document.health === 'healthy'
-            ? '✓'
-            : document.health === 'error'
-              ? '×'
-              : '!'}
+      <header class="mc-knowledge-detail-header">
+        <span class="mc-knowledge-status ${status.className}">
+          ${esc(status.label)}
         </span>
+        <h3>${esc(document.title || document.name)}</h3>
+        <p>${esc(document.name)}</p>
+      </header>
 
-        <div>
-          <strong>
-            ${esc((document.health || 'warning').toUpperCase())}
-          </strong>
-          <small>
-            ${esc(document.healthDetail || 'No details')}
-          </small>
+      <section class="mc-knowledge-detail-section">
+        <h4>Document summary</h4>
+        ${summary
+          ? `<p>${esc(summary)}</p>`
+          : `
+            <p class="mc-knowledge-placeholder">
+              No document summary is available.
+            </p>
+          `}
+      </section>
+
+      <section class="mc-knowledge-detail-section">
+        <h4>Metadata</h4>
+        <div class="mc-knowledge-detail-chips">
+          <span>${esc(documentType(document))}</span>
+          ${document.category
+            ? `<span>${esc(document.category)}</span>`
+            : ''}
+          ${pageCount
+            ? `<span>${fmt(pageCount)} page${pageCount === 1 ? '' : 's'}</span>`
+            : ''}
+          ${Number(document.size) > 0
+            ? `<span>${formatBytes(document.size)}</span>`
+            : ''}
+          <span>${fmt(sections.length)} indexed sections</span>
+          ${tags.map(tag => `<span>${esc(tag)}</span>`).join('')}
         </div>
-      </div>
 
-      <dl>
-        <dt>Title</dt>
-        <dd>${esc(document.title || document.name)}</dd>
+        <dl>
+          <dt>Indexed status</dt>
+          <dd>${esc(status.label)}</dd>
 
-        <dt>Filename</dt>
-        <dd>${esc(document.name)}</dd>
+          <dt>Source file</dt>
+          <dd>${esc(document.name)}</dd>
 
-        <dt>Category</dt>
-        <dd>${esc(document.category || 'General')}</dd>
+          <dt>Last modified</dt>
+          <dd>${modifiedAt ? esc(modifiedAt) : 'Not available'}</dd>
 
-        <dt>Type</dt>
-        <dd>
-          ${esc(
-            document.extension?.toUpperCase() ||
-            document.type ||
-            'Unknown'
-          )}
-        </dd>
+          <dt>Indexed</dt>
+          <dd>
+            ${document.indexedAt &&
+              !Number.isNaN(new Date(document.indexedAt).getTime())
+              ? esc(new Date(document.indexedAt).toLocaleString())
+              : 'Not available'}
+          </dd>
 
-        <dt>Size</dt>
-        <dd>${formatBytes(document.size)}</dd>
+          <dt>Characters</dt>
+          <dd>
+            ${Number(document.characterCount) > 0
+              ? fmt(document.characterCount)
+              : 'Not available'}
+          </dd>
+        </dl>
+      </section>
 
-        <dt>Sections</dt>
-        <dd>${fmt(document.sectionCount)}</dd>
+      <section class="mc-knowledge-detail-section mc-knowledge-outline">
+        <div class="mc-knowledge-outline-heading">
+          <h4>Document outline</h4>
+          ${sections.length
+            ? `<span>${fmt(sections.length)}</span>`
+            : ''}
+        </div>
 
-        <dt>Characters</dt>
-        <dd>${fmt(document.characterCount)}</dd>
+        ${sections.length
+          ? `
+            <ol>
+              ${sections.map((section, index) => `
+                <li>
+                  <strong>${esc(sectionHeadingValue(section, index))}</strong>
+                  ${sectionLocationValue(section)
+                    ? `<span>${esc(sectionLocationValue(section))}</span>`
+                    : ''}
+                </li>
+              `).join('')}
+            </ol>
+          `
+          : `
+            <div class="mc-knowledge-placeholder">
+              <strong>Document outline unavailable.</strong>
+              <span>
+                Future versions will expose indexed chapters and sections.
+              </span>
+            </div>
+          `}
+      </section>
 
-        <dt>Indexed</dt>
-        <dd>${new Date(document.indexedAt).toLocaleString()}</dd>
-      </dl>
+      <section class="mc-knowledge-detail-section">
+        <h4>Source information</h4>
+        <p>
+          ${esc(document.name)}
+          ${document.type ? ` · ${esc(document.type)}` : ''}
+          ${library ? ` · ${esc(library.name)}` : ''}
+        </p>
+      </section>
     `
     : `
       <div class="empty">
-        Select a document to review its health and metadata.
+        Select a document to review its metadata and indexed structure.
       </div>
     `;
 }
