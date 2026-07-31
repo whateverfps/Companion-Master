@@ -62,6 +62,25 @@ function uniqueItems(items) {
   return [...new Map(items.map(item => [item.id, item])).values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
+function uniqueActions(actions) {
+  const keyed = new Map();
+  for (const action of list(actions)) {
+    const target = action?.target || {};
+    const key = [action.action, target.documentId, target.sheetId, target.pageNumber, target.observationId, target.sectionId].map(text).join(':');
+    if (!keyed.has(key) && target.documentId) keyed.set(key, action);
+  }
+  return [...keyed.values()];
+}
+
+function evidenceQuality(item = {}) {
+  const status = text(item.verification?.status || item.verificationStatus);
+  if (status === 'Confirmed') return 'Confirmed';
+  if (status && status !== 'Unreviewed') return status === 'Rejected' ? 'Unavailable' : 'Candidate';
+  if (item.observationId) return 'Exact';
+  if (item.contextual) return 'Contextual';
+  return item.available === false ? 'Unavailable' : 'Exact';
+}
+
 function riskItems({ inspections, rfis, submittals, deficiencies, revisions }) {
   const risks = [];
   for (const item of inspections) {
@@ -90,6 +109,19 @@ export function inspectionPrefillFromWorkPackage(workPackage = {}) {
     relatedDrawingIds: ids(list(workPackage.drawings).map(item => item.documentId)), relatedSpecificationIds: ids(list(workPackage.specifications).map(item => item.id)),
     relatedRfiIds: ids(list(workPackage.rfis).map(item => item.id)), relatedSubmittalIds: ids(list(workPackage.submittals).map(item => item.id)), relatedDeficiencyIds: ids(list(workPackage.deficiencies).map(item => item.id)),
     workflowTemplateId: text(workPackage.workflowTemplateId)
+  };
+}
+
+export function workPackageModePresentation(workPackage = {}, mode = 'offline') {
+  const sourceOnly = mode === 'offline' || mode === 'source';
+  return {
+    sourceOnly,
+    evidence: workPackage.presentation || {},
+    expertInterpretation: sourceOnly ? [] : list(workPackage.coordination),
+    recommendedActions: sourceOnly ? [] : list(workPackage.responseActions),
+    risks: sourceOnly ? [] : list(workPackage.risks),
+    inspectionPreparation: sourceOnly ? null : workPackage.inspectionPreparation || null,
+    limitations: list(workPackage.limitations)
   };
 }
 
@@ -127,13 +159,29 @@ export function buildConstructionWorkPackage({ planResult = {}, documents = [], 
   const packageBase = {
     projectId: text(planResult.projectId), building: text(planResult.building), floor: text(planResult.floor), room: text(planResult.room), discipline: text(planResult.discipline),
     workSummary, drawings: uniqueItems(drawingItems), specifications: uniqueItems(groups.specifications), rfis: uniqueItems(groups.rfis), submittals: uniqueItems(groups.submittals), inspections: uniqueItems(matchedInspections), deficiencies: uniqueItems(groups.deficiencies), evidence: evidenceItems, schedules, details, revisions: revisionItems,
-    relatedTrades: [], coordination: [], risks: [], inspectionPreparation: {}, viewerTargets: drawingItems.map(item => item.target), responseActions: list(planResult.actions), limitations: [...list(planResult.limitations)], workflowTemplateId, lineage: lineageItems
+    relatedTrades: [], coordination: [], risks: [], inspectionPreparation: {}, viewerTargets: drawingItems.map(item => item.target), responseActions: uniqueActions(planResult.actions), limitations: [...list(planResult.limitations)], workflowTemplateId, lineage: lineageItems
   };
   packageBase.risks = riskItems(packageBase);
   packageBase.inspectionPreparation = {
     drawingIds: ids(packageBase.drawings.map(item => item.documentId)), specificationIds: ids(packageBase.specifications.map(item => item.id)), rfiIds: ids(packageBase.rfis.map(item => item.id)), submittalIds: ids(packageBase.submittals.map(item => item.id)), inspectionIds: ids(packageBase.inspections.map(item => item.id)), deficiencyIds: ids(packageBase.deficiencies.map(item => item.id)), evidenceReferences: packageBase.evidence.map(item => ({ documentId: item.documentId, sectionId: item.sectionId })), workflowTemplateId,
     nextInspection: packageBase.inspections.find(item => item.status === 'Follow-Up Required' || item.followUpDate) || null,
     nextInspectionStatement: packageBase.inspections.some(item => item.status === 'Follow-Up Required' || item.followUpDate) ? 'An exact follow-up inspection record is available.' : 'No deterministic next inspection is recorded.'
+  };
+  const scheduleDetailIds = new Set([...packageBase.schedules, ...packageBase.details].map(item => item.id));
+  packageBase.presentation = {
+    overview: workSummary,
+    location: { building: packageBase.building, floor: packageBase.floor, room: packageBase.room },
+    tradeSystem: packageBase.discipline,
+    primaryDrawing: planResult.ambiguous ? null : packageBase.drawings.find(item => item.sheetId === planResult.viewerTarget?.sheetId) || packageBase.drawings[0] || null,
+    relatedPlans: packageBase.drawings.filter(item => item.sheetId !== planResult.viewerTarget?.sheetId && !scheduleDetailIds.has(item.id)),
+    schedulesDetails: uniqueItems([...packageBase.schedules, ...packageBase.details]),
+    exactPlanEvidence: workSummary.map(item => ({ ...item, quality: evidenceQuality(item) })),
+    supportingRequirements: packageBase.specifications,
+    projectRecords: { rfis: packageBase.rfis, submittals: packageBase.submittals, inspections: packageBase.inspections, deficiencies: packageBase.deficiencies },
+    inspectionPreparation: packageBase.inspectionPreparation,
+    risks: packageBase.risks,
+    limitations: packageBase.limitations,
+    actions: packageBase.responseActions
   };
   return packageBase;
 }

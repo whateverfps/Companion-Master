@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage, workPackageConfidence, workPackageReason } from '../src/work-package.js';
+import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage, workPackageConfidence, workPackageModePresentation, workPackageReason } from '../src/work-package.js';
 
 const target = { projectId: 'p1', documentId: 'drawing', drawingSetId: 'set', sheetId: 'sheet1', pageNumber: 2, observationId: 'room137', region: { x: .1, y: .2, width: .1, height: .02 } };
 const planResult = {
@@ -71,4 +71,36 @@ test('empty categories stay empty and unsupported graphical conclusions are abse
   assert.deepEqual(result.submittals, []);
   assert.deepEqual(result.risks, []);
   assert.doesNotMatch(JSON.stringify(result.workSummary), /duct routing|installed equipment|diffuser quantity|clash|compliance/i);
+});
+
+test('presentation is construction-first, exact, and hides unsupported groups', () => {
+  const result = buildConstructionWorkPackage({ planResult, documents, inspections: [inspection] });
+  assert.equal(result.presentation.location.room, '137');
+  assert.equal(result.presentation.tradeSystem, 'Mechanical');
+  assert.equal(result.presentation.primaryDrawing.sheetId, 'sheet1');
+  assert.equal(result.presentation.exactPlanEvidence[0].quality, 'Exact');
+  assert.deepEqual(result.presentation.relatedPlans, []);
+  assert.equal(result.presentation.projectRecords.inspections[0].id, 'ins');
+  assert.doesNotMatch(JSON.stringify(result.presentation), /installed quantity|duct route|room ownership/i);
+});
+
+test('response actions are exact and deduplicated', () => {
+  const duplicate = { ...planResult, actions: [...planResult.actions, structuredClone(planResult.actions[0])] };
+  const result = buildConstructionWorkPackage({ planResult: duplicate, documents });
+  assert.equal(result.responseActions.length, 1);
+  assert.equal(result.responseActions[0].target.sheetId, 'sheet1');
+});
+
+test('source-only omits recommendations while expert-assisted separates them', () => {
+  const result = buildConstructionWorkPackage({ planResult, documents, inspections: [inspection] });
+  const source = workPackageModePresentation(result, 'source');
+  assert.equal(source.sourceOnly, true);
+  assert.deepEqual(source.risks, []);
+  assert.deepEqual(source.recommendedActions, []);
+  assert.equal(source.inspectionPreparation, null);
+  const expert = workPackageModePresentation(result, 'assisted');
+  assert.equal(expert.sourceOnly, false);
+  assert.ok(expert.risks.length > 0);
+  assert.ok(expert.recommendedActions.length > 0);
+  assert.ok(expert.limitations.length > 0);
 });

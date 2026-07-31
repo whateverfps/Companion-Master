@@ -239,6 +239,24 @@ test('Phase 24A.2 exposes a full-scale stable viewer and verified construction o
   assert.doesNotMatch(css, /\.mc-drawing-stage\{[^}]*background:\s*(?:white|#fff(?:fff)?)/i);
 });
 
+test('Phase 24B makes Chief construction-first with one synchronized drawing state', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  const messageMarkup = app.slice(app.indexOf('class="mc-control-messages"'), app.indexOf('id="missionControlComposer"'));
+  assert.ok(messageMarkup.indexOf('constructionWorkPackageMarkup(message)') < messageMarkup.indexOf('mc-control-message-content'));
+  assert.match(app, /chiefConstructionContext/);
+  assert.match(app, /validateChiefConstructionContext/);
+  assert.match(app, /missionInlineDrawingViewer/);
+  assert.match(app, /Open Full Drawing Workspace/);
+  assert.match(app, /activeDrawingRenderIdentity/);
+  assert.match(app, /renderCanvas/);
+  assert.match(app, /updateDrawingOverlays/);
+  assert.match(app, /message\.workPackageReferences\) return ''/);
+  assert.match(css, /Phase 24B/);
+  assert.match(css, /\.mc-inline-plan/);
+  assert.doesNotMatch(app, /engine\.setState\([^)]*workPackage|persistWorkPackage/);
+});
+
 test('Mission Control exposes My Projects and an accessible demonstration orientation banner', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.match(app, /data-control-projects>My Projects/);

@@ -101,8 +101,8 @@ import {
 import { openPdfBlob, readPdfPageGraphics, renderPdfPage } from './pdf-source.js';
 import { extractLegendCandidates, matchLegendOccurrences } from './drawing-legends.js';
 import { applyObservationVerification, drawingWarningPresentation, DRAWING_ANALYSIS_VERSION, groupDrawingObservations, observationKindLabel, reanalyzeDrawingAnalysis, upgradeDrawingAnalysis } from './drawing-intelligence.js';
-import { calculateDrawingFit, createDrawingTarget, defaultDrawingViewport, drawingMatchingSetTarget, drawingResultKeyTarget, drawingViewportKey, drawingWorkspaceLayout, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
-import { buildPlanQuery, drawingSearchSummary, planQuerySectionScope, searchDrawingSheets } from './plan-query.js';
+import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, defaultDrawingViewport, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingViewportKey, drawingWorkspaceLayout, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
+import { buildPlanQuery, createChiefConstructionContext, drawingSearchSummary, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from './plan-query.js';
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
 import { drawingUpgradeKey, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
 
@@ -187,8 +187,15 @@ let activeDrawingRender = null;
 let activeDrawingPdf = null;
 let activeDrawingDocumentId = '';
 let activeDrawingSourceRecord = null;
+let activeDrawingRenderIdentity = null;
+let drawingRenderGeneration = 0;
+let portableDrawingCanvas = null;
+let activeDrawingResizeObserver = null;
+let activeDrawingResizeStage = null;
 let activePlanQuery = null;
 let activeWorkPackage = null;
+let activeWorkPackageMessageId = '';
+let chiefConstructionContext = null;
 let drawingMatchingSheetIds = [];
 let selectedWorkPackageItem = '';
 let pendingDrawingContext = null;
@@ -197,6 +204,7 @@ const drawingUpgradeWork = new Map();
 const drawingUpgradeFailures = new Set();
 let drawingLifecycleUnavailable = [];
 let drawingWorkspacePanels = drawingWorkspaceLayout();
+let drawingWorkspaceBeforeExpand = null;
 
 app.innerHTML = `
 <a id="skipLink" class="mc-skip-link" href="#missionControlMain">Skip to workspace</a>
@@ -1254,6 +1262,7 @@ function missionControlProject() {
 
 function missionControlMessageActions(message, drawingSourceIds = new Set()) {
   if (message.role !== 'assistant' || !Array.isArray(message.hits) || !message.hits.length) return '';
+  if (message.workPackageReferences) return '';
   const exact = message.hits.filter(hit => hit?.documentId);
   if (!exact.length) return '';
   const first = exact[0];
@@ -1263,6 +1272,11 @@ function missionControlMessageActions(message, drawingSourceIds = new Set()) {
 }
 
 async function renderMissionControlChat() {
+  const existingInlineCanvas = $('#missionControlContent #mcDrawingCanvas');
+  if (existingInlineCanvas) {
+    captureDrawingViewport();
+    portableDrawingCanvas = existingInlineCanvas;
+  }
   const conversation = engine.activeConversation();
   const project = missionControlProject();
   const messages = conversation?.messages || [];
@@ -1275,7 +1289,8 @@ async function renderMissionControlChat() {
       if (reconstructed) {
         const expected = new Set(messages[packageMessageIndex].workPackageReferences.matchingSheetIds || []);
         if (reconstructed.planResult.matchingSheetIds.every(id => expected.has(id)) && expected.size === reconstructed.planResult.matchingSheetIds.length) {
-          activePlanQuery = reconstructed.planResult; activeWorkPackage = reconstructed.workPackage; drawingMatchingSheetIds = [...reconstructed.planResult.matchingSheetIds];
+          activePlanQuery = reconstructed.planResult; activeWorkPackage = reconstructed.workPackage; activeWorkPackageMessageId = messages[packageMessageIndex].id; drawingMatchingSheetIds = [...reconstructed.planResult.matchingSheetIds];
+          chiefConstructionContext = createChiefConstructionContext({ conversationId: conversation.conversationId, projectId: project.id, planResult: activePlanQuery, drawingTarget: activePlanQuery.viewerTarget, workPackageReferences: messages[packageMessageIndex].workPackageReferences, updatedFrom: 'conversation-reconstruction' });
         }
       }
     }
@@ -1287,7 +1302,7 @@ async function renderMissionControlChat() {
     <section class="mc-control-chat" aria-labelledby="missionControlTitle">
       <header class="mc-control-chat-header"><div><span>ASK COMPANION</span><h1 id="missionControlTitle" tabindex="-1">${esc(conversation?.title || 'New conversation')}</h1><p>${project ? `Using project knowledge from ${esc(project.name)}.` : 'Select a project or attach supported documents to ask an evidence-backed question.'}</p></div><div><button data-control-action="new-conversation">New Conversation</button><button class="subtle" data-control-view="history">Conversation History</button></div></header>
       <div class="mc-control-messages" role="log" aria-live="polite" aria-label="Conversation messages">
-        ${messages.length ? messages.map(message => `<article class="mc-control-message ${message.role}" id="mc-message-${esc(message.id)}"><header><strong>${message.role === 'assistant' ? 'Chief' : 'You'}</strong>${message.role === 'assistant' ? `<span>${esc(missionControlResponseModeLabel(message.mode))}</span>` : ''}</header><div class="mc-control-message-content">${esc(message.content).replace(/\n/g, '<br>')}</div>${constructionWorkPackageMarkup(message)}${missionControlMessageActions(message, drawingSourceIds)}</article>`).join('') : `<div class="mc-control-chat-empty"><strong>Start a conversation</strong><p>Ask about the active project or attach a supported document. Answers remain linked to exact source records.</p></div>`}
+        ${messages.length ? messages.map(message => `<article class="mc-control-message ${message.role}" id="mc-message-${esc(message.id)}"><header><strong>${message.role === 'assistant' ? 'Chief' : 'You'}</strong>${message.role === 'assistant' ? `<span>${esc(missionControlResponseModeLabel(message.mode))}</span>` : ''}</header>${constructionWorkPackageMarkup(message)}<div class="mc-control-message-content">${esc(message.content).replace(/\n/g, '<br>')}</div>${missionControlMessageActions(message, drawingSourceIds)}</article>`).join('') : `<div class="mc-control-chat-empty"><strong>Start a conversation</strong><p>Ask about the active project or attach supported documents. Answers remain linked to exact source records.</p></div>`}
       </div>
       <form id="missionControlComposer" class="mc-control-composer">
         <div class="mc-control-attachments" aria-live="polite">${(conversation?.attachmentDocumentIds || []).map(id => `<span data-attached-document="${esc(id)}">${esc(attachmentNames.get(id) || 'Attached document unavailable')} <button type="button" data-remove-attachment="${esc(id)}" aria-label="Remove attached document">×</button></span>`).join('')}${missionControlAttachments.map(item => `<span class="${esc(item.status)}">${esc(item.name)} · ${esc(item.status)}${item.error ? ` — ${esc(item.error)}` : ''}</span>`).join('')}</div>
@@ -1296,6 +1311,7 @@ async function renderMissionControlChat() {
       </form>
     </section>`;
   $('#missionControlMode').value = state().settings.mode;
+  if ($('#missionInlineDrawingViewer') && activeWorkPackage?.presentation?.primaryDrawing) await renderDrawingWorkspace('mission-control');
 }
 
 function renderConversationHistory() {
@@ -1357,7 +1373,9 @@ async function buildActiveConstructionPackage(query, evidence = []) {
   const [analyses, documents, sections, inspections] = await Promise.all([
     currentDrawingAnalyses(), engine.documents(), engine.sections(), engine.inspectionRecords({ includeArchived: true })
   ]);
-  const planResult = buildPlanQuery({ query, projectId, analyses });
+  const conversationId = engine.activeConversation()?.conversationId || '';
+  chiefConstructionContext = validateChiefConstructionContext(chiefConstructionContext, { conversationId, projectId, analyses });
+  const planResult = buildPlanQuery({ query, projectId, analyses, context: chiefConstructionContext });
   if (!planResult.matchingSheetIds.length) return null;
   const relationshipModel = buildKnowledgeRelationships({ documents, sections });
   const relationships = [...relationshipModel.membership, ...relationshipModel.hierarchy, ...relationshipModel.explicitReferences, ...relationshipModel.reverseReferences, ...relationshipModel.documentReferences];
@@ -1368,32 +1386,37 @@ async function buildActiveConstructionPackage(query, evidence = []) {
 
 function workPackageGroup(title, items, formatter) {
   if (!items?.length) return '';
-  return `<section><h4>${esc(title)}</h4><ol>${items.map(item => `<li>${formatter(item)}<small>${esc(item.reason || '')}${item.confidence ? ` · Evidence confidence: ${esc(item.confidence)}` : ''}</small></li>`).join('')}</ol></section>`;
+  return `<section><h4>${esc(title)}</h4><ol>${items.map(item => `<li>${formatter(item)}${item.reason ? `<small>${esc(item.reason)}</small>` : ''}</li>`).join('')}</ol></section>`;
 }
 
 function constructionWorkPackageMarkup(message) {
   const workPackage = activeWorkPackage;
-  if (!workPackage || message.role !== 'assistant' || !message.workPackageReferences) return '';
+  if (!workPackage || message.role !== 'assistant' || !message.workPackageReferences || message.id !== activeWorkPackageMessageId) return '';
   const sourceOnly = ['offline', 'source'].includes(message.mode);
   const sheetActions = workPackage.responseActions.filter(action => action?.target?.sheetId);
   const currentWorkTarget = currentWorkActivationTarget(workPackage);
   const beforeWork = workPackage.submittals.filter(item => /approved/i.test(item.status || ''));
   const afterWork = workPackage.inspections.filter(item => item.status === 'Follow-Up Required' || item.followUpRequired);
+  const primary = workPackage.presentation?.primaryDrawing;
   return `<section class="mc-work-package" aria-labelledby="mcWorkPackage-${esc(message.id)}">
     <header><div><span>CONSTRUCTION WORK PACKAGE</span><h3 id="mcWorkPackage-${esc(message.id)}">${esc([workPackage.discipline, workPackage.room ? `Room ${workPackage.room}` : '', workPackage.building ? `Building ${workPackage.building}` : ''].filter(Boolean).join(' · ') || 'Supported project work')}</h3></div><strong>${sourceOnly ? 'Evidence only' : 'Evidence with separate expert guidance'}</strong></header>
-    ${workPackageGroup('Work shown or referenced', workPackage.workSummary, item => `<strong>${esc(item.statement)}</strong><span>${esc(item.basis)}</span>`)}
-    ${workPackageGroup('Plans', workPackage.drawings, item => `<button data-work-package-sheet="${esc(item.sheetId)}">${esc(sheetActions.find(action => action.target.sheetId === item.sheetId)?.label || 'Open exact sheet')}</button>`)}
+    <section class="mc-work-package-overview"><h4>Work and location</h4><dl><div><dt>Work</dt><dd>${esc(workPackage.workSummary[0]?.statement || 'Exact construction evidence selected')}</dd></div><div><dt>Location</dt><dd>${esc([workPackage.building ? `Building ${workPackage.building}` : '', workPackage.floor, workPackage.room ? `Room ${workPackage.room}` : ''].filter(Boolean).join(' · ') || 'Not resolved')}</dd></div><div><dt>Trade / system</dt><dd>${esc(workPackage.discipline || 'Not resolved')}</dd></div></dl></section>
+    ${primary ? `<section class="mc-work-package-primary"><h4>Primary plan</h4><button data-work-package-sheet="${esc(primary.sheetId)}">${esc(sheetActions.find(action => action.target.sheetId === primary.sheetId)?.label || 'Show primary plan')}</button></section>` : ''}
+    ${workPackageGroup('Work shown or referenced', workPackage.presentation?.exactPlanEvidence || workPackage.workSummary, item => `<strong>${esc(item.statement)}</strong><span>${esc(item.basis)}${item.quality ? ` · ${esc(item.quality)}` : ''}</span>`)}
+    ${workPackageGroup('Related plans', workPackage.presentation?.relatedPlans || [], item => `<button data-work-package-sheet="${esc(item.sheetId)}">${esc(sheetActions.find(action => action.target.sheetId === item.sheetId)?.label || 'Open exact sheet')}</button>`)}
+    ${workPackageGroup('Schedules and details', workPackage.presentation?.schedulesDetails || [], item => `<button data-work-package-sheet="${esc(item.sheetId)}">${esc(sheetActions.find(action => action.target.sheetId === item.sheetId)?.label || 'Open exact supporting sheet')}</button>`)}
     ${workPackage.discipline === 'Mechanical' ? `<section class="mc-work-package-mechanical"><h4>Mechanical Work</h4><dl><div><dt>Plans</dt><dd>${fmt(workPackage.drawings.length)}</dd></div><div><dt>Schedules</dt><dd>${fmt(workPackage.schedules.length)}</dd></div><div><dt>Details</dt><dd>${fmt(workPackage.details.length)}</dd></div><div><dt>Observed identifiers</dt><dd>${fmt(activePlanQuery?.matchingObservationIds?.length || 0)}</dd></div></dl><small>Potential coordination is shown only when exact project relationships support it. No routing, quantity, placement, connectivity, room boundary, or clash is asserted.</small></section>` : ''}
-    ${workPackageGroup('Supporting requirements', workPackage.specifications, item => `<strong>${esc(item.title || item.id)}</strong>`)}
-    ${workPackageGroup('RFIs', workPackage.rfis, item => `<strong>${esc(item.title || item.id)}</strong><span>${esc(item.status || '')}</span>`)}
-    ${workPackageGroup('Submittals', workPackage.submittals, item => `<strong>${esc(item.title || item.id)}</strong><span>${esc(item.status || '')}</span>`)}
-    ${workPackageGroup('Current inspections', workPackage.inspections, item => `<strong>${esc(item.inspectionNumber || item.id)} · ${esc(item.title || '')}</strong><span>${esc(item.status)} · ${esc(item.result)}</span>`)}
-    ${workPackageGroup('Open issues', workPackage.deficiencies, item => `<strong>${esc(item.title || item.id)}</strong><span>${esc(item.status || '')}</span>`)}
-    ${!sourceOnly ? workPackageGroup('Current risks', workPackage.risks, item => `<strong>${esc(item.label)}</strong>`) : ''}
-    <section class="mc-construction-timeline"><h4>Construction Timeline</h4><div><article><span>Before this work</span>${beforeWork.length ? `<ul>${beforeWork.map(item => `<li>Approved submittal: ${esc(item.title || item.id)}</li>`).join('')}</ul>` : '<p>No exact prerequisite activity is recorded.</p>'}</article><article><span>Current work</span>${workPackage.workSummary.length ? `<ul>${workPackage.workSummary.slice(0, 5).map(item => `<li>${esc(item.statement)}</li>`).join('')}</ul>` : '<p>No exact current activity is recorded.</p>'}</article><article><span>After this work</span>${afterWork.length ? `<ul>${afterWork.map(item => `<li>Inspection follow-up: ${esc(item.inspectionNumber || item.id)}</li>`).join('')}</ul>` : '<p>No exact subsequent activity is recorded.</p>'}</article></div></section>
-    <section><h4>Inspection preparation</h4><p>${esc(workPackage.inspectionPreparation.nextInspectionStatement)}</p></section>
+    ${workPackageGroup('Supporting requirements', workPackage.specifications, item => `<button data-control-source-document="${esc(item.documentId)}" data-control-source-section="${esc(item.sectionId || '')}">Open ${esc(item.title || item.id)}</button>`)}
+    ${workPackageGroup('RFIs', workPackage.rfis, item => `<button data-control-source-document="${esc(item.documentId)}">Review ${esc(item.title || item.id)}</button><span>${esc(item.status || '')}</span>`)}
+    ${workPackageGroup('Submittals', workPackage.submittals, item => `<button data-control-source-document="${esc(item.documentId)}">Review ${esc(item.title || item.id)}</button><span>${esc(item.status || '')}</span>`)}
+    ${workPackageGroup('Current inspections', workPackage.inspections, item => `<button data-control-inspection-id="${esc(item.id)}">Open ${esc(item.inspectionNumber || item.id)} · ${esc(item.title || '')}</button><span>${esc(item.status)} · ${esc(item.result)}</span>`)}
+    ${workPackageGroup('Open issues', workPackage.deficiencies, item => `<button data-control-source-document="${esc(item.documentId)}">Open ${esc(item.title || item.id)}</button><span>${esc(item.status || '')}</span>`)}
+    ${!sourceOnly ? `<section class="mc-work-package-interpretation"><h4>Expert interpretation</h4><p>Review the exact evidence and unresolved candidates before using this package for inspection or coordination decisions.</p></section>${workPackageGroup('Current risks', workPackage.risks, item => `<strong>${esc(item.label)}</strong>`)}` : ''}
+    ${!sourceOnly && (beforeWork.length || afterWork.length) ? `<section class="mc-construction-timeline"><h4>Construction Timeline</h4><div>${beforeWork.length ? `<article><span>Before this work</span><ul>${beforeWork.map(item => `<li>Approved submittal: ${esc(item.title || item.id)}</li>`).join('')}</ul></article>` : ''}${afterWork.length ? `<article><span>After this work</span><ul>${afterWork.map(item => `<li>Inspection follow-up: ${esc(item.inspectionNumber || item.id)}</li>`).join('')}</ul></article>` : ''}</div></section>` : ''}
+    ${!sourceOnly ? `<section><h4>Inspection preparation</h4><p>${esc(workPackage.inspectionPreparation.nextInspectionStatement)}</p></section>` : ''}
     <section class="mc-work-package-limitations"><h4>Limitations</h4><ul>${workPackage.limitations.map(item => `<li>${esc(item)}</li>`).join('')}</ul></section>
-    <div class="mc-work-package-actions">${sheetActions.slice(0, 8).map(action => `<button data-work-package-target='${esc(JSON.stringify(action.target))}'>${esc(action.label)}</button>`).join('')}${currentWorkTarget.available ? '<button data-work-package-current>Add to Current Work</button>' : ''}${workPackage.projectId ? '<button data-work-package-inspection>Create Inspection</button>' : ''}</div>
+    <div class="mc-work-package-actions">${sheetActions.slice(0, 8).map(action => `<button data-work-package-target='${esc(JSON.stringify(action.target))}'>${esc(action.label)}</button>`).join('')}${!sourceOnly && currentWorkTarget.available ? '<button data-work-package-current>Add to Current Work</button>' : ''}${!sourceOnly && workPackage.projectId ? '<button data-work-package-inspection>Create Inspection</button>' : ''}</div>
+    ${primary ? `<section class="mc-inline-plan ${sourceOnly ? 'source-only' : 'expert-assisted'}"><header><div><span>SUPPORTING DRAWING</span><strong>Exact plan evidence</strong></div><button data-inline-full-drawing>Open Full Drawing Workspace</button></header><div id="missionInlineDrawingViewer" class="mc-drawing-workspace" aria-label="Synchronized construction drawing"></div></section>` : ''}
   </section>`;
 }
 
@@ -1415,6 +1438,11 @@ function releaseDrawingSource() {
   activeDrawingPdf = null;
   activeDrawingDocumentId = '';
   activeDrawingSourceRecord = null;
+  activeDrawingResizeObserver?.disconnect();
+  activeDrawingResizeObserver = null;
+  activeDrawingResizeStage = null;
+  activeDrawingRenderIdentity = null;
+  portableDrawingCanvas = null;
 }
 
 function captureDrawingViewport(overrides = {}) {
@@ -1425,13 +1453,33 @@ function captureDrawingViewport(overrides = {}) {
   drawingViewportBySet.set(key, { ...current, zoom: drawingZoom, rotation: drawingRotation, scrollLeft: stage?.scrollLeft || current.scrollLeft || 0, scrollTop: stage?.scrollTop || current.scrollTop || 0, selectedObservationId: drawingTarget.observationId || current.selectedObservationId, highlightedRegion: drawingTarget.region || current.highlightedRegion, ...overrides, overlays: { ...current.overlays, ...(overrides.overlays || {}) } });
 }
 
+function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
+  stage.querySelectorAll('.mc-drawing-highlight,.mc-drawing-object-overlay').forEach(item => item.remove());
+  if (observation?.region && drawingRotation % 360 === 0 && sheet.rotation % 360 === 0) {
+    const overlay = document.createElement('div');
+    overlay.className = 'mc-drawing-highlight';
+    overlay.setAttribute('role', 'status');
+    overlay.setAttribute('aria-label', `Highlighted ${observationKindLabel(observation.kind)}: ${observation.value}`);
+    Object.assign(overlay.style, { left: `${observation.region.x * 100}%`, top: `${observation.region.y * 100}%`, width: `${observation.region.width * 100}%`, height: `${observation.region.height * 100}%` });
+    stage.append(overlay);
+  }
+  for (const record of overlayRecords.filter(item => item.region)) {
+    const overlay = document.createElement('button');
+    overlay.type = 'button';
+    overlay.className = `mc-drawing-object-overlay ${record.status === 'Confirmed' ? 'confirmed' : 'candidate'}`;
+    overlay.dataset.overlayLayer = record.layer;
+    overlay.dataset.overlayId = record.id;
+    overlay.setAttribute('aria-label', `${record.status === 'Confirmed' ? 'Confirmed' : 'Candidate'} ${record.label}`);
+    overlay.title = record.label;
+    Object.assign(overlay.style, { left: `${record.region.x * 100}%`, top: `${record.region.y * 100}%`, width: `${Math.max(record.region.width * 100, .8)}%`, height: `${Math.max(record.region.height * 100, .8)}%` });
+    stage.append(overlay);
+  }
+}
+
 async function paintDrawingPage(source, sheet, observation, overlayRecords = []) {
   const canvas = $('#mcDrawingCanvas');
   const stage = $('#mcDrawingStage');
   if (!canvas || !stage || !source || !sheet) return;
-  activeDrawingRender?.cancel?.();
-  activeDrawingRender?.release?.();
-  activeDrawingRender = null;
   try {
     const viewportKey = drawingViewportKey(drawingTarget?.drawingSetId, sheet.sheetId);
     const restored = drawingViewportBySet.get(viewportKey) || defaultDrawingViewport();
@@ -1443,8 +1491,9 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       activeDrawingPdf?.destroy?.();
       activeDrawingPdf = await openPdfBlob(source.sourceBlob);
       activeDrawingDocumentId = source.documentId;
+      drawingRenderGeneration += 1;
     }
-    if (!Number.isFinite(drawingZoom)) {
+    if (!Number.isFinite(drawingZoom) || restored.mode === 'fit-page' || restored.mode === 'fit-width') {
       let fit = calculateDrawingFit({ containerWidth: stage.clientWidth, containerHeight: stage.clientHeight, pageWidth: sheet.pageWidth, pageHeight: sheet.pageHeight, rotation: (sheet.rotation + drawingRotation) % 360, padding: 18, mode: restored.mode });
       for (let attempt = 0; !fit.ready && attempt < 12; attempt += 1) {
         await new Promise(resolve => requestAnimationFrame(resolve));
@@ -1454,35 +1503,43 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       drawingZoom = fit.scale;
     }
     const boundedScale = Math.max(.35, Math.min(3, drawingZoom));
-    canvas.dataset.drawingDocument = source.documentId;
-    canvas.style.visibility = 'hidden';
-    activeDrawingRender = await renderPdfPage(activeDrawingPdf, sheet.pageNumber, canvas, { scale: boundedScale, rotation: (sheet.rotation + drawingRotation) % 360 });
-    await activeDrawingRender.promise;
-    canvas.style.visibility = 'visible';
+    const nextIdentity = createDrawingRenderIdentity({ documentId: source.documentId, drawingSetId: drawingTarget?.drawingSetId, pageNumber: sheet.pageNumber, scale: boundedScale, rotation: (sheet.rotation + drawingRotation) % 360, sourceAvailable: true, generation: drawingRenderGeneration });
+    const decision = drawingRenderDecision({ previousIdentity: activeDrawingRenderIdentity, nextIdentity, canvas });
+    if (decision.repaint) {
+      activeDrawingRender?.cancel?.();
+      activeDrawingRender?.release?.();
+      activeDrawingRender = null;
+      const renderCanvas = document.createElement('canvas');
+      const pendingRender = await renderPdfPage(activeDrawingPdf, sheet.pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation });
+      activeDrawingRender = pendingRender;
+      await pendingRender.promise;
+      canvas.width = renderCanvas.width;
+      canvas.height = renderCanvas.height;
+      const context = canvas.getContext('2d');
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(renderCanvas, 0, 0);
+      canvas.dataset.drawingDocument = source.documentId;
+      canvas.dataset.drawingSet = drawingTarget?.drawingSetId || '';
+      canvas.dataset.drawingPage = String(sheet.pageNumber);
+      canvas.dataset.renderReason = decision.reason;
+      activeDrawingRenderIdentity = nextIdentity;
+    }
     stage.scrollLeft = restored.scrollLeft || 0;
     stage.scrollTop = restored.scrollTop || 0;
     drawingViewportBySet.set(viewportKey, { ...restored, zoom: drawingZoom, rotation: drawingRotation, selectedObservationId: observation?.observationId || restored.selectedObservationId, highlightedRegion: observation?.region || restored.highlightedRegion });
-    stage.addEventListener('scroll', () => captureDrawingViewport(), { passive: true });
-    if (observation?.region && drawingRotation % 360 === 0 && sheet.rotation % 360 === 0) {
-      const overlay = document.createElement('div');
-      overlay.className = 'mc-drawing-highlight';
-      overlay.setAttribute('aria-label', `Highlighted ${observation.kind}: ${observation.value}`);
-      Object.assign(overlay.style, { left: `${observation.region.x * 100}%`, top: `${observation.region.y * 100}%`, width: `${observation.region.width * 100}%`, height: `${observation.region.height * 100}%` });
-      stage.append(overlay);
-    }
-    for (const record of overlayRecords.filter(item => item.region)) {
-      const overlay = document.createElement('button');
-      overlay.type = 'button';
-      overlay.className = `mc-drawing-object-overlay ${record.status === 'Confirmed' ? 'confirmed' : 'candidate'}`;
-      overlay.dataset.overlayLayer = record.layer;
-      overlay.dataset.overlayId = record.id;
-      overlay.setAttribute('aria-label', `${record.status === 'Confirmed' ? 'Confirmed' : 'Candidate'} ${record.label}`);
-      overlay.title = record.label;
-      Object.assign(overlay.style, { left: `${record.region.x * 100}%`, top: `${record.region.y * 100}%`, width: `${Math.max(record.region.width * 100, .8)}%`, height: `${Math.max(record.region.height * 100, .8)}%` });
-      stage.append(overlay);
+    stage.onscroll = () => captureDrawingViewport();
+    updateDrawingOverlays(stage, sheet, observation, overlayRecords);
+    if (globalThis.ResizeObserver && activeDrawingResizeStage !== stage) {
+      activeDrawingResizeObserver?.disconnect();
+      activeDrawingResizeObserver = new ResizeObserver(() => {
+        const current = drawingViewportBySet.get(viewportKey) || defaultDrawingViewport();
+        if (current.mode === 'fit-page' || current.mode === 'fit-width') void paintDrawingPage(source, sheet, observation, overlayRecords);
+      });
+      activeDrawingResizeObserver.observe(stage);
+      activeDrawingResizeStage = stage;
     }
   } catch (error) {
-    stage.innerHTML = `<div class="mc-drawing-unavailable" role="status"><strong>Drawing page could not be rendered.</strong><p>${esc(error.message)}</p><small>Rendering uses the existing PDF.js CDN resource and may be unavailable offline unless the browser has cached it.</small></div>`;
+    canvas.insertAdjacentHTML('afterend', `<div class="mc-drawing-render-error" role="status"><strong>Drawing page could not be updated.</strong><p>${esc(error.message)}</p><small>The previously rendered sheet remains available when possible.</small></div>`);
   }
 }
 
@@ -1524,7 +1581,7 @@ function sheetAnalysisMarkup({ shell, analysis, sheet, observation, groups, warn
     ${related.length ? `<section><h4>Related sheets</h4><ol>${related.map(item => `<li><button data-drawing-sheet="${esc(item.sheetId)}"><strong>${esc(item.sheetNumber || 'Number unavailable')}</strong><span>${esc(item.sheetTitle || 'Title unavailable')}</span><small>${esc(item.primarySheetType || item.sheetTypes?.[0] || 'Unknown')}</small></button></li>`).join('')}</ol></section>` : ''}
     ${warnings.userFacing.length ? `<section class="mc-drawing-warning-list"><h4>Needs attention</h4><ul>${warnings.userFacing.slice(0, 12).map(item => `<li><span aria-hidden="true">!</span>${esc(item.message)}</li>`).join('')}</ul></section>` : ''}
     ${observation ? `<section class="mc-drawing-selected-observation"><h4>Selected observation</h4><strong>${esc(observationKindLabel(observation.kind))}: ${esc(observation.value)}</strong><span>${esc(observation.verification.status)}</span>${shell === 'professional' ? `<div aria-label="Verify selected observation"><button class="subtle" data-drawing-verify="Confirmed" data-observation-id="${esc(observation.observationId)}">Confirm ${esc(observationKindLabel(observation.kind))}</button><button class="subtle" data-drawing-verify="Corrected" data-observation-id="${esc(observation.observationId)}">Correct observed value</button><button class="subtle" data-drawing-verify="Uncertain" data-observation-id="${esc(observation.observationId)}">Mark uncertain</button><button class="subtle" data-drawing-verify="Rejected" data-observation-id="${esc(observation.observationId)}">Reject observation</button></div>` : ''}</section>` : ''}
-    <details class="mc-drawing-analysis-details"><summary>Analysis details</summary><dl><div><dt>Identity method</dt><dd>${esc(sheet.sheetNumberResolutionMethod || 'Unavailable')}</dd></div><div><dt>Title method</dt><dd>${esc(sheet.sheetTitleResolutionMethod || 'Unavailable')}</dd></div><div><dt>Discipline reason</dt><dd>${esc(sheet.disciplineEvidence || 'Unavailable')}</dd></div><div><dt>Evidence confidence</dt><dd>${Math.round(sheet.confidence * 100)}%</dd></div></dl>${sheet.rejectedSheetNumberCandidates?.length ? `<h5>Identity candidates requiring review</h5><ul>${sheet.rejectedSheetNumberCandidates.slice(0, 20).map(item => `<li>${esc(item.value)} — ${esc(item.reason)}</li>`).join('')}</ul>` : ''}${warnings.technical.length ? `<h5>Technical warnings</h5><ul>${warnings.technical.slice(0, 20).map(item => `<li>${esc(item.message)}</li>`).join('')}</ul>` : ''}</details>`;
+    <details class="mc-drawing-analysis-details"><summary>Analysis details</summary><dl><div><dt>Identity method</dt><dd>${esc(sheet.sheetNumberResolutionMethod || 'Unavailable')}</dd></div><div><dt>Title method</dt><dd>${esc(sheet.sheetTitleResolutionMethod || 'Unavailable')}</dd></div><div><dt>Discipline reason</dt><dd>${esc(sheet.disciplineEvidence || 'Unavailable')}</dd></div><div><dt>Evidence confidence</dt><dd>${Math.round(sheet.confidence * 100)}%</dd></div></dl>${sheet.rejectedSheetNumberCandidates?.length ? `<h5>Identity candidates requiring review</h5><ul>${sheet.rejectedSheetNumberCandidates.slice(0, 20).map(item => `<li>${esc(item.value)} — ${esc(item.reason)}</li>`).join('')}</ul>` : ''}${warnings.technical.length ? `<h5>Technical warnings</h5><ul>${warnings.technical.slice(0, 20).map(item => `<li>${esc(item.message)}</li>`).join('')}</ul>` : ''}${shell === 'professional' ? '<button data-drawing-analyze-page>Analyze Page Objects</button>' : ''}</details>`;
 }
 
 function drawingRecoveryMarkup(record = {}) {
@@ -1544,9 +1601,9 @@ function drawingRecoveryMarkup(record = {}) {
 }
 
 async function renderDrawingWorkspace(shell = 'professional') {
-  const host = shell === 'mission-control' ? $('#missionDrawingViewer') : $('#drawingInspector');
+  const host = shell === 'mission-control' ? ($('#missionInlineDrawingViewer') || $('#missionDrawingViewer')) : $('#drawingInspector');
   if (!host) return;
-  const preservedCanvas = host.querySelector('#mcDrawingCanvas');
+  const preservedCanvas = host.querySelector('#mcDrawingCanvas') || portableDrawingCanvas;
   const preservedStage = host.querySelector('#mcDrawingStage');
   const preservedViewport = { scrollLeft: preservedStage?.scrollLeft || 0, scrollTop: preservedStage?.scrollTop || 0 };
   let targetLifecycleUnavailable = null;
@@ -1614,13 +1671,14 @@ async function renderDrawingWorkspace(shell = 'professional') {
     <div class="mc-drawing-layout ${drawingWorkspacePanels.finderHidden ? 'finder-hidden' : ''} ${drawingWorkspacePanels.evidenceHidden ? 'evidence-hidden' : ''} ${drawingWorkspacePanels.expanded ? 'drawing-expanded' : ''}">
       <aside class="mc-drawing-index" aria-label="Find construction drawing evidence"><label>Drawing set<select id="mcDrawingDocument">${documents.map(item => `<option value="${esc(item.id)}" ${item.id === selected.id ? 'selected' : ''}>${esc(item.title || item.name || item.id)}</option>`).join('')}</select></label>${analysis ? `<label>Find a sheet, room, trade, or tag<input id="mcDrawingSearch" value="${esc(drawingFilter)}" autocomplete="off" aria-controls="mcDrawingResults" aria-describedby="mcDrawingResultStatus"></label><button class="subtle" data-drawing-clear-search ${drawingFilter ? '' : 'hidden'}>Clear search</button><div class="mc-drawing-filters"><label>Discipline<select id="mcDrawingDiscipline"><option value="all">All disciplines</option>${disciplines.map(item => `<option ${item === drawingDiscipline ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></label><label>Drawing type<select id="mcDrawingType"><option value="all">All types</option>${sheetTypes.map(item => `<option ${item === drawingType ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></label></div><p id="mcDrawingResultStatus" role="status" aria-live="polite">${esc(drawingSearchSummary(drawingFilter, shownSheets.length))}</p><ol id="mcDrawingResults" aria-label="Drawing search results">${searchResults.map((result, index) => drawingSearchResultMarkup(result, sheet?.sheetId, index)).join('') || '<li class="mc-drawing-no-results"><strong>No drawing evidence found.</strong><span>Try a sheet number, room, trade, equipment tag, or clear the active filters.</span></li>'}</ol>` : ''}</aside>
       <main class="mc-drawing-viewer"><details class="mc-construction-orientation"><summary>Work and selection context</summary><div><strong>${esc(activeWorkPackage?.workSummary?.[0]?.label || sheet?.sheetTitle || 'Select construction evidence')}</strong><span>${sheet?.building ? `Building ${esc(sheet.building)} · ` : ''}${esc(activeWorkPackage?.discipline || sheet?.discipline || 'Unknown')} · ${esc(selectionExplanation)}</span></div></details>
-        ${!source ? `<div class="mc-drawing-unavailable"><strong>Original drawing unavailable — reattach PDF to view sheet.</strong><p>Reattach the exact source PDF to inspect the drawing. Indexed project text remains available.</p><label class="mc-drawing-reattach"><input id="mcDrawingReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label></div>` : !analysis || !sheet ? `<div class="mc-drawing-unavailable"><strong>No drawing selected.</strong><p>Choose a drawing set and supported sheet to review construction evidence.</p></div>` : `<header class="mc-drawing-sheet-title" tabindex="-1" aria-live="polite"><div><span>${esc(sheet.sheetNumber || 'UNRESOLVED SHEET')}</span><h3>${esc(sheet.sheetTitle || 'Title unavailable')}</h3><p>${esc(selectionExplanation)}</p></div><dl><div><dt>Discipline</dt><dd>${esc(sheet.discipline)}</dd></div><div><dt>Type</dt><dd>${esc(sheet.primarySheetType || sheet.sheetTypes[0] || 'Unknown')}</dd></div><div><dt>Position</dt><dd>Sheet ${sheet.pageNumber} of ${analysis.sheets.length}</dd></div><div><dt>Identity</dt><dd>${esc(sheet.identityStatus)}</dd></div></dl></header><div class="mc-drawing-toolbar"><div role="group" aria-label="Drawing navigation"><button data-drawing-previous ${navigationIndex <= 0 ? 'disabled' : ''}>Previous</button><button data-drawing-next ${navigationIndex < 0 || navigationIndex >= navigationSheetIds.length - 1 ? 'disabled' : ''}>Next</button><button data-drawing-layout="toggle-finder">${drawingWorkspacePanels.finderHidden ? 'Show' : 'Hide'} Sheet Finder</button></div><div role="group" aria-label="Drawing view controls"><button data-drawing-fit="page">Fit Page</button><button data-drawing-fit="width">Fit Width</button><button data-drawing-zoom="out">Zoom Out</button><button data-drawing-zoom="in">Zoom In</button><button data-drawing-rotate>Rotate</button><button data-drawing-reset-view>Reset View</button><button data-drawing-layout="${drawingWorkspacePanels.expanded ? 'restore' : 'expand'}">${drawingWorkspacePanels.expanded ? 'Restore Workspace' : 'Expand Drawing'}</button></div><div role="group" aria-label="Construction context actions">${shell === 'mission-control' ? '<button data-drawing-ask>Ask Chief</button><button data-drawing-current-work>Add to Current Work</button>' : '<button data-drawing-analyze-page>Analyze Page Objects</button>'}<button data-drawing-inspection>Create Inspection</button><button class="subtle" data-drawing-source>Open Source Details</button><button data-drawing-layout="toggle-evidence">${drawingWorkspacePanels.evidenceHidden ? 'Show' : 'Hide'} Construction Evidence</button></div><output aria-label="Current drawing view">${Number.isFinite(drawingZoom) ? Math.round(drawingZoom * 100) : 'Fit'}% · ${drawingRotation}°</output></div><fieldset class="mc-drawing-overlay-controls"><legend>Drawing overlays</legend>${Object.entries({ rooms: 'Room Labels', confirmed: 'Confirmed Objects', candidates: 'Candidate Objects', equipment: 'Equipment Tags', keyedNotes: 'Keyed Notes', callouts: 'Callouts', scheduleLinks: 'Schedule Links', warnings: 'Warnings' }).map(([key,label]) => `<label><input type="checkbox" data-drawing-overlay="${key}" ${viewport.overlays?.[key] === false ? '' : 'checked'}>${label}</label>`).join('')}</fieldset><div id="mcDrawingStage" class="mc-drawing-stage"><canvas id="mcDrawingCanvas" aria-label="${esc(sheet.sheetNumber || `PDF page ${sheet.pageNumber}`)} ${esc(sheet.sheetTitle || 'drawing')}"></canvas></div>${drawingRotation || sheet.rotation ? '<p class="mc-drawing-note">Location highlights are available in the authoritative unrotated view.</p>' : ''}`}
+        ${!source ? `<div class="mc-drawing-unavailable"><strong>Original drawing unavailable — reattach PDF to view sheet.</strong><p>Reattach the exact source PDF to inspect the drawing. Indexed project text remains available.</p><label class="mc-drawing-reattach"><input id="mcDrawingReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label></div>` : !analysis || !sheet ? `<div class="mc-drawing-unavailable"><strong>No drawing selected.</strong><p>Choose a drawing set and supported sheet to review construction evidence.</p></div>` : `<header class="mc-drawing-sheet-title" tabindex="-1" aria-live="polite"><div><span>${esc(sheet.sheetNumber || 'UNRESOLVED SHEET')}</span><h3>${esc(sheet.sheetTitle || 'Title unavailable')}</h3><p>${esc(selectionExplanation)}</p></div><dl><div><dt>Discipline</dt><dd>${esc(sheet.discipline)}</dd></div><div><dt>Type</dt><dd>${esc(sheet.primarySheetType || sheet.sheetTypes[0] || 'Unknown')}</dd></div><div><dt>Position</dt><dd>Sheet ${sheet.pageNumber} of ${analysis.sheets.length}</dd></div><div><dt>Identity</dt><dd>${esc(sheet.identityStatus)}</dd></div></dl></header><div class="mc-drawing-toolbar"><div role="group" aria-label="Drawing navigation"><button data-drawing-previous ${navigationIndex <= 0 ? 'disabled' : ''}>Previous</button><button data-drawing-next ${navigationIndex < 0 || navigationIndex >= navigationSheetIds.length - 1 ? 'disabled' : ''}>Next</button><button data-drawing-layout="toggle-finder">${drawingWorkspacePanels.finderHidden ? 'Show' : 'Hide'} Sheet Finder</button></div><div role="group" aria-label="Drawing view controls"><button data-drawing-fit="page">Fit Page</button><button data-drawing-fit="width">Fit Width</button><button data-drawing-zoom="out">Zoom Out</button><button data-drawing-zoom="in">Zoom In</button><button data-drawing-rotate>Rotate</button><button data-drawing-reset-view>Reset View</button><button data-drawing-layout="${drawingWorkspacePanels.expanded ? 'restore' : 'expand'}">${drawingWorkspacePanels.expanded ? 'Restore Workspace' : 'Expand Drawing'}</button></div><div role="group" aria-label="Construction context actions"><button data-drawing-ask>Ask Chief</button><button data-drawing-current-work>Add to Current Work</button><button data-drawing-inspection>Create Inspection</button><button class="subtle" data-drawing-source>Open Source Details</button><button data-drawing-layout="toggle-evidence">${drawingWorkspacePanels.evidenceHidden ? 'Show' : 'Hide'} Construction Evidence</button></div><output aria-label="Current drawing view">${Number.isFinite(drawingZoom) ? Math.round(drawingZoom * 100) : 'Fit'}% · ${drawingRotation}°</output></div><fieldset class="mc-drawing-overlay-controls"><legend>Drawing overlays</legend>${Object.entries({ rooms: 'Room Labels', confirmed: 'Confirmed Objects', candidates: 'Candidate Objects', equipment: 'Equipment Tags', keyedNotes: 'Keyed Notes', callouts: 'Callouts', scheduleLinks: 'Schedule Links', warnings: 'Warnings' }).map(([key,label]) => `<label><input type="checkbox" data-drawing-overlay="${key}" ${viewport.overlays?.[key] === false ? '' : 'checked'}>${label}</label>`).join('')}</fieldset><div id="mcDrawingStage" class="mc-drawing-stage"><canvas id="mcDrawingCanvas" aria-label="${esc(sheet.sheetNumber || `PDF page ${sheet.pageNumber}`)} ${esc(sheet.sheetTitle || 'drawing')}"></canvas></div>${drawingRotation || sheet.rotation ? '<p class="mc-drawing-note">Location highlights are available in the authoritative unrotated view.</p>' : ''}`}
       </main>
       <aside class="mc-drawing-evidence" aria-label="Construction Evidence">${sheetAnalysisMarkup({ shell, analysis, sheet, observation, groups: observationGroups, warnings: warningGroups })}${sheetLegends.length ? `<section><h4>Legend entries</h4><p>${fmt(sheetLegends.reduce((sum,item)=>sum+item.entries.length,0))} structured candidate entries. Legend graphics remain authoritative.</p></section>` : ''}${sheetSchedules.length ? `<section><h4>Schedules</h4><p>${fmt(sheetSchedules.reduce((sum,item)=>sum+item.rows.length,0))} structured candidate rows with source regions.</p></section>` : ''}${sheetKeyedNotes.length ? `<section><h4>Keyed notes</h4><p>${fmt(sheetKeyedNotes.length)} exact keyed-note link${sheetKeyedNotes.length === 1 ? '' : 's'}.</p></section>` : ''}${sheetOccurrences.length ? `<section><h4>Plan objects</h4><p>${fmt(sheetOccurrences.length)} candidate occurrence${sheetOccurrences.length === 1 ? '' : 's'}; confirmation is required before a definitive finding.</p><ol>${sheetOccurrences.slice(0,30).map(item => `<li><button data-drawing-occurrence="${esc(item.occurrenceId)}"><strong>${item.verification?.status === 'Confirmed' ? 'Confirmed plan object' : 'Candidate occurrence'}</strong><span>${esc(item.verification?.status || 'Unreviewed')}</span><em>Show on Plan</em></button>${shell === 'professional' ? `<div><button data-drawing-verify-occurrence="Confirmed" data-occurrence-id="${esc(item.occurrenceId)}">Confirm</button><button data-drawing-verify-occurrence="Uncertain" data-occurrence-id="${esc(item.occurrenceId)}">Uncertain</button><button data-drawing-verify-occurrence="Rejected" data-occurrence-id="${esc(item.occurrenceId)}">Reject</button></div>` : ''}</li>`).join('')}</ol></section>` : ''}</aside>
     </div>${drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list" aria-label="Unavailable drawing lifecycle records"><h2>Drawing records requiring attention</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : ''}`;
   const placeholderCanvas = host.querySelector('#mcDrawingCanvas');
   const preserveCanvas = Boolean(preservedCanvas && placeholderCanvas && preservedCanvas.dataset.drawingDocument === selected.id);
   if (preserveCanvas) placeholderCanvas.replaceWith(preservedCanvas);
+  if (preserveCanvas) portableDrawingCanvas = null;
   const nextStage = host.querySelector('#mcDrawingStage');
   if (nextStage && preserveCanvas) { nextStage.scrollLeft = preservedViewport.scrollLeft; nextStage.scrollTop = preservedViewport.scrollTop; }
   if (source && sheet) await paintDrawingPage(source, sheet, observation, overlayRecords);
@@ -1729,7 +1787,7 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
 $('#openProfessionalWorkspace').onclick = () => switchExperience('professional-workspace', { destination: view });
 $('#returnMissionControl').onclick = () => switchExperience('mission-control');
 function showMissionControlView(name = 'home') {
-  if (name !== 'plans') releaseDrawingSource();
+  if (!['plans', 'chat'].includes(name)) releaseDrawingSource();
   missionControlView = ['projects', 'chat', 'history', 'library', 'inspections', 'plans'].includes(name) ? name : 'home';
   $('[data-control-home]').toggleAttribute('aria-current', missionControlView === 'home');
   $('[data-control-projects]').toggleAttribute('aria-current', missionControlView === 'projects');
@@ -1744,12 +1802,19 @@ $('#missionControlContent').onclick = async event => {
   if (button.dataset.workPackageTarget) {
     drawingTarget = createDrawingTarget(JSON.parse(button.dataset.workPackageTarget));
     selectedWorkPackageItem = drawingTarget?.observationId || drawingTarget?.sheetId || '';
-    await showMissionControlView('plans');
+    chiefConstructionContext = createChiefConstructionContext({ conversationId: engine.activeConversation()?.conversationId, projectId: state().activeProject, planResult: activePlanQuery || {}, drawingTarget, workPackageReferences: { matchingSheetIds: drawingMatchingSheetIds, matchingObservationIds: activePlanQuery?.matchingObservationIds || [] }, updatedFrom: 'work-package-action' });
+    if (missionControlView === 'chat') { await renderMissionControlChat(); $('#missionInlineDrawingViewer .mc-drawing-sheet-title')?.focus(); }
+    else await showMissionControlView('plans');
     return;
   }
   if (button.dataset.workPackageSheet && activeWorkPackage) {
     const target = activeWorkPackage.viewerTargets.find(item => item.sheetId === button.dataset.workPackageSheet);
-    if (target) { drawingTarget = createDrawingTarget(target); selectedWorkPackageItem = target.observationId || target.sheetId; await showMissionControlView('plans'); }
+    if (target) { drawingTarget = createDrawingTarget(target); selectedWorkPackageItem = target.observationId || target.sheetId; if (missionControlView === 'chat') { await renderMissionControlChat(); $('#missionInlineDrawingViewer .mc-drawing-sheet-title')?.focus(); } else await showMissionControlView('plans'); }
+    return;
+  }
+  if (button.hasAttribute('data-inline-full-drawing')) {
+    await showMissionControlView('plans');
+    $('#missionDrawingViewer .mc-drawing-sheet-title')?.focus();
     return;
   }
   if (button.hasAttribute('data-work-package-current') && activeWorkPackage) {
@@ -1798,6 +1863,7 @@ $('#missionControlContent').onclick = async event => {
     }
     activeRetrievalSession = null;
     missionControlAttachments = [];
+    chiefConstructionContext = null; activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = '';
     await showMissionControlView('chat');
     $('#missionControlTitle')?.focus();
     return;
@@ -1840,7 +1906,7 @@ $('#missionControlContent').onclick = async event => {
     engine.createConversation({ projectId: missionControlProject()?.id || '' });
     activeRetrievalSession = null;
     missionControlAttachments = [];
-    activePlanQuery = null; activeWorkPackage = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = '';
+    activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = ''; chiefConstructionContext = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = '';
     await showMissionControlView('chat');
     $('#missionControlPrompt')?.focus();
     return;
@@ -1903,8 +1969,10 @@ $('#missionControlContent').addEventListener('submit', async event => {
       const completed = await buildActiveConstructionPackage(promptValue, activeRetrievalSession.evidence);
       activePlanQuery = completed.planResult;
       activeWorkPackage = completed.workPackage;
+      activeWorkPackageMessageId = message.id;
       drawingMatchingSheetIds = [...activePlanQuery.matchingSheetIds];
       drawingTarget = activePlanQuery.viewerTarget;
+      chiefConstructionContext = createChiefConstructionContext({ conversationId: conversation?.conversationId, projectId: current.activeProject, planResult: activePlanQuery, drawingTarget, workPackageReferences: message.workPackageReferences, updatedFrom: 'chief-response' });
     }
     pendingDrawingContext = null;
     await renderMissionControlChat();
@@ -2110,7 +2178,11 @@ app.addEventListener('click', async event => {
   if (button.hasAttribute('data-drawing-rotate')) { drawingRotation = (drawingRotation + 90) % 360; captureDrawingViewport({ rotation: drawingRotation, mode: 'custom' }); await renderDrawingWorkspace(shell); return; }
   if (button.hasAttribute('data-drawing-reset-view')) { drawingZoom = null; drawingRotation = 0; captureDrawingViewport({ ...defaultDrawingViewport() }); await renderDrawingWorkspace(shell); return; }
   if (button.dataset.drawingLayout) {
-    drawingWorkspacePanels = drawingWorkspaceLayout(drawingWorkspacePanels, button.dataset.drawingLayout);
+    if (button.dataset.drawingLayout === 'expand') drawingWorkspaceBeforeExpand = { ...drawingWorkspacePanels };
+    drawingWorkspacePanels = button.dataset.drawingLayout === 'restore' && drawingWorkspaceBeforeExpand
+      ? { ...drawingWorkspaceBeforeExpand, expanded: false }
+      : drawingWorkspaceLayout(drawingWorkspacePanels, button.dataset.drawingLayout);
+    if (button.dataset.drawingLayout === 'restore') drawingWorkspaceBeforeExpand = null;
     const layout = button.closest('.mc-drawing-layout');
     layout?.classList.toggle('finder-hidden', drawingWorkspacePanels.finderHidden);
     layout?.classList.toggle('evidence-hidden', drawingWorkspacePanels.evidenceHidden);
@@ -2697,7 +2769,7 @@ async function selectProjectThroughProductionPath(projectId) {
   drawingType = 'all'; drawingSearchActiveIndex = -1;
   drawingZoom = null;
   drawingRotation = 0;
-  activePlanQuery = null; activeWorkPackage = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = ''; pendingDrawingContext = null;
+  activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = ''; chiefConstructionContext = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = ''; pendingDrawingContext = null;
   releaseDrawingSource();
   clearActiveContext(CONTEXT_ACTIVATION_SOURCES.projectSwitch, projectId);
   await refresh();
@@ -2724,7 +2796,7 @@ function clearDemonstrationTransientState() {
   drawingType = 'all'; drawingSearchActiveIndex = -1;
   drawingZoom = null;
   drawingRotation = 0;
-  activePlanQuery = null; activeWorkPackage = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = ''; pendingDrawingContext = null;
+  activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = ''; chiefConstructionContext = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = ''; pendingDrawingContext = null;
   releaseDrawingSource();
   engineeringTarget = null;
   workflowTarget = null;

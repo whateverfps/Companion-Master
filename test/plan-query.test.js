@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPlanQuery, drawingSearchSummary, normalizePlanQuery, planQueryConstraints, planQuerySectionScope, searchDrawingSheets } from '../src/plan-query.js';
+import { buildPlanQuery, createChiefConstructionContext, drawingSearchSummary, inheritPlanQueryContext, normalizePlanQuery, planQueryConstraints, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from '../src/plan-query.js';
 import { drawingResultKeyTarget, reconcileDrawingSelection } from '../src/drawing-navigation.js';
 
 const observation = (id, sheetId, kind, value) => ({ observationId: id, sheetId, kind, value, region: { x: .2, y: .2, width: .1, height: .02 } });
@@ -75,4 +75,26 @@ test('plan results state graphical limitations and never claim quantity, ownersh
   assert.ok(result.limitations.some(item => /quantities/.test(item)));
   assert.doesNotMatch(JSON.stringify(result.supportedWorkItems), /\b\d+ diffusers?\b/i);
   assert.doesNotMatch(JSON.stringify(result.supportedWorkItems), /room boundar|installed in/i);
+});
+
+test('validated Chief context supports exact short follow-ups', () => {
+  const first = buildPlanQuery({ query: 'Show mechanical work in Building 61', projectId: 'p1', analyses: [analysis] });
+  const context = createChiefConstructionContext({ conversationId: 'c1', projectId: 'p1', planResult: { ...first, room: '137' }, drawingTarget: { ...first.viewerTarget, observationId: 'room137' } });
+  const valid = validateChiefConstructionContext(context, { conversationId: 'c1', projectId: 'p1', analyses: [analysis] });
+  assert.equal(valid.building, '61');
+  assert.equal(valid.room, '137');
+  assert.equal(buildPlanQuery({ query: 'Show me where', projectId: 'p1', analyses: [analysis], context: valid }).viewerTarget.observationId, 'room137');
+  assert.deepEqual(buildPlanQuery({ query: 'Open the schedule', projectId: 'p1', analyses: [analysis], context: valid }).matchingSheetIds, ['schedule']);
+  assert.equal(inheritPlanQueryContext('What inspections are required?', valid).room, '137');
+});
+
+test('Chief context never leaks across projects and reduces stale targets', () => {
+  const context = createChiefConstructionContext({ conversationId: 'c1', projectId: 'p1', planResult: { building: '61', discipline: 'Mechanical', matchingSheetIds: ['plan1'] }, drawingTarget: { documentId: 'd1', drawingSetId: 'set1', sheetId: 'plan1', pageNumber: 1, observationId: 'room137' } });
+  assert.equal(validateChiefConstructionContext(context, { conversationId: 'c1', projectId: 'p2', analyses: [analysis] }), null);
+  const staleObservation = validateChiefConstructionContext({ ...context, observationId: 'missing' }, { conversationId: 'c1', projectId: 'p1', analyses: [analysis] });
+  assert.equal(staleObservation.sheetId, 'plan1');
+  assert.equal(staleObservation.observationId, '');
+  const staleSheet = validateChiefConstructionContext({ ...context, sheetId: 'missing' }, { conversationId: 'c1', projectId: 'p1', analyses: [analysis] });
+  assert.equal(staleSheet.building, '61');
+  assert.equal(staleSheet.sheetId, '');
 });

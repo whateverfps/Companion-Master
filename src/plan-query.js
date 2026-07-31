@@ -44,9 +44,51 @@ export function planQueryConstraints(query = '') {
   return { normalizedQuery: normalized(raw), queryType: typeIntent, building, floor, room, discipline, requestedSheet, requestedTag, requestedSpecification, requestedRfi, requestedSubmittal, requestedInspection };
 }
 
+export function createChiefConstructionContext({ conversationId = '', projectId = '', planResult = {}, drawingTarget = null, workPackageReferences = {}, updatedFrom = 'plan-query', limitations = [] } = {}) {
+  const target = drawingTarget || planResult.viewerTarget || {};
+  return {
+    conversationId: text(conversationId), projectId: text(projectId || planResult.projectId),
+    building: text(planResult.building), floor: text(planResult.floor), room: text(planResult.room),
+    discipline: text(planResult.discipline), trade: text(planResult.discipline),
+    drawingDocumentId: text(target.documentId), drawingSetId: text(target.drawingSetId), sheetId: text(target.sheetId),
+    pageNumber: Number(target.pageNumber) || null, observationId: text(target.observationId), planObjectId: text(target.planObjectId),
+    workPackageReferences: {
+      matchingSheetIds: unique(list(workPackageReferences.matchingSheetIds || planResult.matchingSheetIds).map(text)),
+      matchingObservationIds: unique(list(workPackageReferences.matchingObservationIds || planResult.matchingObservationIds).map(text))
+    },
+    updatedFrom: text(updatedFrom), limitations: unique(list(limitations || planResult.limitations).map(text))
+  };
+}
+
+export function validateChiefConstructionContext(context, { conversationId = '', projectId = '', analyses = [] } = {}) {
+  if (!context || (conversationId && context.conversationId !== conversationId) || (projectId && context.projectId !== projectId)) return null;
+  const projectAnalyses = list(analyses).filter(item => !projectId || item.projectId === projectId);
+  const analysis = projectAnalyses.find(item => item.documentId === context.drawingDocumentId && (!context.drawingSetId || item.drawingSetId === context.drawingSetId)) || null;
+  if (!analysis) return { ...context, drawingDocumentId: '', drawingSetId: '', sheetId: '', pageNumber: null, observationId: '', planObjectId: '', workPackageReferences: { matchingSheetIds: [], matchingObservationIds: [] }, limitations: unique([...list(context.limitations), 'The prior drawing source is no longer available.']) };
+  const sheet = list(analysis.sheets).find(item => item.sheetId === context.sheetId) || null;
+  if (!sheet) return { ...context, drawingDocumentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: '', pageNumber: null, observationId: '', planObjectId: '', workPackageReferences: { matchingSheetIds: list(context.workPackageReferences?.matchingSheetIds).filter(id => analysis.sheets.some(item => item.sheetId === id)), matchingObservationIds: [] }, limitations: unique([...list(context.limitations), 'The prior sheet selection is no longer available.']) };
+  const observation = list(analysis.observations).find(item => item.observationId === context.observationId && item.sheetId === sheet.sheetId) || null;
+  return { ...context, drawingDocumentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId || '', planObjectId: '', workPackageReferences: { matchingSheetIds: list(context.workPackageReferences?.matchingSheetIds).filter(id => analysis.sheets.some(item => item.sheetId === id)), matchingObservationIds: list(context.workPackageReferences?.matchingObservationIds).filter(id => analysis.observations.some(item => item.observationId === id)) }, limitations: observation || !context.observationId ? list(context.limitations) : unique([...list(context.limitations), 'The prior drawing observation is no longer available.']) };
+}
+
+export function inheritPlanQueryContext(query = '', context = null) {
+  const explicit = planQueryConstraints(query);
+  if (!context) return explicit;
+  const followUp = /^(?:show me where|where|open (?:it|the schedule|the detail|the riser)|what inspections? (?:are required|apply|are next)|show (?:it|the schedule))\??$/i.test(text(query));
+  if (!followUp) return explicit;
+  const sheetFamilyRequest = ['open schedule', 'open detail', 'open riser', 'open rack elevation'].includes(explicit.queryType);
+  return {
+    ...explicit,
+    building: explicit.building || text(context.building),
+    room: explicit.room || (sheetFamilyRequest ? '' : text(context.room)), discipline: explicit.discipline || text(context.discipline || context.trade),
+    floor: explicit.floor || (sheetFamilyRequest ? '' : text(context.floor)),
+    inheritedContext: true
+  };
+}
+
 function searchableSheet(sheet, observations) {
   return normalized([
-    sheet.sheetNumber, sheet.sheetTitle, sheet.discipline, ...list(sheet.sheetTypes),
+    sheet.sheetNumber, sheet.sheetTitle, sheet.building ? `Building ${sheet.building}` : '', sheet.discipline, ...list(sheet.sheetTypes),
     ...list(sheet.textItems).map(item => item.text), ...observations.map(item => item.value)
   ].join(' '));
 }
@@ -124,8 +166,8 @@ export function drawingSearchSummary(query, count) {
   return cleaned ? `${count} result${count === 1 ? '' : 's'} for “${cleaned}”` : `${count} sheet${count === 1 ? '' : 's'} in this drawing set`;
 }
 
-export function buildPlanQuery({ query = '', projectId = '', analyses = [] } = {}) {
-  const constraints = planQueryConstraints(query);
+export function buildPlanQuery({ query = '', projectId = '', analyses = [], context = null } = {}) {
+  const constraints = inheritPlanQueryContext(query, context);
   const candidates = [];
   for (const analysis of list(analyses).filter(item => !projectId || item.projectId === projectId)) {
     for (const sheet of list(analysis.sheets)) {
@@ -137,6 +179,7 @@ export function buildPlanQuery({ query = '', projectId = '', analyses = [] } = {
   }
   candidates.sort((a, b) => a.rank - b.rank || a.sheet.pageNumber - b.sheet.pageNumber || a.sheet.sheetId.localeCompare(b.sheet.sheetId));
   const first = candidates[0] || null;
+  const ambiguous = Boolean(first && constraints.inheritedContext && candidates.length > 1 && candidates[1].rank === first.rank && ['open schedule', 'open detail', 'open riser'].includes(constraints.queryType));
   const viewerTarget = first ? createDrawingTarget({ projectId: first.analysis.projectId, documentId: first.analysis.documentId, drawingSetId: first.analysis.drawingSetId, sheetId: first.sheet.sheetId, pageNumber: first.sheet.pageNumber, sheetNumber: first.sheet.sheetNumber, observationId: first.exactObservation?.observationId, region: first.exactObservation?.region, origin: 'plan-query' }) : null;
   const actions = candidates.map(({ analysis, sheet, exactObservation }) => ({
     action: exactObservation ? 'show-location' : 'open-sheet',
@@ -150,7 +193,8 @@ export function buildPlanQuery({ query = '', projectId = '', analyses = [] } = {
     supportedWorkItems, limitations: [
       'Graphical association has not been verified.',
       'This result does not establish room boundaries, symbol meaning, routing, quantities, clashes, or code compliance.'
-    ], viewerTarget, actions
+    ], viewerTarget: ambiguous ? null : viewerTarget, actions,
+    ambiguous, choices: ambiguous ? actions.filter((_, index) => candidates[index]?.rank === first.rank) : []
   };
 }
 

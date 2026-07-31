@@ -109,3 +109,36 @@ export function drawingWorkspaceLayout(layout = {}, action = '') {
   if (action === 'toggle-evidence') return { ...current, evidenceHidden: !current.evidenceHidden, expanded: false };
   return current;
 }
+
+export function createDrawingRenderIdentity({ documentId, drawingSetId, pageNumber, scale, rotation = 0, sourceAvailable = true, generation = 0 } = {}) {
+  const numericScale = Number(scale);
+  return {
+    documentId: text(documentId),
+    drawingSetId: text(drawingSetId),
+    pageNumber: Number.isInteger(Number(pageNumber)) && Number(pageNumber) > 0 ? Number(pageNumber) : null,
+    scale: Number.isFinite(numericScale) ? Math.round(numericScale * 10000) / 10000 : null,
+    rotation: ((Number(rotation) || 0) % 360 + 360) % 360,
+    sourceAvailable: Boolean(sourceAvailable),
+    generation: Number(generation) || 0
+  };
+}
+
+export function sameDrawingRenderIdentity(left, right) {
+  if (!left || !right) return false;
+  return ['documentId', 'drawingSetId', 'pageNumber', 'scale', 'rotation', 'sourceAvailable', 'generation']
+    .every(key => left[key] === right[key]);
+}
+
+export function drawingCanvasIsActive(canvas, identity) {
+  if (!canvas?.isConnected || !identity?.documentId || !identity.pageNumber || !identity.sourceAvailable) return false;
+  return canvas.dataset.drawingDocument === identity.documentId &&
+    canvas.dataset.drawingSet === identity.drawingSetId &&
+    Number(canvas.dataset.drawingPage) === identity.pageNumber;
+}
+
+export function drawingRenderDecision({ previousIdentity, nextIdentity, canvas, fittedScaleChanged = false } = {}) {
+  if (!drawingCanvasIsActive(canvas, previousIdentity)) return { repaint: true, reason: 'canvas-unavailable' };
+  if (fittedScaleChanged) return { repaint: true, reason: 'fitted-scale-changed' };
+  if (!sameDrawingRenderIdentity(previousIdentity, nextIdentity)) return { repaint: true, reason: 'render-input-changed' };
+  return { repaint: false, reason: 'unchanged-render-inputs' };
+}
