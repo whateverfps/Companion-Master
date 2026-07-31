@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   applyObservationVerification, buildDrawingAnalysis, classifyDiscipline, classifySheetTypes, drawingWarningPresentation,
-  drawingSetIdFor, extractSheetNumberCandidates, extractTextObservations, groupDrawingObservations, observationKindLabel, parseExactDrawingReference, primarySheetType, reanalyzeDrawingAnalysis, reconcileDrawingIndex, sheetIdFor, upgradeDrawingAnalysis, validSheetNumberCandidate
+  drawingSetIdFor, extractSheetNumberCandidates, extractTextObservations, groupDrawingObservations, observationEligibility, observationKindLabel, parseExactDrawingReference, primarySheetType, reanalyzeDrawingAnalysis, reconcileDrawingIndex, resolveBuilding, sheetIdFor, upgradeDrawingAnalysis, validSheetNumberCandidate
 } from '../src/drawing-intelligence.js';
 import { createDrawingTarget, drawingAnchorId, drawingReturnTarget, drawingScrollOptions, resolveDrawingTarget } from '../src/drawing-navigation.js';
 import { createSourceTarget, resolveSourceTarget } from '../src/source-navigation.js';
@@ -27,9 +27,37 @@ test('classifies disciplines and exact visible sheet types', () => {
   assert.deepEqual(classifySheetTypes('TELECOMMUNICATIONS RACK ELEVATIONS A'), ['Rack Elevation', 'Elevation']);
   assert.equal(primarySheetType(['Rack Elevation', 'Elevation']), 'Rack Elevation');
   assert.deepEqual(classifySheetTypes('Unclassified content'), ['Unknown']);
+  assert.equal(primarySheetType(classifySheetTypes('ELECTRICAL ONE-LINE DIAGRAM')), 'One Line');
+  assert.equal(classifyDiscipline('FA-101', 'FIRE ALARM PLAN').discipline, 'Fire Alarm');
 });
 
-test('analysis version 3 uses split-column index inventory to recover exact identities', () => {
+test('classification gates construction observations before extraction', () => {
+  for (const type of ['Cover', 'Drawing Index', 'General Notes', 'Symbols and Abbreviations', 'Notes', 'Reference', 'Photo Reference', 'Cut Sheet']) {
+    const eligibility = observationEligibility(type);
+    assert.equal(eligibility.rooms, false, type);
+    assert.equal(eligibility.equipment, false, type);
+  }
+  assert.equal(observationEligibility('Plan').rooms, true);
+  assert.equal(observationEligibility('Unknown', 'Reference').rooms, false);
+  assert.equal(resolveBuilding([item('BUILDING 61', .6, .8)]).building, '61');
+  const evidenceOnly = extractTextObservations({ documentId: 'd', sheetId: 's', pageNumber: 1, textItems: [item('ROOM 137', .2, .2), item('VAV-12', .3, .3), item('3/M-501', .4, .4)], eligibility: observationEligibility('Cover') });
+  assert.deepEqual(evidenceOnly.map(entry => entry.kind), ['callout-text']);
+});
+
+test('version 4 maps a complete ordered inventory only with exact anchors', () => {
+  const entries = Array.from({ length: 70 }, (_, index) => ({ number: `61G-${String(index).padStart(3, '0')}`, title: index === 0 ? 'COVER SHEET' : index === 1 ? 'DRAWING INDEX' : `GENERAL DETAIL ${index}` }));
+  const titleBlock = entry => [item('Drawing Title', .5, .82), item(entry.title, .5, .85, .2), item('Building Number', .72, .82), item('61', .72, .85), item('Drawing Number', .82, .88), item(entry.number, .82, .92)];
+  const indexItems = [item('DRAWING INDEX', .08, .03), item('GENERAL', .08, .045), ...entries.flatMap((entry, index) => [item(entry.number, .08, .06 + index * .009, .08), item(entry.title, .22, .06 + index * .009, .25), item('Yes', .75, .06 + index * .009, .04)])];
+  const sourcePages = entries.map((entry, index) => ({ pageNumber: index + 1, width: 1000, height: 700, rotation: 0, textItems: index === 1 ? [...indexItems, ...titleBlock(entry)] : index === 0 || index === 69 ? titleBlock(entry) : [] }));
+  const analysis = buildDrawingAnalysis({ documentId: 'ordered-set', projectId: 'p1', pages: sourcePages, analyzedAt: 'now' });
+  assert.equal(analysis.indexEntries.length, 70);
+  assert.equal(analysis.sheets[0].sheetNumber, '61G-000');
+  assert.equal(analysis.sheets[1].sheetNumber, '61G-001');
+  assert.equal(analysis.sheets[69].sheetNumber, '61G-069');
+  assert.ok(analysis.sheets.every(sheet => sheet.sheetNumberResolutionMethod === 'drawing-index-page-order' || sheet.sheetNumberResolutionMethod === 'index-title-block-reconciliation'));
+});
+
+test('analysis version 4 uses split-column index inventory to recover exact identities', () => {
   const titleBlock = (number, title, extra = []) => [item('VETERANS CLINIC RENOVATION', .62, .79, .3), ...(number ? [item(number, .82, .91)] : []), item(title, .62, .86, .32), ...extra];
   const indexItems = [item('DRAWING INDEX', .1, .08), item('61G-000', .1, .15), item('COVER SHEET', .28, .15), item('61G-001', .1, .19), item('DRAWING INDEX', .28, .19), item('61M-101', .1, .23), item('MECHANICAL PLAN - FIRST LEVEL - OVERALL', .28, .23, .45)];
   const actual = [
@@ -38,14 +66,15 @@ test('analysis version 3 uses split-column index inventory to recover exact iden
     { pageNumber: 3, width: 1000, height: 700, rotation: 0, textItems: titleBlock('61M-101', 'MECHANICAL PLAN - FIRST LEVEL - OVERALL') }
   ];
   const analysis = buildDrawingAnalysis({ documentId: 'building61', projectId: 'p1', pages: actual, analyzedAt: '2026-01-01' });
-  assert.equal(analysis.analysisVersion, 3);
+  assert.equal(analysis.analysisVersion, 4);
   assert.deepEqual(analysis.sheets.map(sheet => sheet.sheetNumber), ['61G-000', '61G-001', '61M-101']);
   assert.equal(analysis.sheets[0].sheetTitle, 'COVER SHEET');
   assert.equal(analysis.sheets[0].discipline, 'General');
   assert.equal(analysis.sheets[0].primarySheetType, 'Cover');
+  assert.equal(analysis.observations.some(observation => observation.sheetId === analysis.sheets[0].sheetId && /room|equipment/.test(observation.kind)), false);
   assert.equal(analysis.sheets[1].primarySheetType, 'Drawing Index');
   assert.equal(analysis.sheets[2].discipline, 'Mechanical');
-  assert.equal(analysis.sheets[0].sheetNumberResolutionMethod, 'index-inventory-order');
+  assert.equal(analysis.sheets[0].sheetNumberResolutionMethod, 'drawing-index-page-order');
   assert.ok(analysis.sheets.every(sheet => sheet.sheetTitle !== 'FIRE PROTECTION REQUIREMENTS SHALL BE COORDINATED.'));
 });
 
@@ -63,10 +92,10 @@ test('version upgrades preserve resolvable verification overlays and report unma
   legacy.observations[0].verification = { status: 'Confirmed', correctedValue: '', verifiedAt: '2026-01-02' };
   legacy.observations.push({ observationId: 'removed', pageNumber: 99, kind: 'room-number-text', originalValue: '999', verification: { status: 'Rejected', correctedValue: '', verifiedAt: '2026-01-02' } });
   const upgraded = upgradeDrawingAnalysis(legacy);
-  assert.equal(upgraded.analysisVersion, 3);
+  assert.equal(upgraded.analysisVersion, 4);
   assert.equal(upgraded.observations.find(item => item.observationId === legacy.observations[0].observationId).verification.status, 'Confirmed');
   assert.equal(upgraded.unmappedVerificationOverlays[0].observationId, 'removed');
-  assert.equal(reanalyzeDrawingAnalysis(upgraded).analysisVersion, 3);
+  assert.equal(reanalyzeDrawingAnalysis(upgraded).analysisVersion, 4);
 });
 
 test('observation and warning presentation is field-readable and grouped', () => {

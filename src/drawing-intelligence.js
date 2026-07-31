@@ -1,6 +1,8 @@
 import { normalizeRegion } from './pdf-source.js';
+import { extractLegendCandidates } from './drawing-legends.js';
+import { extractScheduleCandidates } from './drawing-schedules.js';
 
-export const DRAWING_ANALYSIS_VERSION = 3;
+export const DRAWING_ANALYSIS_VERSION = 4;
 export const VERIFICATION_STATES = Object.freeze(['Unreviewed', 'Confirmed', 'Corrected', 'Rejected', 'Uncertain']);
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const list = value => Array.isArray(value) ? value : [];
@@ -24,6 +26,11 @@ const NARRATIVE_TITLE = /\b(?:SHALL|MUST|PROVIDE|INSTALL|CONTRACTOR|REQUIREMENTS
 const ROOM_NUMBER = /\b(?:ROOM\s*)?(\d{2,5}[A-Z]?)\b/i;
 const EQUIPMENT_TAG = /\b(?:AHU|RTU|VAV|FCU|CU|EF|SF|HP|P|PANEL|XFMR|UPS|RACK|PP|FACP|FAAP|TGB|TMGB|TS|CUH|UH)[- ]?\d{1,4}[A-Z]?\b/i;
 const CALLOUT = /\b(\d{1,3}[A-Z]?)\s*\/\s*([A-Z]{1,4}[-.]?\d{2,4}[A-Z]?)\b/i;
+const TITLE_FIELDS = Object.freeze({
+  'PROJECT NUMBER': 'projectNumber', 'BUILDING NUMBER': 'building', 'DRAWING NUMBER': 'sheetNumber',
+  'PROJECT TITLE': 'projectTitle', 'DRAWING TITLE': 'sheetTitle', 'ISSUE DATE': 'issueDate', REVISION: 'revision'
+});
+const INDEX_DISCIPLINES = Object.freeze({ GENERAL: 'General', HAZARDOUS: 'Hazardous Materials', ARCHITECTURAL: 'Architectural', INTERIORS: 'Interiors', 'FIRE PROTECTION': 'Fire Protection', PLUMBING: 'Plumbing', MECHANICAL: 'Mechanical', ELECTRICAL: 'Electrical', TELECOMMUNICATION: 'Telecommunications', TELECOMMUNICATIONS: 'Telecommunications', SECURITY: 'Security', REFERENCE: 'Reference' });
 
 export function normalizeDrawingTextItems(items = []) {
   return list(items).map((item, index) => ({
@@ -57,6 +64,34 @@ function candidateZone(region) {
 
 export function extractTitleBlockCandidates(items = []) {
   return lines(items).map(line => ({ ...line, zone: candidateZone(line.region) })).filter(line => line.zone);
+}
+
+export function resolveLabeledTitleBlockFields(items = []) {
+  const source = normalizeDrawingTextItems(items);
+  const fields = {};
+  const diagnostics = [];
+  for (const label of source) {
+    const key = TITLE_FIELDS[normalize(label.text).replace(/:$/, '').toUpperCase()];
+    if (!key) continue;
+    const candidates = source.filter(item => item !== label && !TITLE_FIELDS[normalize(item.text).replace(/:$/, '').toUpperCase()])
+      .filter(item => {
+        const vertical = item.region.y - (label.region.y + label.region.height);
+        const horizontalOverlap = Math.min(label.region.x + Math.max(label.region.width, .05), item.region.x + item.region.width) - Math.max(label.region.x, item.region.x);
+        return vertical >= -.004 && vertical <= .055 && (horizontalOverlap > -.02 || Math.abs(item.region.x - label.region.x) <= .08);
+      })
+      .map(item => ({ item, score: Math.abs(item.region.x - label.region.x) * 4 + Math.max(0, item.region.y - label.region.y) }))
+      .sort((a, b) => a.score - b.score || a.item.order - b.item.order);
+    const selected = candidates[0]?.item || null;
+    if (!selected) { diagnostics.push({ field: key, status: 'missing-value', labelRegion: label.region }); continue; }
+    const value = normalize(selected.text);
+    const valid = key === 'sheetNumber' ? validSheetNumberCandidate(value, '')
+      : key === 'building' ? /^\d{1,5}[A-Z]?$/.test(value)
+        : key === 'sheetTitle' ? validTitleCandidate({ text: value })
+          : Boolean(value);
+    diagnostics.push({ field: key, status: valid ? 'resolved' : 'rejected-value', labelRegion: label.region, valueRegion: selected.region, value });
+    if (valid && !fields[key]) fields[key] = { value, labelRegion: label.region, valueRegion: selected.region, method: 'labeled-title-block-field' };
+  }
+  return { fields, diagnostics };
 }
 
 export function validSheetNumberCandidate(value, context = '') {
@@ -125,13 +160,13 @@ export function classifyDiscipline(sheetNumber = '', title = '', indexDiscipline
   const heading = normalize(title).toUpperCase();
   const prefix = (number.match(/^(?:\d+)?([A-Z]{1,3})[-.]?\d/) || [])[1] || '';
   const rules = [
-    ['Fire Protection', ['FP']], ['Plumbing', ['P']], ['Mechanical', ['M']], ['Electrical', ['E']],
+    ['Fire Alarm', ['FA']], ['Fire Protection', ['FP']], ['Plumbing', ['P']], ['Mechanical', ['M']], ['Electrical', ['E']],
     ['Telecommunications', ['T', 'TC']], ['Security', ['SEC']], ['Architectural', ['A']],
     ['Interiors', ['I']], ['Hazardous Materials', ['H']], ['General', ['G']], ['Reference', ['R']]
   ];
   for (const [discipline, prefixes] of rules) if (prefixes.includes(prefix)) return { discipline, evidence: `Validated sheet-number prefix ${prefix}`, method: 'sheet-number-prefix' };
   const titleRules = [
-    ['Fire Protection', /FIRE PROTECTION|SPRINKLER/], ['Plumbing', /PLUMBING/], ['Mechanical', /MECHANICAL|HVAC/],
+    ['Fire Alarm', /FIRE ALARM/], ['Fire Protection', /FIRE PROTECTION|SPRINKLER/], ['Plumbing', /PLUMBING/], ['Mechanical', /MECHANICAL|HVAC/],
     ['Electrical', /ELECTRICAL|LIGHTING|POWER/], ['Telecommunications', /TELECOMMUNICATIONS?|STRUCTURED CABLING/],
     ['Security', /SECURITY|ACCESS CONTROL/], ['Architectural', /ARCHITECTURAL/], ['Interiors', /INTERIOR/],
     ['General', /GENERAL|COVER SHEET/], ['Reference', /REFERENCE|EXISTING PHOTO/]
@@ -143,9 +178,9 @@ export function classifyDiscipline(sheetNumber = '', title = '', indexDiscipline
 export function classifySheetTypes(title = '') {
   const value = normalize(title).toUpperCase();
   const rules = [
-    ['Cover', /\bCOVER(?: SHEET)?\b/], ['Drawing Index', /DRAWING INDEX|SHEET INDEX/], ['Notes', /\bNOTES?\b/],
+    ['Cover', /\bCOVER(?: SHEET)?\b/], ['Drawing Index', /DRAWING INDEX|SHEET INDEX/], ['General Notes', /\bGENERAL(?: PROJECT| INFECTION CONTROL| INDOOR AIR QUALITY)? NOTES?\b/], ['Symbols and Abbreviations', /\b(?:SYMBOLS?|ABBREVIATIONS?)\b/], ['Fire Alarm', /\bFIRE ALARM\b/],
     ['Enlarged Plan', /ENLARGED.*PLAN/], ['Plan', /\bPLAN\b/], ['Detail', /\bDETAILS?\b/],
-    ['Schedule', /\bSCHEDULES?\b/], ['Controls', /\bCONTROLS?\b/], ['Riser', /\bRISER\b/], ['Diagram', /\bDIAGRAM|ONE[- ]LINE\b/],
+    ['Schedule', /\bSCHEDULES?\b/], ['Controls', /\bCONTROLS?\b/], ['One Line', /\bONE[- ]LINE\b/], ['Riser', /\bRISER\b/], ['Diagram', /\bDIAGRAM\b/],
     ['Rack Elevation', /\bRACK\b.*\bELEVATIONS?\b/], ['Elevation', /\bELEVATIONS?\b/], ['Inventory', /\bINVENTORY\b/], ['Cut Sheet', /\bCUT SHEET\b/],
     ['Photo Reference', /\bPHOTO(?:GRAPH)?S?\b.*\bREFERENCES?\b|\bREFERENCES?\b.*\bPHOTO(?:GRAPH)?S?\b/], ['Reference', /\bREFERENCE\b/]
   ];
@@ -154,17 +189,32 @@ export function classifySheetTypes(title = '') {
 }
 
 export function primarySheetType(types = []) {
-  const order = ['Cover', 'Drawing Index', 'Enlarged Plan', 'Plan', 'Schedule', 'Rack Elevation', 'Detail', 'Controls', 'Diagram', 'Riser', 'Inventory', 'Cut Sheet', 'Photo Reference', 'Notes', 'Elevation', 'Reference', 'Unknown'];
+  const order = ['Cover', 'Drawing Index', 'General Notes', 'Symbols and Abbreviations', 'Enlarged Plan', 'Plan', 'Fire Alarm', 'Schedule', 'Rack Elevation', 'Detail', 'Controls', 'One Line', 'Riser', 'Diagram', 'Inventory', 'Cut Sheet', 'Photo Reference', 'Notes', 'Elevation', 'Reference', 'Unknown'];
   return order.find(type => list(types).includes(type)) || 'Unknown';
 }
 
+export function resolveBuilding(textItems = [], indexEntry = null) {
+  const exact = [...list(textItems).map(item => normalize(item?.text)), normalize(indexEntry?.sheetTitle)].filter(Boolean)
+    .map(value => value.match(/\bBUILDING\s+(\d{1,5}[A-Z]?)\b/i)).find(Boolean);
+  return exact ? { building: exact[1].toUpperCase(), method: 'exact-visible-text', evidence: exact[0] } : { building: '', method: 'unavailable', evidence: '' };
+}
+
+export function observationEligibility(primaryType = '', discipline = '') {
+  const evidenceOnly = new Set(['Cover', 'Drawing Index', 'General Notes', 'Symbols and Abbreviations', 'Notes', 'Reference', 'Photo Reference', 'Cut Sheet']);
+  const evidenceLabel = text(discipline) === 'Reference' && !evidenceOnly.has(text(primaryType)) ? 'Reference' : text(primaryType);
+  return evidenceOnly.has(text(primaryType)) || text(discipline) === 'Reference'
+    ? { rooms: false, equipment: false, callouts: true, reason: `${evidenceLabel} sheets are construction evidence only.` }
+    : { rooms: true, equipment: true, callouts: true, reason: 'Sheet type supports construction observations.' };
+}
+
 function selectSheetMetadata(items, { repeatedTitles = new Set() } = {}) {
+  const labeled = resolveLabeledTitleBlockFields(items);
   const candidates = extractTitleBlockCandidates(items);
   const titleBlockDiagnostics = extractSheetNumberCandidateDiagnostics(items, { titleBlockOnly: true });
   const positionedDiagnostics = extractSheetNumberCandidateDiagnostics(items);
   const numberCandidates = titleBlockDiagnostics.accepted.length ? titleBlockDiagnostics.accepted : positionedDiagnostics.accepted;
   const uniqueNumbers = [...new Set(numberCandidates.map(item => item.value))];
-  const sheetNumber = uniqueNumbers.length === 1 ? uniqueNumbers[0] : '';
+  const sheetNumber = labeled.fields.sheetNumber?.value || (uniqueNumbers.length === 1 ? uniqueNumbers[0] : '');
   const rejectedTitles = [];
   const titles = [];
   for (const candidate of candidates) {
@@ -177,15 +227,16 @@ function selectSheetMetadata(items, { repeatedTitles = new Set() } = {}) {
   const scoreTitle = item => (/\b(?:PLAN|DETAIL|SCHEDULE|RISER|DIAGRAM|ELEVATION|INDEX|NOTES?|INVENTORY|CUT SHEET|COVER|CONTROLS?)\b/i.test(item.value) ? 35 : 0) + (item.zone === 'lower-right' ? 25 : item.zone === 'lower-band' ? 15 : 5) + Math.max(0, 12 - item.value.split(/\s+/).length);
   const rankedTitles = uniqueTitles.map(item => ({ ...item, score: scoreTitle(item) })).sort((a, b) => b.score - a.score || b.region.y - a.region.y || a.value.localeCompare(b.value));
   const titleResolved = rankedTitles.length === 1 || (rankedTitles[0]?.score - rankedTitles[1]?.score >= 15);
-  const sheetTitle = titleResolved ? rankedTitles[0]?.value || '' : '';
+  const sheetTitle = labeled.fields.sheetTitle?.value || (titleResolved ? rankedTitles[0]?.value || '' : '');
   const titleBlockRegion = numberCandidates[0]?.region || titles[0]?.region || null;
   const candidateText = candidates.map(item => item.text).join(' | ');
   const issueDate = (candidateText.match(/\b(?:ISSUE DATE|DATE)\s*[:.-]?\s*(\d{1,2}[/. -]\d{1,2}[/. -]\d{2,4}|\d{4}-\d{2}-\d{2})\b/i) || [])[1] || '';
   const revision = (candidateText.match(/\b(?:REVISION|REV)\s*[:.#-]?\s*([A-Z0-9]{1,6})\b/i) || [])[1] || '';
   return {
-    sheetNumber, sheetTitle, titleBlockRegion, numberCandidates, titleCandidates: rankedTitles, rejectedNumberCandidates: [...titleBlockDiagnostics.rejected, ...positionedDiagnostics.rejected], rejectedTitleCandidates: rejectedTitles,
-    sheetNumberMethod: sheetNumber ? (titleBlockDiagnostics.accepted.length ? 'title-block' : 'positioned-text') : 'unavailable', sheetTitleMethod: sheetTitle ? 'title-block' : 'unavailable',
-    issueDate, revision, conflicts: uniqueNumbers.length > 1 ? uniqueNumbers : [], titleConflicts: !titleResolved ? rankedTitles.map(item => item.value) : []
+    sheetNumber, sheetTitle, titleBlockRegion: labeled.fields.sheetNumber?.valueRegion || labeled.fields.sheetTitle?.valueRegion || titleBlockRegion, numberCandidates, titleCandidates: rankedTitles, rejectedNumberCandidates: [...titleBlockDiagnostics.rejected, ...positionedDiagnostics.rejected], rejectedTitleCandidates: rejectedTitles,
+    sheetNumberMethod: labeled.fields.sheetNumber ? 'labeled-title-block-field' : sheetNumber ? (titleBlockDiagnostics.accepted.length ? 'title-block' : 'positioned-text') : 'unavailable', sheetTitleMethod: labeled.fields.sheetTitle ? 'labeled-title-block-field' : sheetTitle ? 'title-block' : 'unavailable',
+    issueDate: labeled.fields.issueDate?.value || issueDate, revision: labeled.fields.revision?.value || revision, building: labeled.fields.building?.value || '', projectNumber: labeled.fields.projectNumber?.value || '', labeledFieldDiagnostics: labeled.diagnostics,
+    conflicts: labeled.fields.sheetNumber ? uniqueNumbers.filter(value => value !== labeled.fields.sheetNumber.value) : uniqueNumbers.length > 1 ? uniqueNumbers : [], titleConflicts: labeled.fields.sheetTitle ? rankedTitles.map(item => item.value).filter(value => normalize(value).toUpperCase() !== normalize(labeled.fields.sheetTitle.value).toUpperCase()) : !titleResolved ? rankedTitles.map(item => item.value) : []
   };
 }
 
@@ -200,19 +251,20 @@ function observation({ documentId, sheetId, pageNumber, kind, value, region, con
   };
 }
 
-export function extractTextObservations({ documentId, sheetId, pageNumber, textItems = [] } = {}) {
+export function extractTextObservations({ documentId, sheetId, pageNumber, textItems = [], eligibility = null } = {}) {
+  const allowed = eligibility || { rooms: true, equipment: true, callouts: true };
   const output = [];
   for (const item of normalizeDrawingTextItems(textItems)) {
     const room = item.text.match(ROOM_NUMBER);
-    if (room && (/\bROOM\b/i.test(item.text) || /^\d{2,5}[A-Z]?$/.test(item.text))) {
+    if (allowed.rooms && room && (/\bROOM\b/i.test(item.text) || /^\d{2,5}[A-Z]?$/.test(item.text))) {
       output.push(observation({ documentId, sheetId, pageNumber, kind: 'room-number-text', value: room[1], region: item.region, confidence: /\bROOM\b/i.test(item.text) ? .85 : .65 }));
       const roomName = item.text.replace(new RegExp(`\\bROOM\\s*${room[1]}\\b`, 'i'), '').trim();
       if (roomName && /[A-Z]/i.test(roomName)) output.push(observation({ documentId, sheetId, pageNumber, kind: 'room-name-text', value: roomName, region: item.region, confidence: .75 }));
     }
     const equipment = item.text.match(EQUIPMENT_TAG);
-    if (equipment) output.push(observation({ documentId, sheetId, pageNumber, kind: 'equipment-tag-text', value: equipment[0], region: item.region, confidence: .75 }));
+    if (allowed.equipment && equipment) output.push(observation({ documentId, sheetId, pageNumber, kind: 'equipment-tag-text', value: equipment[0], region: item.region, confidence: .75 }));
     const callout = item.text.match(CALLOUT);
-    if (callout) output.push(observation({ documentId, sheetId, pageNumber, kind: 'callout-text', value: `${callout[1]}/${callout[2]}`, region: item.region, confidence: .9 }));
+    if (allowed.callouts && callout) output.push(observation({ documentId, sheetId, pageNumber, kind: 'callout-text', value: `${callout[1]}/${callout[2]}`, region: item.region, confidence: .9 }));
   }
   return output.filter((item, index) => output.findIndex(candidate => candidate.observationId === item.observationId) === index)
     .sort((a, b) => a.pageNumber - b.pageNumber || a.region.y - b.region.y || a.region.x - b.region.x || a.observationId.localeCompare(b.observationId));
@@ -232,22 +284,31 @@ export function applyObservationVerification(machineObservation, { status, corre
 export function extractDrawingIndexEntries(sheets = []) {
   const entries = [];
   for (const sheet of list(sheets).filter(item => lines(item.textItems).some(line => /\b(?:DRAWING|SHEET)\s+INDEX\b/i.test(line.text)))) {
-    let current = null;
+    const items = normalizeDrawingTextItems(sheet.textItems).sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x);
+    let discipline = 'Unknown';
+    for (const numberItem of items) {
+      const heading = INDEX_DISCIPLINES[normalize(numberItem.text).toUpperCase()];
+      if (heading) { discipline = heading; continue; }
+      const number = normalize(numberItem.text).toUpperCase();
+      if (!validSheetNumberCandidate(number, '') || !new RegExp(`^(?:${SHEET_NUMBER.source})$`, 'i').test(number)) continue;
+      const row = items.filter(item => item !== numberItem && Math.abs(item.region.y - numberItem.region.y) <= .009 && item.region.x > numberItem.region.x + numberItem.region.width * .5)
+        .filter(item => !/^(?:YES|NO|N\/A)$/i.test(item.text) && !INDEX_DISCIPLINES[normalize(item.text).toUpperCase()])
+        .sort((a, b) => a.region.x - b.region.x);
+      let titleItems = row.filter(item => validTitleCandidate(item));
+      if (!titleItems.length) continue;
+      const firstStatusX = row.find(item => /^(?:YES|NO|N\/A)$/i.test(item.text))?.region.x ?? 1;
+      titleItems = titleItems.filter(item => item.region.x < firstStatusX);
+      const candidateTitle = cleanSheetTitle(titleItems.map(item => item.text).join(' '));
+      if (!validTitleCandidate({ text: candidateTitle })) continue;
+      const right = Math.max(numberItem.region.x + numberItem.region.width, ...titleItems.map(item => item.region.x + item.region.width));
+      entries.push({ sheetNumber: number, sheetTitle: candidateTitle, discipline: discipline === 'Unknown' ? classifyDiscipline(number, candidateTitle).discipline : discipline, sourcePage: sheet.pageNumber, sourceRegion: normalizeRegion({ x: numberItem.region.x, y: Math.min(numberItem.region.y, ...titleItems.map(item => item.region.y)), width: right - numberItem.region.x, height: Math.max(numberItem.region.height, ...titleItems.map(item => item.region.height)) }), inventoryOrder: entries.length, extractionMethod: 'positioned-index-columns' });
+    }
     for (const line of lines(sheet.textItems)) {
       const match = line.text.match(/^((?:\d{1,4})?[A-Z]{1,3}[-.]?\d{3,4}[A-Z]?)\s+(.{3,})$/i);
-      if (match && validSheetNumberCandidate(match[1], '')) {
-        const candidateTitle = cleanSheetTitle(match[2]);
-        if (!validTitleCandidate({ text: candidateTitle })) { current = null; continue; }
-        const classified = classifyDiscipline(match[1], candidateTitle);
-        current = { sheetNumber: match[1].toUpperCase(), sheetTitle: candidateTitle, discipline: classified.discipline, sourcePage: sheet.pageNumber, sourceRegion: line.region, inventoryOrder: entries.length, extractionMethod: 'positioned-index-row' };
-        entries.push(current);
-        continue;
-      }
-      if (current && line.region.y > current.sourceRegion.y && line.region.y - current.sourceRegion.y <= .045 && line.region.x >= current.sourceRegion.x + .04 && validTitleCandidate(line)) {
-        current.sheetTitle = normalize(`${current.sheetTitle} ${line.text}`);
-        current.sourceRegion = normalizeRegion({ x: current.sourceRegion.x, y: current.sourceRegion.y, width: Math.max(current.sourceRegion.width, line.region.x + line.region.width - current.sourceRegion.x), height: line.region.y + line.region.height - current.sourceRegion.y });
-        current.extractionMethod = 'positioned-index-row-multiline';
-      } else if (line.text && !/\b(?:DRAWING|SHEET)\s+INDEX\b/i.test(line.text)) current = null;
+      if (!match || entries.some(entry => entry.sourcePage === sheet.pageNumber && entry.sheetNumber === match[1].toUpperCase())) continue;
+      const candidateTitle = cleanSheetTitle(match[2].replace(/(?:\s+(?:YES|NO)){2,}.*$/i, ''));
+      if (!validSheetNumberCandidate(match[1], '') || !validTitleCandidate({ text: candidateTitle })) continue;
+      entries.push({ sheetNumber: match[1].toUpperCase(), sheetTitle: candidateTitle, discipline: classifyDiscipline(match[1], candidateTitle).discipline, sourcePage: sheet.pageNumber, sourceRegion: line.region, inventoryOrder: entries.length, extractionMethod: 'positioned-index-combined-row' });
     }
   }
   return entries.map((entry, index) => ({ ...entry, inventoryOrder: index }));
@@ -284,11 +345,16 @@ function mapDrawingIndexToSheets(indexEntries, sheets) {
     const matches = numbers.map(number => byNumber.get(number)).filter(Boolean);
     if (numbers.length === 1 && matches.length === 1) result.set(sheet.sheetId, { entry: matches[0], method: 'index-title-block-reconciliation' });
   }
-  const exactOrderSafe = uniqueEntries.length === sheets.length && sheets.every((sheet, index) => {
+  const anchors = sheets.flatMap((sheet, pageIndex) => {
+    const candidates = [...new Set(list(sheet.sheetNumberCandidates).map(item => item.value))].filter(number => byNumber.has(number));
+    return candidates.length === 1 ? [{ pageIndex, index: uniqueEntries.findIndex(entry => entry.sheetNumber === candidates[0]), number: candidates[0] }] : [];
+  });
+  const anchorSafe = anchors.length >= 2 && anchors.every(anchor => anchor.index === anchor.pageIndex);
+  const exactOrderSafe = uniqueEntries.length === sheets.length && anchorSafe && sheets.every((sheet, index) => {
     const candidates = [...new Set(list(sheet.sheetNumberCandidates).map(item => item.value))];
     return !candidates.length || candidates.includes(uniqueEntries[index]?.sheetNumber);
   });
-  if (exactOrderSafe) sheets.forEach((sheet, index) => { if (!result.has(sheet.sheetId)) result.set(sheet.sheetId, { entry: uniqueEntries[index], method: 'index-inventory-order' }); });
+  if (exactOrderSafe) sheets.forEach((sheet, index) => { if (!result.has(sheet.sheetId)) result.set(sheet.sheetId, { entry: uniqueEntries[index], method: 'drawing-index-page-order', anchorEvidence: anchors.map(anchor => anchor.number) }); });
   if (!exactOrderSafe) {
     const indexPosition = new Map(uniqueEntries.map((entry, index) => [entry.sheetNumber, index]));
     const anchors = sheets.flatMap((sheet, pageIndex) => {
@@ -323,6 +389,7 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
       sheetId, documentId, pageNumber: Number(page.pageNumber), sheetNumber: metadata.sheetNumber,
       sheetTitle: metadata.sheetTitle, discipline: discipline.discipline, disciplineEvidence: discipline.evidence,
       sheetTypes: classifySheetTypes(metadata.sheetTitle), issueDate: metadata.issueDate, revision: metadata.revision,
+      building: metadata.building, projectNumber: metadata.projectNumber, labeledFieldDiagnostics: metadata.labeledFieldDiagnostics,
       pageWidth: Number(page.width) || 0, pageHeight: Number(page.height) || 0, rotation: Number(page.rotation) || 0,
       titleBlockRegion: metadata.titleBlockRegion, analysisStatus: metadata.conflicts.length ? 'Completed with warnings' : 'Ready for review',
       confidence: metadata.sheetNumber ? (metadata.sheetTitle ? .9 : .75) : .35,
@@ -364,19 +431,37 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
       sheetNumberResolutionMethod: numberMethod, sheetTitleResolutionMethod: indexEntry ? 'drawing-index' : sheet.sheetTitleResolutionMethod,
       identityStatus: indexEntry && !titleConflict ? 'Verified' : addedWarnings.length || !sheetNumber ? 'Ambiguous' : 'Supported', analysisStatus: addedWarnings.length ? 'Completed with warnings' : sheet.analysisStatus,
       confidence: indexEntry && !titleConflict ? .98 : sheetNumber && sheetTitle ? .85 : sheetNumber || sheetTitle ? .65 : .25,
-      warnings: [...sheet.warnings, ...addedWarnings]
+      building: sheet.building || resolveBuilding(sheet.textItems, indexEntry).building, buildingResolution: sheet.building ? { building: sheet.building, method: 'labeled-title-block-field', evidence: 'Building Number' } : resolveBuilding(sheet.textItems, indexEntry),
+      extractionEligibility: observationEligibility(primarySheetType(sheetTypes), discipline.discipline), warnings: [...sheet.warnings, ...addedWarnings]
     };
   });
-  const observations = sheets.flatMap(sheet => extractTextObservations({ documentId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, textItems: sheet.textItems }));
+  const observations = sheets.flatMap(sheet => extractTextObservations({ documentId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, textItems: sheet.textItems, eligibility: sheet.extractionEligibility }));
   const references = observations.filter(item => item.kind === 'callout-text').map(item => ({ referenceId: `reference-${hash(item.observationId)}`, observationId: item.observationId, sourceSheetId: item.sheetId, ...parseExactDrawingReference(item.value) }));
   const reconciliation = reconcileDrawingIndex(indexEntries, sheets);
   const warnings = [...sheets.flatMap(sheet => sheet.warnings.map(message => ({ type: 'sheet-warning', sheetId: sheet.sheetId, message }))), ...reconciliation];
+  const drawingSetId = drawingSetIdFor(documentId);
+  const legendSheets = sheets.filter(sheet => sheet.sheetTypes.includes('Symbols and Abbreviations') || sheet.sheetTypes.includes('General Notes'));
+  const legends = legendSheets.flatMap(sheet => extractLegendCandidates({ documentId, drawingSetId, sheet: { ...sheet, drawingSetId } }));
+  const schedules = sheets.flatMap(sheet => extractScheduleCandidates({ documentId, drawingSetId, sheet: { ...sheet, drawingSetId } }));
+  const keyedNoteDefinitions = sheets.flatMap(sheet => {
+    const hasHeading = sheet.textItems.some(item => /\bKEY(?:ED)?\s*NOTES?\b/i.test(item.text));
+    if (!hasHeading) return [];
+    return sheet.textItems.flatMap(item => {
+      const match = normalize(item.text).match(/^(\d{1,3}[A-Z]?)[.)-]\s+(.{4,})$/);
+      return match ? [{ keyedNoteId: `keyed-note-${hash(`${sheet.sheetId}:${match[1]}`)}`, identifier: match[1].toUpperCase(), noteText: match[2], documentId, drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, sourceRegion: item.region, verification: { status: 'Unreviewed', correctedValue: '', verifiedAt: '' } }] : [];
+    });
+  });
+  const keyedNoteOccurrences = sheets.filter(sheet => ['Plan', 'Enlarged Plan', 'Detail', 'Riser', 'Diagram', 'One Line'].includes(sheet.primarySheetType)).flatMap(sheet => sheet.textItems.flatMap(item => {
+    const identifier = normalize(item.text).match(/^(\d{1,3}[A-Z]?)$/)?.[1]?.toUpperCase();
+    const matches = identifier ? keyedNoteDefinitions.filter(note => note.identifier === identifier) : [];
+    return matches.length === 1 ? [{ keyedNoteOccurrenceId: `keyed-note-occurrence-${hash(`${sheet.sheetId}:${identifier}:${JSON.stringify(item.region)}`)}`, keyedNoteId: matches[0].keyedNoteId, identifier, documentId, drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, region: item.region, matchStatus: 'exact', verification: { status: 'Unreviewed', correctedValue: '', verifiedAt: '' } }] : [];
+  }));
   return {
-    drawingSetId: drawingSetIdFor(documentId), documentId, projectId,
+    drawingSetId, documentId, projectId,
     analysisVersion: DRAWING_ANALYSIS_VERSION, analyzedAt: text(analyzedAt),
     status: warnings.length ? 'Completed with warnings' : 'Ready for review',
     stages: ['Reading source', 'Inspecting pages', 'Detecting title blocks', 'Building sheet index', 'Classifying sheets', 'Recording text observations', 'Reconciling index', warnings.length ? 'Completed with warnings' : 'Ready for review'],
-    sheets, indexEntries, observations, references, warnings,
+    sheets, indexEntries, observations, references, legends, schedules, keyedNoteDefinitions, keyedNoteOccurrences, candidateOccurrences: [], warnings,
     limitations: ['Text observations do not establish room boundaries, symbol ownership, graphical connectivity, or installed quantities.']
   };
 }
@@ -389,6 +474,11 @@ export function reanalyzeDrawingAnalysis(analysis = {}) {
     pages: list(analysis.sheets).map(sheet => ({ pageNumber: sheet.pageNumber, width: sheet.pageWidth, height: sheet.pageHeight, rotation: sheet.rotation, textItems: sheet.textItems }))
   });
   upgraded.observations = upgraded.observations.map(item => verificationByObservation.has(item.observationId) ? { ...item, verification: structuredClone(verificationByObservation.get(item.observationId)) } : item);
+  const legendVerification = new Map(list(analysis.legends).flatMap(legend => list(legend.entries).map(entry => [entry.legendEntryId, entry.verification])));
+  upgraded.legends = upgraded.legends.map(legend => ({ ...legend, entries: legend.entries.map(entry => legendVerification.has(entry.legendEntryId) ? { ...entry, verification: structuredClone(legendVerification.get(entry.legendEntryId)) } : entry) }));
+  const validSheets = new Set(upgraded.sheets.map(item => item.sheetId));
+  const validLegendEntries = new Set(upgraded.legends.flatMap(legend => legend.entries.map(entry => entry.legendEntryId)));
+  upgraded.candidateOccurrences = list(analysis.candidateOccurrences).filter(item => validSheets.has(item.sheetId) && validLegendEntries.has(item.legendEntryId)).map(item => structuredClone(item));
   const resolved = new Set(upgraded.observations.map(item => item.observationId));
   upgraded.unmappedVerificationOverlays = reviewed.filter(item => !resolved.has(item.observationId)).map(item => ({ observationId: item.observationId, pageNumber: item.pageNumber, kind: item.kind, originalValue: item.originalValue, verification: structuredClone(item.verification) }));
   if (upgraded.unmappedVerificationOverlays.length) {

@@ -65,6 +65,47 @@ export function drawingResultKeyTarget(key, { sheetIds = [], activeIndex = -1 } 
   if (!count) return { index: -1, activate: false, clear: key === 'Escape' };
   if (key === 'ArrowDown') return { index: Math.min(count - 1, activeIndex < 0 ? 0 : activeIndex + 1), activate: false, clear: false };
   if (key === 'ArrowUp') return { index: Math.max(0, activeIndex < 0 ? count - 1 : activeIndex - 1), activate: false, clear: false };
+  if (key === 'Home') return { index: 0, activate: false, clear: false };
+  if (key === 'End') return { index: count - 1, activate: false, clear: false };
+  if (key === 'PageDown') return { index: Math.min(count - 1, Math.max(0, activeIndex) + 8), activate: false, clear: false };
+  if (key === 'PageUp') return { index: Math.max(0, (activeIndex < 0 ? count - 1 : activeIndex) - 8), activate: false, clear: false };
   if (key === 'Enter') return { index: activeIndex < 0 ? 0 : activeIndex, activate: true, clear: false };
   return { index: activeIndex, activate: false, clear: key === 'Escape' };
+}
+
+export function calculateDrawingFit({ containerWidth, containerHeight, pageWidth, pageHeight, rotation = 0, padding = 24, toolbarHeight = 0, mode = 'fit-page' } = {}) {
+  const width = Number(containerWidth) - Number(padding) * 2;
+  const height = Number(containerHeight) - Number(padding) * 2 - Number(toolbarHeight);
+  if (!(width > 0 && height > 0 && Number(pageWidth) > 0 && Number(pageHeight) > 0)) return { ready: false, mode, scale: null };
+  const rotated = Math.abs(Number(rotation)) % 180 === 90;
+  const sourceWidth = rotated ? Number(pageHeight) : Number(pageWidth);
+  const sourceHeight = rotated ? Number(pageWidth) : Number(pageHeight);
+  const widthScale = width / sourceWidth;
+  const heightScale = height / sourceHeight;
+  return { ready: true, mode, scale: Math.max(.1, Math.min(6, mode === 'fit-width' ? widthScale : Math.min(widthScale, heightScale))), widthScale, heightScale };
+}
+
+export function defaultDrawingViewport(overlays = {}) {
+  return { mode: 'fit-page', zoom: null, rotation: 0, scrollLeft: 0, scrollTop: 0, selectedObservationId: '', highlightedRegion: null, overlays: { rooms: true, confirmed: true, candidates: true, equipment: true, keyedNotes: true, callouts: true, scheduleLinks: true, warnings: true, ...overlays } };
+}
+
+export function drawingViewportKey(drawingSetId, sheetId) { return `${text(drawingSetId)}:${text(sheetId)}`; }
+
+export function saveDrawingViewport(viewports = {}, drawingSetId, sheetId, viewport = {}) {
+  const key = drawingViewportKey(drawingSetId, sheetId);
+  if (!text(drawingSetId) || !text(sheetId)) return { ...viewports };
+  return { ...viewports, [key]: { ...defaultDrawingViewport(), ...structuredClone(viewport), overlays: { ...defaultDrawingViewport().overlays, ...(viewport.overlays || {}) } } };
+}
+
+export function restoreDrawingViewport(viewports = {}, drawingSetId, sheetId) {
+  return structuredClone(viewports[drawingViewportKey(drawingSetId, sheetId)] || defaultDrawingViewport());
+}
+
+export function drawingWorkspaceLayout(layout = {}, action = '') {
+  const current = { finderHidden: Boolean(layout.finderHidden), evidenceHidden: Boolean(layout.evidenceHidden), expanded: Boolean(layout.expanded) };
+  if (action === 'expand') return { finderHidden: true, evidenceHidden: true, expanded: true };
+  if (action === 'restore') return { finderHidden: false, evidenceHidden: false, expanded: false };
+  if (action === 'toggle-finder') return { ...current, finderHidden: !current.finderHidden, expanded: false };
+  if (action === 'toggle-evidence') return { ...current, evidenceHidden: !current.evidenceHidden, expanded: false };
+  return current;
 }

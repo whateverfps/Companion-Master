@@ -101,7 +101,7 @@ function searchMatch(sheet, observations, needle) {
     observation
   };
   const textItem = list(sheet.textItems).find(item => normalized(item.text).includes(needle));
-  return textItem ? { rank: 8, reason: /schedule/i.test(textItem.text) ? 'Matched Schedule text' : /detail/i.test(textItem.text) ? 'Matched Detail text' : /note/i.test(textItem.text) ? 'Matched Notes' : 'Matched positioned drawing text', observation: null } : null;
+  return textItem ? { rank: 8, reason: /schedule/i.test(textItem.text) ? 'Matched Schedule' : /detail/i.test(textItem.text) ? 'Matched Detail' : /riser/i.test(textItem.text) ? 'Matched Riser' : /rack/i.test(textItem.text) ? 'Matched Rack' : /note/i.test(textItem.text) ? 'Matched Notes' : 'Matched Drawing Text', observation: null } : null;
 }
 
 export function searchDrawingSheets({ query = '', discipline = 'all', sheetType = 'all', analysis, sheets, observations } = {}) {

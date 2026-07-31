@@ -30,6 +30,7 @@ import {
 import { analyzeCorpus } from './core/reasoning.js';
 import { createPdfSourceRecord, inspectStorageCapacity } from './pdf-source.js';
 import { buildDrawingAnalysis } from './drawing-intelligence.js';
+import { classifyDrawingOrphans, validateDrawingOwnership } from './drawing-lifecycle.js';
 
 const STATE_KEY = 'mc-master-state-v2';
 const DOC_DB = 'mc-master-documents-v2';
@@ -699,10 +700,12 @@ export const engine = {
       throw new Error('General cannot be deleted.');
     }
 
-    await delByIndex('sections', 'projectId', id);
-    await delByIndex('inspectionRecords', 'projectId', id);
-    await delByIndex('sourceFiles', 'projectId', id);
-    await delByIndex('drawingAnalyses', 'projectId', id);
+    const cleanup = { projectId: id, sections: false, inspectionRecords: false, sourceFiles: false, drawingAnalyses: false, documents: false, state: false };
+    try {
+      await delByIndex('sections', 'projectId', id); cleanup.sections = true;
+      await delByIndex('inspectionRecords', 'projectId', id); cleanup.inspectionRecords = true;
+      await delByIndex('sourceFiles', 'projectId', id); cleanup.sourceFiles = true;
+      await delByIndex('drawingAnalyses', 'projectId', id); cleanup.drawingAnalyses = true;
 
     const documents = await all('documents', 'projectId', id);
 
@@ -716,6 +719,7 @@ export const engine = {
       );
     }
 
+      cleanup.documents = true;
     state.projects = state.projects.filter(
       project => project.id !== id
     );
@@ -731,7 +735,13 @@ export const engine = {
         library => library.projectId === 'general'
       )?.id || null;
 
-    save();
+    save(); cleanup.state = true;
+    return { ok: true, status: 'deleted', cleanup };
+    } catch (error) {
+      error.cleanup = cleanup;
+      logger.error('Project cleanup was incomplete', { projectId: id, cleanup, message: error.message });
+      throw error;
+    }
   },
 
   libraries() {
@@ -872,27 +882,59 @@ export const engine = {
     return structuredClone(await all('drawingAnalyses', 'projectId', state.activeProject));
   },
 
+  async drawingLifecycle(documentId = '', drawingSetId = '') {
+    const document = documentId ? await one('documents', documentId) : null;
+    const sourceFile = documentId ? await one('sourceFiles', documentId) : null;
+    const analysis = drawingSetId ? await one('drawingAnalyses', drawingSetId) : (documentId ? (await all('drawingAnalyses', 'documentId', documentId))[0] || null : null);
+    const result = validateDrawingOwnership({ analysis, documents: document ? [document] : [], sourceFiles: sourceFile ? [sourceFile] : [], activeProjectId: state.activeProject, requireSource: document?.sourceAvailability === 'available' });
+    return { ...result, document: result.document || (document ? structuredClone(document) : null), sourceFile: result.sourceFile || (sourceFile ? structuredClone(sourceFile) : null), owningProjectId: result.owningProjectId || document?.projectId || analysis?.projectId || '' };
+  },
+
+  async drawingLifecycleDiagnostics() {
+    const [documents, analyses, sourceFiles] = await Promise.all([all('documents'), all('drawingAnalyses'), all('sourceFiles')]);
+    return classifyDrawingOrphans({ documents, analyses, sourceFiles, activeProjectId: state.activeProject });
+  },
+
+  async removeDrawingAnalysis(drawingSetId) {
+    const analysis = await one('drawingAnalyses', drawingSetId);
+    if (!analysis) return { ok: false, status: 'unavailable', errorCode: 'drawing-analysis-orphan', warning: 'Drawing analysis is already unavailable.' };
+    try {
+      await tx('drawingAnalyses', 'readwrite', store => store.delete(drawingSetId));
+      return { ok: true, status: 'removed', drawingSetId, documentId: analysis.documentId, projectId: analysis.projectId };
+    } catch (error) {
+      return { ok: false, status: 'failed', errorCode: 'drawing-save-failed', warning: 'Drawing analysis could not be removed.' };
+    }
+  },
+
   async saveDrawingAnalysis(analysis) {
-    if (!analysis?.drawingSetId || analysis.projectId !== state.activeProject) throw new Error('Drawing analysis does not belong to the active project.');
-    const document = (await this.documents()).find(item => item.id === analysis.documentId);
-    if (!document) throw new Error('Drawing analysis document is unavailable.');
-    await tx('drawingAnalyses', 'readwrite', store => store.put(structuredClone(analysis)));
-    return structuredClone(analysis);
+    const document = analysis?.documentId ? await one('documents', analysis.documentId) : null;
+    const sourceFile = analysis?.documentId ? await one('sourceFiles', analysis.documentId) : null;
+    const existing = analysis?.drawingSetId ? await one('drawingAnalyses', analysis.drawingSetId) : null;
+    if (existing && existing.documentId !== analysis?.documentId) return { ok: false, status: 'unavailable', errorCode: 'drawing-analysis-invalid', warning: 'Drawing-set ownership does not match the exact document.', analysis: structuredClone(analysis || null), document: document ? structuredClone(document) : null, recoverable: true };
+    const validation = validateDrawingOwnership({ analysis, documents: document ? [document] : [], sourceFiles: sourceFile ? [sourceFile] : [], activeProjectId: state.activeProject, requireSource: document?.sourceAvailability === 'available' });
+    if (!validation.ok) return validation;
+    try {
+      await tx('drawingAnalyses', 'readwrite', store => store.put(structuredClone(analysis)));
+      return { ...validation, ok: true, status: 'saved', analysis: structuredClone(analysis), warning: '', recoverable: false };
+    } catch (error) {
+      logger.error('Drawing analysis save failed', { drawingSetId: analysis.drawingSetId, documentId: analysis.documentId, message: error.message });
+      return { ...validation, ok: false, status: 'failed', errorCode: 'drawing-save-failed', warning: 'Drawing analysis could not be saved.', recoverable: true };
+    }
   },
 
   async reattachPdfSource(documentId, file) {
-    const document = (await this.documents()).find(item => item.id === documentId);
-    if (!document) throw new Error('Document not found.');
-    if (!(file instanceof Blob) || (file.type && file.type !== 'application/pdf')) throw new Error('Select the original PDF file.');
-    if (!document.contentHash) throw new Error('The stored document has no authoritative content hash, so the original PDF cannot be validated deterministically. Reimport it as a new document.');
+    const document = await one('documents', documentId);
+    if (!document) return { ok: false, status: 'unavailable', errorCode: 'drawing-document-missing', warning: 'Drawing source unavailable.' };
+    if (!(file instanceof Blob) || (file.type && file.type !== 'application/pdf')) return { ok: false, status: 'unavailable', errorCode: 'drawing-analysis-invalid', warning: 'Select the original PDF file.' };
+    if (!document.contentHash) return { ok: false, status: 'unavailable', errorCode: 'drawing-analysis-invalid', warning: 'The stored document has no authoritative content hash. Reimport it as a new document.' };
     const hash = await contentHash(file);
-    if (document.contentHash && (!hash || hash !== document.contentHash)) throw new Error('The selected PDF does not match the stored document hash.');
+    if (document.contentHash && (!hash || hash !== document.contentHash)) return { ok: false, status: 'unavailable', errorCode: 'drawing-source-missing', warning: 'The selected PDF does not match the stored document hash.' };
     const capacity = await inspectStorageCapacity(file.size);
     if (capacity.sufficient === false) throw new Error(`Not enough browser storage is available for this ${file.size}-byte PDF.`);
     const parsed = await parsePdfFile(file);
     const sourceBlob = file.type === 'application/pdf' ? file : new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
-    const sourceRecord = createPdfSourceRecord({ documentId, projectId: state.activeProject, sourceBlob, contentHash: hash || document.contentHash || '', storedAt: new Date().toISOString() });
-    const analysis = buildDrawingAnalysis({ documentId, projectId: state.activeProject, pages: parsed.pages, analyzedAt: new Date().toISOString() });
+    const sourceRecord = createPdfSourceRecord({ documentId, projectId: document.projectId, sourceBlob, contentHash: hash || document.contentHash || '', storedAt: new Date().toISOString() });
+    const analysis = buildDrawingAnalysis({ documentId, projectId: document.projectId, pages: parsed.pages, analyzedAt: new Date().toISOString() });
     const db = await openDB();
     await new Promise((resolve, reject) => {
       const transaction = db.transaction(['documents', 'sourceFiles', 'drawingAnalyses'], 'readwrite');
@@ -904,7 +946,7 @@ export const engine = {
       transaction.onabort = () => { db.close(); reject(transaction.error || new Error('PDF reattachment transaction aborted.')); };
     });
     invalidateKnowledgeCache();
-    return { documentId, drawingSetId: analysis.drawingSetId, pageCount: parsed.pageCount };
+    return { ok: true, status: 'saved', documentId, projectId: document.projectId, drawingSetId: analysis.drawingSetId, pageCount: parsed.pageCount };
   },
 
   async inspectionRecords({ includeArchived = false } = {}) {
@@ -1260,24 +1302,20 @@ export const engine = {
   },
 
   async removeDocument(id) {
-    await delByIndex(
-      'sections',
-      'documentId',
-      id
-    );
-    await tx('sourceFiles', 'readwrite', store => store.delete(id));
-    await delByIndex('drawingAnalyses', 'documentId', id);
-    invalidateKnowledgeCache();
-
-    await tx(
-      'documents',
-      'readwrite',
-      store => store.delete(id)
-    );
-
-    logger.info('Document removed', {
-      id
-    });
+    const cleanup = { documentId: id, sections: false, sourceFile: false, drawingAnalyses: false, document: false };
+    try {
+      await delByIndex('sections', 'documentId', id); cleanup.sections = true;
+      await tx('sourceFiles', 'readwrite', store => store.delete(id)); cleanup.sourceFile = true;
+      await delByIndex('drawingAnalyses', 'documentId', id); cleanup.drawingAnalyses = true;
+      invalidateKnowledgeCache();
+      await tx('documents', 'readwrite', store => store.delete(id)); cleanup.document = true;
+      logger.info('Document removed', { id });
+      return { ok: true, status: 'deleted', cleanup };
+    } catch (error) {
+      error.cleanup = cleanup;
+      logger.error('Document cleanup was incomplete', { documentId: id, cleanup, message: error.message });
+      throw error;
+    }
   },
 
   async search(query, options = {}) {
@@ -1654,6 +1692,19 @@ export const engine = {
 
     const preserveIdentifiers = options.preserveIdentifiers === true;
     const sourceProject = data.manifest.project || {};
+    const incomingDocumentIds = data.documents.map(item => String(item?.id || '').trim());
+    if (incomingDocumentIds.some(id => !id) || new Set(incomingDocumentIds).size !== incomingDocumentIds.length) throw new Error('Imported projects require unique document identifiers.');
+    const incomingAnalyses = Array.isArray(data.drawingAnalyses) ? data.drawingAnalyses : [];
+    const incomingDrawingSetIds = incomingAnalyses.map(item => String(item?.drawingSetId || '').trim());
+    if (incomingDrawingSetIds.some(id => !id) || new Set(incomingDrawingSetIds).size !== incomingDrawingSetIds.length) throw new Error('Imported projects require unique drawing-set identifiers.');
+    for (const analysis of incomingAnalyses) {
+      if (!incomingDocumentIds.includes(String(analysis.documentId || '').trim())) throw new Error(`Imported drawing analysis ${analysis.drawingSetId || 'unavailable'} has no exact source document.`);
+      if (analysis.projectId && sourceProject.id && analysis.projectId !== sourceProject.id) throw new Error(`Imported drawing analysis ${analysis.drawingSetId} does not belong to the exported project.`);
+    }
+    for (const sourceFile of Array.isArray(data.sourceFiles) ? data.sourceFiles : []) {
+      if (!incomingDocumentIds.includes(String(sourceFile.documentId || '').trim())) throw new Error('Imported drawing source has no exact document.');
+      if (sourceFile.projectId && sourceProject.id && sourceFile.projectId !== sourceProject.id) throw new Error('Imported drawing source does not belong to the exported project.');
+    }
     const sourceInspectionRecords = Array.isArray(data.inspectionRecords) ? data.inspectionRecords : [];
     const existingInspectionRecords = await all('inspectionRecords');
     const sourceInspectionValidationRecords = sourceInspectionRecords.map(normalizeInspectionRecord);

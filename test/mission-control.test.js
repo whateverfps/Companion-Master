@@ -184,8 +184,7 @@ test('Phase 23C presents drawings as construction evidence with a field-grade hi
   assert.match(app, /CONSTRUCTION INTELLIGENCE · PLANS/);
   assert.match(app, /Find a sheet, room, trade, or tag/);
   assert.match(app, /Matched Room|matchedReason/);
-  assert.match(app, /Sheet Analysis/);
-  assert.match(app, /Supporting Information/);
+  assert.match(app, /Construction Evidence/);
   assert.match(app, /Analysis details/);
   assert.match(app, /Reanalyze Drawing Set/);
   assert.match(app, /aria-label="Drawing navigation"/);
@@ -197,6 +196,47 @@ test('Phase 23C presents drawings as construction evidence with a field-grade hi
   assert.match(css, /Phase 23C/);
   assert.match(css, /#missionDrawingViewer \.mc-drawing-evidence/);
   assert.match(css, /\.mc-drawing-stage\{min-height:520px/);
+});
+
+test('Phase 24A keeps construction work primary and viewport/search controls stable', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  assert.match(app, /mc-construction-orientation/);
+  assert.match(app, /drawingZoom = null/);
+  assert.match(app, /preservedCanvas/);
+  assert.match(app, /PageDown.*PageUp.*Home.*End/);
+  assert.match(app, /Construction Timeline/);
+  assert.doesNotMatch(app, /Matched positioned drawing text/);
+  assert.match(css, /Phase 24A/);
+  assert.match(css, /position:sticky/);
+});
+
+test('Phase 24A.1 contains drawing lifecycle failures without blanking the workspace', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  assert.match(app, /drawingUpgradeWork = new Map/);
+  assert.match(app, /drawingUpgradeFailures = new Set/);
+  assert.match(app, /drawingLifecycleUnavailable/);
+  assert.match(app, /Drawing source unavailable/);
+  assert.match(app, /open-owning-project/);
+  assert.match(app, /return-to-drawing-sets/);
+  assert.match(app, /retry-analysis-upgrade/);
+  assert.match(app, /reduceStaleDrawingTarget/);
+  assert.doesNotMatch(app.slice(app.indexOf('async function currentDrawingAnalyses'), app.indexOf('async function buildActiveConstructionPackage')), /throw /);
+  assert.match(css, /mc-drawing-recovery/);
+});
+
+test('Phase 24A.2 exposes a full-scale stable viewer and verified construction overlays', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  assert.match(app, /Analyze Page Objects/);
+  assert.match(app, /data-drawing-overlay/);
+  assert.match(app, /Expand Drawing/);
+  assert.match(app, /calculateDrawingFit/);
+  assert.match(app, /Candidate occurrence/);
+  assert.match(css, /\.mc-drawing-layout\.drawing-expanded/);
+  assert.match(css, /\.mc-drawing-object-overlay\.confirmed/);
+  assert.doesNotMatch(css, /\.mc-drawing-stage\{[^}]*background:\s*(?:white|#fff(?:fff)?)/i);
 });
 
 test('Mission Control exposes My Projects and an accessible demonstration orientation banner', () => {

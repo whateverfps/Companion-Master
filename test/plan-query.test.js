@@ -57,6 +57,9 @@ test('search summaries and keyboard selection are deterministic and field-readab
   assert.deepEqual(drawingResultKeyTarget('ArrowDown', { sheetIds: ['a', 'b'], activeIndex: 0 }), { index: 1, activate: false, clear: false });
   assert.equal(drawingResultKeyTarget('Enter', { sheetIds: ['a'], activeIndex: 0 }).activate, true);
   assert.equal(drawingResultKeyTarget('Escape', { sheetIds: ['a'], activeIndex: 0 }).clear, true);
+  assert.equal(drawingResultKeyTarget('Home', { sheetIds: ['a', 'b'], activeIndex: 1 }).index, 0);
+  assert.equal(drawingResultKeyTarget('End', { sheetIds: ['a', 'b'], activeIndex: 0 }).index, 1);
+  assert.equal(drawingResultKeyTarget('PageDown', { sheetIds: Array.from({ length: 12 }, (_, index) => String(index)), activeIndex: 0 }).index, 8);
 });
 
 test('section scope uses exact document pages without changing retrieval order or scoring', () => {

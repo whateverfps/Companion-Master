@@ -95,7 +95,51 @@ export async function inspectStorageCapacity(byteLength, storage = globalThis.na
 export async function openPdfBlob(blob, options = {}) {
   if (!(blob instanceof Blob) || blob.type !== 'application/pdf') throw new Error('A valid PDF Blob is required.');
   const pdfjs = options.pdfjs || await loadPdfJs(options.importer);
-  return pdfjs.getDocument({ data: await blob.arrayBuffer() }).promise;
+  const pdf = await pdfjs.getDocument({ data: await blob.arrayBuffer() }).promise;
+  try { Object.defineProperty(pdf, '__mcPdfjsOps', { value: pdfjs.OPS || {}, enumerable: false }); } catch {}
+  return pdf;
+}
+
+function primitiveBounds(values = [], metadata = {}) {
+  const numbers = values.flat(Infinity).map(Number).filter(Number.isFinite);
+  if (numbers.length < 2 || !metadata.width || !metadata.height) return normalizeRegion({});
+  const xs = numbers.filter((_, index) => index % 2 === 0);
+  const ys = numbers.filter((_, index) => index % 2 === 1);
+  const left = Math.min(...xs), right = Math.max(...xs), top = Math.min(...ys), bottom = Math.max(...ys);
+  return normalizeRegion({ x: left / metadata.width, y: (metadata.height - bottom) / metadata.height, width: (right - left) / metadata.width, height: (bottom - top) / metadata.height });
+}
+
+export async function readPdfPageGraphics(pdf, pageNumber, { signal = null, maxOperations = 12000, ops = null } = {}) {
+  if (!pdf?.getPage) return { supported: false, status: 'missing-source', pageNumber, primitives: [], warnings: ['PDF source is unavailable.'] };
+  if (signal?.aborted) return { supported: false, status: 'cancelled', pageNumber, primitives: [], warnings: [] };
+  const page = await pdf.getPage(Math.trunc(finite(pageNumber)));
+  if (!page.getOperatorList) return { supported: false, status: 'unsupported', pageNumber, primitives: [], warnings: ['PDF graphics operators are unavailable.'] };
+  const viewport = page.getViewport({ scale: 1, rotation: 0 });
+  const metadata = normalizePageMetadata({ pageNumber, width: viewport.width, height: viewport.height, rotation: page.rotate || 0 });
+  const operationNames = new Map(Object.entries(ops || pdf.__mcPdfjsOps || {}).map(([name, value]) => [value, name]));
+  const operatorList = await page.getOperatorList();
+  const count = Math.min(operatorList.fnArray?.length || 0, Math.max(1, Math.trunc(finite(maxOperations, 12000))));
+  const primitives = [];
+  for (let index = 0; index < count; index += 1) {
+    if (signal?.aborted) return { supported: true, status: 'cancelled', pageNumber, primitives: [], warnings: [] };
+    const raw = operatorList.fnArray[index];
+    const name = typeof raw === 'string' ? raw : operationNames.get(raw) || '';
+    const args = operatorList.argsArray?.[index] || [];
+    if (name === 'constructPath') {
+      const coordinates = Array.isArray(args[1]) ? args[1] : args;
+      const bounds = args.length >= 6 && args.slice(2, 6).every(Number.isFinite)
+        ? normalizeRegion({ x: args[2] / metadata.width, y: (metadata.height - args[5]) / metadata.height, width: (args[4] - args[2]) / metadata.width, height: (args[5] - args[3]) / metadata.height })
+        : primitiveBounds(coordinates, metadata);
+      primitives.push({ primitiveId: `primitive-${pageNumber}-${index}`, kind: 'path', bounds, points: coordinates.slice(0, 256).reduce((output, value, pointIndex) => { if (pointIndex % 2 === 0 && Number.isFinite(Number(value)) && Number.isFinite(Number(coordinates[pointIndex + 1]))) output.push({ x: Number(value) / metadata.width, y: (metadata.height - Number(coordinates[pointIndex + 1])) / metadata.height }); return output; }, []), stroke: false, fill: false, lineWidth: 0, sourceOperation: index });
+    } else if (/paintImageXObject|paintInlineImageXObject/.test(name)) primitives.push({ primitiveId: `primitive-${pageNumber}-${index}`, kind: 'image-boundary', bounds: normalizeRegion({}), points: [], stroke: false, fill: true, lineWidth: 0, sourceOperation: index });
+    else if (/stroke|fill/i.test(name) && primitives.length) {
+      const current = primitives[primitives.length - 1];
+      if (current.kind === 'path') { current.stroke ||= /stroke/i.test(name); current.fill ||= /fill/i.test(name); }
+    }
+  }
+  const truncated = (operatorList.fnArray?.length || 0) > count;
+  page.cleanup?.();
+  return { supported: true, status: truncated ? 'bounded' : 'ready', ...metadata, primitives, operationCount: count, warnings: truncated ? ['Graphics analysis was bounded to the configured operation limit.'] : [] };
 }
 
 export async function readPdfPage(pdf, pageNumber) {

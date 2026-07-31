@@ -61,7 +61,11 @@ function createIndexedDB() {
           const records = ensureStore(operation.store).records;
 
           if (operation.type === 'put') {
-            records.set(operation.value.id || operation.value.inspectionId || operation.value.documentId || operation.value.drawingSetId, structuredClone(operation.value));
+            const key = operation.store === 'drawingAnalyses' ? operation.value.drawingSetId
+              : operation.store === 'sourceFiles' ? operation.value.documentId
+                : operation.store === 'inspectionRecords' ? operation.value.inspectionId
+                  : operation.value.id;
+            records.set(key, structuredClone(operation.value));
           } else {
             records.delete(operation.key);
           }
@@ -615,4 +619,51 @@ test('legacy flat chat migrates once into the active conversation compatibility 
   } finally {
     globalThis.localStorage = originalStorage;
   }
+});
+
+test('drawing lifecycle save resolves exact ownership globally while General is active', async () => {
+  const imported = await engine.importProject({
+    manifest: { project: { id: 'lifecycle-project', name: 'Lifecycle Project' } }, libraries: [],
+    documents: [{ id: 'lifecycle-document', projectId: 'lifecycle-project', name: 'plans.pdf', extension: 'pdf' }], sections: [],
+    drawingAnalyses: [{ drawingSetId: 'lifecycle-source-set', documentId: 'lifecycle-document', projectId: 'lifecycle-project', analysisVersion: 2, sheets: [{ pageNumber: 1, pageWidth: 100, pageHeight: 100, rotation: 0, textItems: [{ text: 'M-101', region: { x: .8, y: .9, width: .1, height: .02 } }, { text: 'MECHANICAL PLAN', region: { x: .6, y: .85, width: .3, height: .02 } }] }] }]
+  });
+  const [analysis] = await engine.drawingAnalyses();
+  const [document] = await engine.documents();
+  engine.setProject('general');
+  const lifecycle = await engine.drawingLifecycle(document.id, analysis.drawingSetId);
+  assert.equal(lifecycle.ok, true, JSON.stringify({ errorCode: lifecycle.errorCode, warning: lifecycle.warning, analysis: lifecycle.analysis?.drawingSetId, document: lifecycle.document?.id }));
+  assert.equal(lifecycle.owningProjectId, imported.id);
+  const saved = await engine.saveDrawingAnalysis({ ...analysis, status: 'Ready for review' });
+  assert.equal(saved.ok, true);
+  assert.equal(saved.document.projectId, imported.id);
+  assert.equal(engine.state().activeProject, 'general');
+  engine.setProject(imported.id);
+  const deleted = await engine.deleteProject(imported.id);
+  assert.equal(deleted.ok, true);
+  assert.equal(deleted.cleanup.drawingAnalyses, true);
+  assert.equal((await engine.drawingLifecycle(document.id, analysis.drawingSetId)).ok, false);
+});
+
+test('drawing lifecycle save returns structured ownership failures', async () => {
+  const result = await engine.saveDrawingAnalysis({ drawingSetId: 'missing-set', documentId: 'missing-document', projectId: 'missing-project', analysisVersion: 3 });
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 'drawing-document-missing');
+});
+
+test('project import rejects duplicate drawing lifecycle identifiers before registration', async () => {
+  const base = { manifest: { project: { id: 'duplicate-project', name: 'Duplicate Project' } }, libraries: [], sections: [] };
+  await assert.rejects(engine.importProject({ ...base, documents: [{ id: 'same' }, { id: 'same' }] }), /unique document identifiers/);
+  await assert.rejects(engine.importProject({ ...base, documents: [{ id: 'drawing' }], drawingAnalyses: [{ drawingSetId: 'same-set', documentId: 'drawing', projectId: 'duplicate-project' }, { drawingSetId: 'same-set', documentId: 'drawing', projectId: 'duplicate-project' }] }), /unique drawing-set identifiers/);
+  await assert.rejects(engine.importProject({ ...base, documents: [{ id: 'drawing' }], drawingAnalyses: [{ drawingSetId: 'owned-set', documentId: 'drawing', projectId: 'wrong-project' }] }), /does not belong/);
+});
+
+test('reattachment and analysis saves use exact document ownership rather than active project ownership', () => {
+  const source = readFileSync(new URL('../src/engine.js', import.meta.url), 'utf8');
+  const reattach = source.slice(source.indexOf('async reattachPdfSource'), source.indexOf('async inspectionRecords'));
+  assert.match(reattach, /const document = await one\('documents', documentId\)/);
+  assert.match(reattach, /projectId: document\.projectId/);
+  assert.doesNotMatch(reattach, /projectId: state\.activeProject/);
+  const saveAnalysis = source.slice(source.indexOf('async saveDrawingAnalysis'), source.indexOf('async reattachPdfSource'));
+  assert.match(saveAnalysis, /await one\('documents', analysis\.documentId\)/);
+  assert.doesNotMatch(saveAnalysis, /await this\.documents/);
 });
