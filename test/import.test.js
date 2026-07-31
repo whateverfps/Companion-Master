@@ -230,6 +230,7 @@ const {
   createDemonstrationProjectFixture,
   DEMO_PROJECT_ID
 } = await import('../src/demo-project.js');
+const { retrieve } = await import('../src/retrieval.js');
 
 test('successful imports atomically register one document and its sections', async () => {
   const stages = [];
@@ -431,9 +432,30 @@ test('approved deterministic project import preserves fixture identifiers and me
   assert.deepEqual(documents.map(item => item.id).sort(), fixture.documents.map(item => item.id).sort());
   assert.deepEqual(sections.map(item => item.id).sort(), fixture.sections.map(item => item.id).sort());
   assert.equal(documents.find(item => item.id === 'mc-demo-doc-drawing-a201-r2').lineageId, 'mc-demo-lineage-a201');
-  const answer = await engine.ask('How was RFI-002 Existing duct conflicts with new cable tray resolved?', 'offline');
-  assert.ok(answer.hits.length);
-  assert.ok(answer.hits.every(hit => Array.isArray(hit.path)));
+  const questions = [
+    'What is required for Telecom Room TR-1 readiness?',
+    'What inspection requirements apply to penetration firestopping under 07 84 13?',
+    'How was RFI-002 Existing duct conflicts with new cable tray resolved?',
+    'What evidence documents the cable tray conflict above Exam Room 112?'
+  ];
+  for (const question of questions) {
+    const answer = await engine.ask(question, 'offline');
+    assert.ok(answer.content);
+    assert.ok(answer.hits.length);
+    assert.ok(answer.hits.every(hit =>
+      Array.isArray(hit.path) && hit.path.every(part => typeof part === 'string')
+    ));
+  }
+});
+
+test('final retrieval hits canonicalize legacy string and missing paths without mutating sources', () => {
+  const legacy = { id: 'legacy-path', documentId: 'legacy-document', heading: 'Legacy', text: 'legacy path searchable evidence', path: 'Specifications / 01 45 00' };
+  const missing = { id: 'missing-path', documentId: 'legacy-document', heading: 'Missing', text: 'missing path searchable evidence' };
+  const hits = retrieve('searchable evidence', [legacy, missing], 2);
+  assert.deepEqual(hits.find(hit => hit.id === legacy.id).path, ['Specifications / 01 45 00']);
+  assert.deepEqual(hits.find(hit => hit.id === missing.id).path, []);
+  assert.equal(legacy.path, 'Specifications / 01 45 00');
+  assert.equal(Object.hasOwn(missing, 'path'), false);
 });
 
 test('deterministic import rejects collisions before duplicating fixture records', async () => {
