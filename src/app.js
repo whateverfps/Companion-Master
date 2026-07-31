@@ -66,6 +66,7 @@ app.innerHTML = `
     </div>
 
     <nav>
+      <button data-view="project">Project Workspace</button>
       <button data-view="chat" class="active">Command Desk</button>
       <button data-view="knowledge">Knowledge Workspace</button>
       <button data-view="sources">Source Inspector</button>
@@ -104,6 +105,81 @@ app.innerHTML = `
         </select>
       </div>
     </header>
+
+    <section id="project" class="view">
+      <header id="projectWorkspaceHeader" class="mc-project-header"></header>
+
+      <section aria-labelledby="projectHealthTitle">
+        <div class="mc-project-section-heading">
+          <div>
+            <span>KNOWLEDGE READINESS</span>
+            <h2 id="projectHealthTitle">Knowledge Health</h2>
+          </div>
+        </div>
+        <div id="projectHealth" class="mc-project-health"></div>
+      </section>
+
+      <section
+        class="panel mc-project-section"
+        aria-labelledby="projectLibrariesTitle"
+      >
+        <div class="mc-project-section-heading">
+          <div>
+            <span>PROJECT STRUCTURE</span>
+            <h2 id="projectLibrariesTitle">Library Overview</h2>
+          </div>
+        </div>
+        <div id="projectLibraries" class="mc-project-libraries"></div>
+      </section>
+
+      <div class="mc-project-workspace-grid">
+        <section
+          class="panel mc-project-section mc-project-readiness"
+          aria-labelledby="projectReadinessTitle"
+        >
+          <div class="mc-project-section-heading">
+            <div>
+              <span>DOCUMENT STATUS</span>
+              <h2 id="projectReadinessTitle">Document Readiness</h2>
+            </div>
+            <div
+              id="projectReadinessFilters"
+              class="mc-project-filters"
+              aria-label="Filter documents by readiness"
+            ></div>
+          </div>
+          <div id="projectReadinessTable"></div>
+        </section>
+
+        <aside class="mc-project-side">
+          <section
+            class="panel mc-project-section"
+            aria-labelledby="projectAttentionTitle"
+          >
+            <div class="mc-project-section-heading">
+              <div>
+                <span>OBSERVED CONDITIONS</span>
+                <h2 id="projectAttentionTitle">Attention Items</h2>
+              </div>
+            </div>
+            <div id="projectAttention"></div>
+          </section>
+
+          <section
+            class="panel mc-project-section"
+            aria-labelledby="projectActionsTitle"
+          >
+            <div class="mc-project-section-heading">
+              <div>
+                <span>INTERFACE GUIDANCE</span>
+                <h2 id="projectActionsTitle">Suggested Next Actions</h2>
+              </div>
+            </div>
+            <div id="projectActions" class="mc-project-actions"></div>
+          </section>
+        </aside>
+      </div>
+    </section>
 
     <section id="chat" class="view active">
       <div class="kpis">
@@ -525,6 +601,10 @@ function setChiefState(name = 'idle') {
 }
 
 const titles = {
+  project: [
+    'Project Workspace',
+    'Review active-project knowledge readiness and operational status.'
+  ],
   diagnostics: [
     'Diagnostics',
     'Inspect application health, startup checks, logs, and roadmap.'
@@ -567,6 +647,10 @@ function show(name) {
 
   if (name === 'knowledge') {
     renderKnowledgeWorkspace();
+  }
+
+  if (name === 'project') {
+    renderProjectWorkspace();
   }
 
   if (name === 'sources') {
@@ -635,6 +719,7 @@ async function refresh() {
   $('#kSections').textContent = fmt(sections.length);
 
   renderMessages(documents, sections);
+  renderProjectWorkspace(documents, sections);
   await renderKnowledgeWorkspace(documents);
 }
 
@@ -1867,6 +1952,551 @@ function documentModifiedAt(document) {
     : '';
 }
 
+function projectKnowledgeSnapshot(
+  currentState,
+  libraries,
+  documents,
+  sections
+) {
+  const sectionCounts = new Map();
+
+  sections.forEach(section => {
+    sectionCounts.set(
+      section.documentId,
+      (sectionCounts.get(section.documentId) || 0) + 1
+    );
+  });
+
+  const indexed = documents.filter(document =>
+    documentStatus(document).className === 'indexed'
+  );
+  const pending = documents.filter(document =>
+    documentStatus(document).className === 'pending'
+  );
+  const unavailable = documents.filter(document =>
+    documentStatus(document).className === 'unavailable'
+  );
+  const unknown = documents.filter(document =>
+    documentStatus(document).className === 'unknown'
+  );
+  const indexedWithoutSections = indexed.filter(document =>
+    Number(document.sectionCount || 0) <= 0 ||
+    Number(sectionCounts.get(document.id) || 0) <= 0
+  );
+  const disabledLibrariesWithDocuments = libraries.filter(library =>
+    !library.enabled &&
+    documents.some(document => document.libraryId === library.id)
+  );
+  const activeLibrary = libraries.find(
+    library => library.id === currentState.activeLibrary
+  ) || null;
+
+  let readiness = 'Knowledge indexed';
+
+  if (!currentState.activeProject) {
+    readiness = 'No active project';
+  } else if (!libraries.length) {
+    readiness = 'No libraries';
+  } else if (!documents.length) {
+    readiness = 'No documents';
+  } else if (
+    unavailable.length ||
+    unknown.length ||
+    disabledLibrariesWithDocuments.length
+  ) {
+    readiness = 'Attention needed';
+  } else if (pending.length || indexedWithoutSections.length) {
+    readiness = 'Indexing incomplete';
+  }
+
+  return {
+    activeLibrary,
+    disabledLibrariesWithDocuments,
+    enabledLibraries: libraries.filter(library => library.enabled),
+    indexed,
+    indexedWithoutSections,
+    pending,
+    readiness,
+    sectionCounts,
+    unavailable,
+    unknown
+  };
+}
+
+function projectKnowledgeUpdatedAt(project, libraries, documents) {
+  const timestamps = [
+    project?.updatedAt,
+    ...libraries.map(library => library.updatedAt),
+    ...documents.map(document => document.indexedAt)
+  ]
+    .filter(Boolean)
+    .map(value => new Date(value))
+    .filter(date => !Number.isNaN(date.getTime()));
+
+  if (!timestamps.length) {
+    return '';
+  }
+
+  return new Date(
+    Math.max(...timestamps.map(date => date.getTime()))
+  ).toLocaleString();
+}
+
+function projectAttentionItems(snapshot, libraries, documents) {
+  const items = [];
+
+  if (!libraries.length) {
+    items.push({
+      text: 'No knowledge libraries are available for the active project.',
+      view: 'knowledge',
+      action: 'Open Knowledge Workspace'
+    });
+  }
+
+  if (!documents.length) {
+    items.push({
+      text: 'No documents are loaded for the active project.',
+      view: 'knowledge',
+      action: 'Add project documents'
+    });
+  }
+
+  snapshot.disabledLibrariesWithDocuments.forEach(library => {
+    const count = documents.filter(document =>
+      document.libraryId === library.id
+    ).length;
+
+    items.push({
+      text: `${library.name} is disabled and contains ${count} document${count === 1 ? '' : 's'}.`,
+      view: 'knowledge',
+      libraryId: library.id,
+      action: 'Review library'
+    });
+  });
+
+  if (snapshot.pending.length) {
+    items.push({
+      text: `${snapshot.pending.length} document${snapshot.pending.length === 1 ? ' is' : 's are'} pending indexing.`,
+      view: 'knowledge',
+      action: 'Review indexing status'
+    });
+  }
+
+  if (snapshot.unavailable.length) {
+    items.push({
+      text: `${snapshot.unavailable.length} document${snapshot.unavailable.length === 1 ? ' is' : 's are'} marked unavailable or failed by production state.`,
+      view: 'sources',
+      action: 'Inspect documents'
+    });
+  }
+
+  if (snapshot.indexedWithoutSections.length) {
+    items.push({
+      text: `${snapshot.indexedWithoutSections.length} indexed document${snapshot.indexedWithoutSections.length === 1 ? ' exposes' : 's expose'} zero available sections.`,
+      view: 'sources',
+      action: 'Inspect extraction'
+    });
+  }
+
+  if (snapshot.unknown.length) {
+    items.push({
+      text: `${snapshot.unknown.length} document${snapshot.unknown.length === 1 ? ' has' : 's have'} no recognized indexing status.`,
+      view: 'knowledge',
+      action: 'Review metadata'
+    });
+  }
+
+  return items;
+}
+
+function projectNextActions(snapshot, libraries, documents) {
+  const actions = [];
+
+  if (!libraries.length || !documents.length) {
+    actions.push({
+      label: 'Add project documents',
+      detail: 'Open the Knowledge Workspace to add source material.',
+      view: 'knowledge'
+    });
+  }
+
+  if (snapshot.pending.length || snapshot.indexedWithoutSections.length) {
+    actions.push({
+      label: 'Review indexing status',
+      detail: 'Inspect document readiness and available sections.',
+      view: 'knowledge'
+    });
+    actions.push({
+      label: 'Open diagnostics',
+      detail: 'Review the application’s existing operational checks.',
+      view: 'diagnostics'
+    });
+  }
+
+  if (snapshot.unavailable.length || snapshot.unknown.length) {
+    actions.push({
+      label: 'Inspect document extraction',
+      detail: 'Open the existing Source Inspector for document details.',
+      view: 'sources'
+    });
+    actions.push({
+      label: 'Open diagnostics',
+      detail: 'Review the application’s existing operational checks.',
+      view: 'diagnostics'
+    });
+  }
+
+  if (snapshot.disabledLibrariesWithDocuments.length) {
+    actions.push({
+      label: 'Review library availability',
+      detail: 'Inspect enabled and disabled production libraries.',
+      view: 'knowledge'
+    });
+  }
+
+  if (
+    documents.length &&
+    !snapshot.pending.length &&
+    !snapshot.unavailable.length &&
+    !snapshot.unknown.length &&
+    !snapshot.indexedWithoutSections.length
+  ) {
+    actions.push({
+      label: 'Explore the Knowledge Workspace',
+      detail: 'Browse indexed documents and their available sections.',
+      view: 'knowledge'
+    });
+    actions.push({
+      label: 'Ask an evidence-based project question',
+      detail: 'Continue to the Command Desk without submitting automatically.',
+      view: 'chat'
+    });
+  }
+
+  return actions
+    .filter((action, index, all) =>
+      all.findIndex(item => item.label === action.label) === index
+    )
+    .slice(0, 3);
+}
+
+async function renderProjectWorkspace(
+  prefetchedDocuments = null,
+  prefetchedSections = null
+) {
+  const currentState = state();
+  const project = currentState.projects.find(item =>
+    item.id === currentState.activeProject
+  );
+  const libraries = engine.libraries();
+  const documents = prefetchedDocuments || await engine.documents();
+  const sections = prefetchedSections || await engine.sections();
+  const snapshot = projectKnowledgeSnapshot(
+    currentState,
+    libraries,
+    documents,
+    sections
+  );
+  const lastUpdated = projectKnowledgeUpdatedAt(
+    project,
+    libraries,
+    documents
+  );
+  const coverage = documents.length
+    ? Math.round((snapshot.indexed.length / documents.length) * 100)
+    : null;
+
+  $('#projectWorkspaceHeader').innerHTML = project
+    ? `
+      <div class="mc-project-header-copy">
+        <span>ACTIVE PROJECT</span>
+        <h2>${esc(project.name)}</h2>
+        <p>
+          ${project.description
+            ? esc(project.description)
+            : 'Project description unavailable.'}
+        </p>
+      </div>
+      <dl class="mc-project-header-facts">
+        <div>
+          <dt>Active library</dt>
+          <dd>
+            ${snapshot.activeLibrary
+              ? esc(snapshot.activeLibrary.name)
+              : 'Unavailable'}
+          </dd>
+        </div>
+        <div>
+          <dt>Documents</dt>
+          <dd>${fmt(documents.length)}</dd>
+        </div>
+        <div>
+          <dt>Indexed sections</dt>
+          <dd>${fmt(sections.length)}</dd>
+        </div>
+        <div>
+          <dt>Knowledge last updated</dt>
+          <dd>${lastUpdated ? esc(lastUpdated) : 'Unavailable'}</dd>
+        </div>
+        <div>
+          <dt>Readiness state</dt>
+          <dd>${esc(snapshot.readiness)}</dd>
+        </div>
+      </dl>
+    `
+    : `
+      <div class="mc-project-empty">
+        <h2>No active project</h2>
+        <p>Select or create a project to review knowledge readiness.</p>
+      </div>
+    `;
+
+  const healthCards = [
+    ['Total documents', documents.length, 'Loaded for the active project'],
+    ['Indexed documents', snapshot.indexed.length, 'Production status is indexed'],
+    ['Pending documents', snapshot.pending.length, 'Production status is pending'],
+    ['Unavailable documents', snapshot.unavailable.length, 'Unavailable or failed status'],
+    ['Indexed sections', sections.length, 'Available production sections'],
+    ['Enabled libraries', snapshot.enabledLibraries.length, `${libraries.length} total libraries`],
+    [
+      'Index coverage',
+      coverage === null ? '—' : `${coverage}%`,
+      documents.length
+        ? `${snapshot.indexed.length}/${documents.length} loaded documents`
+        : 'No loaded documents'
+    ]
+  ];
+
+  $('#projectHealth').innerHTML = healthCards.map(card => `
+    <article class="mc-project-health-card">
+      <span>${esc(card[0])}</span>
+      <strong>${esc(card[1])}</strong>
+      <small>${esc(card[2])}</small>
+    </article>
+  `).join('');
+
+  $('#projectLibraries').innerHTML = libraries.length
+    ? libraries.map(library => {
+        const libraryDocuments = documents.filter(document =>
+          document.libraryId === library.id
+        );
+        const indexed = libraryDocuments.filter(document =>
+          documentStatus(document).className === 'indexed'
+        ).length;
+        const pending = libraryDocuments.filter(document =>
+          documentStatus(document).className === 'pending'
+        ).length;
+        const unavailable = libraryDocuments.filter(document =>
+          documentStatus(document).className === 'unavailable'
+        ).length;
+
+        return `
+          <article class="mc-project-library">
+            <div class="mc-project-library-heading">
+              <div>
+                <h3>${esc(library.name)}</h3>
+                <span>${library.enabled ? 'Enabled' : 'Disabled'}</span>
+              </div>
+              <button
+                type="button"
+                data-project-library="${esc(library.id)}"
+              >
+                Open workspace
+              </button>
+            </div>
+            <dl>
+              <div><dt>Documents</dt><dd>${fmt(libraryDocuments.length)}</dd></div>
+              <div><dt>Indexed</dt><dd>${fmt(indexed)}</dd></div>
+              <div><dt>Pending</dt><dd>${fmt(pending)}</dd></div>
+              <div><dt>Unavailable</dt><dd>${fmt(unavailable)}</dd></div>
+            </dl>
+          </article>
+        `;
+      }).join('')
+    : `
+      <div class="mc-project-empty">
+        <strong>No libraries</strong>
+        <p>No knowledge libraries are available for this project.</p>
+      </div>
+    `;
+
+  $('#projectReadinessFilters').innerHTML = [
+    ['all', 'All'],
+    ['indexed', 'Indexed'],
+    ['pending', 'Pending'],
+    ['unavailable', 'Unavailable']
+  ].map(([filter, label], index) => `
+    <button
+      type="button"
+      data-project-filter="${filter}"
+      class="${index === 0 ? 'active' : ''}"
+      aria-pressed="${index === 0}"
+    >
+      ${label}
+    </button>
+  `).join('');
+
+  $('#projectReadinessTable').innerHTML = documents.length
+    ? `
+      <div class="mc-project-table-wrap">
+        <table class="mc-project-table">
+          <thead>
+            <tr>
+              <th scope="col">Document</th>
+              <th scope="col">Type</th>
+              <th scope="col">Library</th>
+              <th scope="col">Status</th>
+              <th scope="col">Sections</th>
+              <th scope="col">Modified</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${documents.map(document => {
+              const status = documentStatus(document);
+              const library = libraries.find(item =>
+                item.id === document.libraryId
+              );
+              const modifiedAt = documentModifiedAt(document);
+
+              return `
+                <tr data-project-readiness="${status.className}">
+                  <th scope="row">${esc(document.title || document.name)}</th>
+                  <td>${esc(documentType(document))}</td>
+                  <td>${library ? esc(library.name) : 'Unavailable'}</td>
+                  <td>
+                    <span class="mc-project-status ${status.className}">
+                      ${esc(status.label)}
+                    </span>
+                  </td>
+                  <td>${fmt(document.sectionCount)}</td>
+                  <td>${modifiedAt ? esc(modifiedAt) : 'Unavailable'}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+      <div id="projectReadinessEmpty" class="mc-project-empty" hidden>
+        No documents match this readiness filter.
+      </div>
+    `
+    : `
+      <div class="mc-project-empty">
+        <strong>No documents</strong>
+        <p>Add project documents to begin evaluating knowledge readiness.</p>
+      </div>
+    `;
+
+  const attentionItems = projectAttentionItems(
+    snapshot,
+    libraries,
+    documents
+  );
+
+  $('#projectAttention').innerHTML = attentionItems.length
+    ? `
+      <ul class="mc-project-attention-list">
+        ${attentionItems.map((item, index) => `
+          <li>
+            <p>${esc(item.text)}</p>
+            <button
+              type="button"
+              data-project-attention="${index}"
+            >
+              ${esc(item.action)}
+            </button>
+          </li>
+        `).join('')}
+      </ul>
+      <p class="mc-project-scope-note">
+        These items reflect application state, not a substantive review of
+        project content.
+      </p>
+    `
+    : `
+      <div class="mc-project-clear">
+        <strong>No immediate knowledge-readiness issues were detected.</strong>
+        <p>
+          This reflects system state, not a substantive review of project
+          content.
+        </p>
+      </div>
+    `;
+
+  const nextActions = projectNextActions(
+    snapshot,
+    libraries,
+    documents
+  );
+
+  $('#projectActions').innerHTML = nextActions.length
+    ? nextActions.map((action, index) => `
+      <button type="button" data-project-action="${index}">
+        <strong>${esc(action.label)}</strong>
+        <span>${esc(action.detail)}</span>
+      </button>
+    `).join('')
+    : `
+      <div class="mc-project-empty">
+        No interface guidance is available for the current state.
+      </div>
+    `;
+
+  $$('[data-project-library]').forEach(button => {
+    button.onclick = () => {
+      engine.setLibrary(button.dataset.projectLibrary);
+      selectedDoc = null;
+      show('knowledge');
+    };
+  });
+
+  $$('[data-project-filter]').forEach(button => {
+    button.onclick = () => {
+      const filter = button.dataset.projectFilter;
+      let visibleRows = 0;
+
+      $$('[data-project-filter]').forEach(item => {
+        const active = item === button;
+        item.classList.toggle('active', active);
+        item.setAttribute('aria-pressed', String(active));
+      });
+
+      $$('[data-project-readiness]').forEach(row => {
+        const visible =
+          filter === 'all' ||
+          row.dataset.projectReadiness === filter;
+
+        row.hidden = !visible;
+        visibleRows += visible ? 1 : 0;
+      });
+
+      if ($('#projectReadinessEmpty')) {
+        $('#projectReadinessEmpty').hidden = visibleRows > 0;
+      }
+    };
+  });
+
+  $$('[data-project-attention]').forEach(button => {
+    button.onclick = () => {
+      const item = attentionItems[Number(button.dataset.projectAttention)];
+
+      if (item.libraryId) {
+        engine.setLibrary(item.libraryId);
+        selectedDoc = null;
+      }
+
+      show(item.view);
+    };
+  });
+
+  $$('[data-project-action]').forEach(button => {
+    button.onclick = () => {
+      const action = nextActions[Number(button.dataset.projectAction)];
+      show(action.view);
+    };
+  });
+}
+
 function renderDocuments(documents, allSections = []) {
   $('#documents').innerHTML = documents.length
     ? documents.map(document => {
@@ -3062,6 +3692,7 @@ function renderDiagnosticLog() {
 
 function verifyStartup() {
   const result = verifyButtons([
+    '[data-view="project"]',
     '[data-view="chat"]',
     '[data-view="knowledge"]',
     '[data-view="sources"]',
