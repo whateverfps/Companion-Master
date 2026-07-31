@@ -24,6 +24,30 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
   "'": '&#39;'
 }[c]));
 const fmt = n => new Intl.NumberFormat().format(n || 0);
+const chiefAssets = {
+  idle: './src/assets/chief/chief-idle.png',
+  busy: './src/assets/chief/chief-concept.png',
+  success: './src/assets/chief/chief-smile.png',
+  error: './src/assets/chief/chief-idle.png'
+};
+const chiefStateCopy = {
+  idle: {
+    label: 'Ready',
+    detail: 'Standing by for your question.'
+  },
+  busy: {
+    label: 'Thinking',
+    detail: 'Reviewing project evidence…'
+  },
+  success: {
+    label: 'Complete',
+    detail: 'The latest analysis is ready.'
+  },
+  error: {
+    label: 'Attention',
+    detail: 'The latest analysis could not be completed.'
+  }
+};
 
 let view = 'chat';
 let selectedDoc = null;
@@ -106,9 +130,30 @@ app.innerHTML = `
           <div class="panel-head">
             <div>
               <span>PROJECT ANALYSIS</span>
-              <h2>Ask Mission Companion</h2>
+              <h2>Ask Chief</h2>
             </div>
-            <button id="clearChat" class="subtle">New conversation</button>
+            <div class="mc-chief-panel-actions">
+              <div
+                id="chiefStatus"
+                class="mc-chief-status"
+                data-chief-state="idle"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <img
+                  id="chiefStatusImage"
+                  src="./src/assets/chief/chief-idle.png"
+                  alt=""
+                  aria-hidden="true"
+                >
+                <span class="mc-chief-status-copy">
+                  <strong id="chiefStatusLabel">Chief · Ready</strong>
+                  <small id="chiefStatusDetail">Standing by for your question.</small>
+                </span>
+              </div>
+              <button id="clearChat" class="subtle">New conversation</button>
+            </div>
           </div>
 
           <div id="messages" class="messages"></div>
@@ -447,6 +492,17 @@ app.innerHTML = `
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
+function setChiefState(name = 'idle') {
+  const stateName = chiefStateCopy[name] ? name : 'idle';
+  const copy = chiefStateCopy[stateName];
+  const status = $('#chiefStatus');
+
+  status.dataset.chiefState = stateName;
+  $('#chiefStatusImage').src = chiefAssets[stateName];
+  $('#chiefStatusLabel').textContent = `Chief · ${copy.label}`;
+  $('#chiefStatusDetail').textContent = copy.detail;
+}
+
 const titles = {
   diagnostics: [
     'Diagnostics',
@@ -603,10 +659,20 @@ function renderMessages() {
   $('#messages').innerHTML = chat.length
     ? chat.map(message => `
         <article class="message ${message.role}">
-          <div class="avatar">${message.role === 'user' ? 'YOU' : 'MC'}</div>
+          ${message.role === 'user'
+            ? '<div class="avatar">YOU</div>'
+            : `
+              <div class="mc-chief-message-avatar">
+                <img
+                  src="${chiefAssets.idle}"
+                  alt=""
+                  aria-hidden="true"
+                >
+              </div>
+            `}
           <div>
             <div class="message-meta">
-              ${message.role === 'user' ? 'You' : 'Mission Companion'}
+              ${message.role === 'user' ? 'You' : 'Chief · Mission Companion'}
               ${message.mode ? ` · ${modeLabel(message.mode)}` : ''}
             </div>
             <div class="message-text">
@@ -616,14 +682,23 @@ function renderMessages() {
         </article>
       `).join('')
     : `
-      <div class="welcome">
-        <div class="seal">M</div>
+      <div class="welcome mc-chief-welcome">
+        <div class="mc-chief-welcome-portrait">
+          <img
+            src="${chiefAssets.idle}"
+            alt="Chief, the Mission Companion assistant"
+          >
+        </div>
+        <div class="mc-chief-welcome-copy">
+        <span>CHIEF · ENGINEERING ADVISOR</span>
         <h3>Build an evidence-backed SME</h3>
         <p>
-          Add project documents and ask a question. Offline Evidence mode
+          I’m ready to help. Add project documents and ask a question.
+          Offline Evidence mode
           retrieves and presents cited source language without requiring an
           API key. AI modes can provide additional synthesis when configured.
         </p>
+        </div>
       </div>
     `;
 
@@ -632,6 +707,7 @@ function renderMessages() {
 
 $('#clearChat').onclick = () => {
   engine.clearChat();
+  setChiefState('idle');
   refresh();
 };
 
@@ -643,6 +719,7 @@ async function ask() {
   }
 
   busy = true;
+  setChiefState('busy');
   $('#send').disabled = true;
   $('#send').textContent = 'Analyzing…';
 
@@ -662,7 +739,11 @@ async function ask() {
       message.citationVerification,
       message.retrievalMeta
     );
+
+    setChiefState('success');
   } catch (error) {
+    setChiefState('error');
+
     captureError(error, {
       module: 'Conversation',
       action: 'ask'
