@@ -226,6 +226,10 @@ globalThis.CustomEvent = class {
 };
 
 const { engine } = await import('../src/engine.js');
+const {
+  createDemonstrationProjectFixture,
+  DEMO_PROJECT_ID
+} = await import('../src/demo-project.js');
 
 test('successful imports atomically register one document and its sections', async () => {
   const stages = [];
@@ -411,4 +415,56 @@ test('failed replacement leaves the existing lineage current and unchanged', asy
   assert.equal(family[0].id, originalDocument.id);
   assert.equal(family[0].lineageStatus, 'current');
   assert.equal(family[0].supersededByDocumentId, undefined);
+});
+
+test('approved deterministic project import preserves fixture identifiers and metadata', async () => {
+  if (engine.state().projects.some(project => project.id === DEMO_PROJECT_ID)) await engine.deleteProject(DEMO_PROJECT_ID);
+  const fixture = createDemonstrationProjectFixture();
+  const imported = await engine.importProject(fixture, { preserveIdentifiers: true });
+  const current = engine.state();
+  const documents = await engine.documents();
+  const sections = await engine.sections();
+
+  assert.equal(imported.id, fixture.manifest.project.id);
+  assert.equal(current.activeProject, DEMO_PROJECT_ID);
+  assert.equal(current.projects.find(project => project.id === DEMO_PROJECT_ID).dataLabel, 'Fictional Sample Data');
+  assert.deepEqual(documents.map(item => item.id).sort(), fixture.documents.map(item => item.id).sort());
+  assert.deepEqual(sections.map(item => item.id).sort(), fixture.sections.map(item => item.id).sort());
+  assert.equal(documents.find(item => item.id === 'mc-demo-doc-drawing-a201-r2').lineageId, 'mc-demo-lineage-a201');
+  const answer = await engine.ask('How was RFI-002 Existing duct conflicts with new cable tray resolved?', 'offline');
+  assert.ok(answer.hits.length);
+  assert.ok(answer.hits.every(hit => Array.isArray(hit.path)));
+});
+
+test('deterministic import rejects collisions before duplicating fixture records', async () => {
+  const beforeDocuments = await engine.documents();
+  await assert.rejects(
+    engine.importProject(createDemonstrationProjectFixture(), { preserveIdentifiers: true }),
+    /identifier collision/
+  );
+  assert.equal((await engine.documents()).length, beforeDocuments.length);
+});
+
+test('reset deletes only the deterministic demonstration project and restores canonical records', async () => {
+  const unrelated = engine.addProject('Unaffected import test project');
+  const unrelatedId = unrelated.id;
+  await engine.deleteProject(DEMO_PROJECT_ID);
+  assert.ok(engine.state().projects.some(project => project.id === unrelatedId));
+  await engine.importProject(createDemonstrationProjectFixture(), { preserveIdentifiers: true });
+  assert.ok(engine.state().projects.some(project => project.id === DEMO_PROJECT_ID));
+  assert.ok(engine.state().projects.some(project => project.id === unrelatedId));
+});
+
+test('ordinary project imports retain identifier remapping and imported naming behavior', async () => {
+  const ordinary = {
+    manifest: { project: { id: 'ordinary-source-project', name: 'Ordinary Source', custom: 'not promoted' } },
+    libraries: [{ id: 'ordinary-source-library', projectId: 'ordinary-source-project', name: 'Source Library', enabled: true }],
+    documents: [{ id: 'ordinary-source-document', projectId: 'ordinary-source-project', libraryId: 'ordinary-source-library', name: 'Source.txt', status: 'verified', sectionCount: 1 }],
+    sections: [{ id: 'ordinary-source-section', projectId: 'ordinary-source-project', libraryId: 'ordinary-source-library', documentId: 'ordinary-source-document', text: 'Ordinary import content.', crossReferenceIds: [] }]
+  };
+  const imported = await engine.importProject(ordinary);
+  assert.notEqual(imported.id, ordinary.manifest.project.id);
+  assert.equal(imported.name, 'Ordinary Source (Imported)');
+  assert.notEqual((await engine.documents())[0].id, ordinary.documents[0].id);
+  assert.notEqual((await engine.sections())[0].id, ordinary.sections[0].id);
 });

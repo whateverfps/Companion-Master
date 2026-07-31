@@ -1323,7 +1323,7 @@ export const engine = {
     };
   },
 
-  async importProject(data) {
+  async importProject(data, options = {}) {
     if (
       !data?.manifest ||
       !Array.isArray(data.documents) ||
@@ -1334,9 +1334,35 @@ export const engine = {
       );
     }
 
-    const importedProject = this.addProject(
-      `${data.manifest.project?.name || 'Imported'} (Imported)`
-    );
+    const preserveIdentifiers = options.preserveIdentifiers === true;
+    const sourceProject = data.manifest.project || {};
+    let importedProject;
+
+    if (preserveIdentifiers) {
+      const requiredIds = [sourceProject.id, ...data.documents.map(item => item.id), ...data.sections.map(item => item.id)];
+      const sourceLibraries = Array.isArray(data.libraries) ? data.libraries : [];
+      requiredIds.push(...sourceLibraries.map(item => item.id));
+      if (requiredIds.some(id => !String(id || '').trim()) || new Set(requiredIds).size !== requiredIds.length) {
+        throw new Error('Deterministic project imports require unique project, library, document, and section identifiers.');
+      }
+      const existingDocuments = await all('documents');
+      const existingSections = await all('sections');
+      const existingIds = new Set([
+        ...state.projects.map(item => item.id),
+        ...state.libraries.map(item => item.id),
+        ...existingDocuments.map(item => item.id),
+        ...existingSections.map(item => item.id)
+      ]);
+      const collision = requiredIds.find(id => existingIds.has(id));
+      if (collision) throw new Error(`Project import identifier collision: ${collision}`);
+      importedProject = { ...sourceProject };
+      state.projects.push(importedProject);
+      state.activeProject = importedProject.id;
+    } else {
+      importedProject = this.addProject(
+        `${sourceProject.name || 'Imported'} (Imported)`
+      );
+    }
 
     const importedLibraries = Array.isArray(data.libraries)
       ? data.libraries
@@ -1351,8 +1377,9 @@ export const engine = {
       );
 
       for (const sourceLibrary of importedLibraries) {
-        const newLibraryId =
-          sourceLibrary === importedLibraries[0] &&
+        const newLibraryId = preserveIdentifiers
+          ? sourceLibrary.id
+          : sourceLibrary === importedLibraries[0] &&
           defaultLibrary
             ? defaultLibrary.id
             : createIdentifier();
@@ -1393,10 +1420,12 @@ export const engine = {
           library.projectId === importedProject.id
       )?.id || null;
 
+    if (preserveIdentifiers) state.activeLibrary = fallbackLibraryId;
+
     const documentIdMap = new Map();
 
     const importedDocuments = data.documents.map(document => {
-      const newId = createIdentifier();
+      const newId = preserveIdentifiers ? document.id : createIdentifier();
 
       documentIdMap.set(
         document.id,
@@ -1419,7 +1448,7 @@ export const engine = {
     );
 
     const sectionIdMap = new Map(
-      data.sections.map(section => [section.id, createIdentifier()])
+      data.sections.map(section => [section.id, preserveIdentifiers ? section.id : createIdentifier()])
     );
     const importedSections = data.sections.map(section => ({
       ...section,

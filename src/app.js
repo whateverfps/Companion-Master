@@ -69,6 +69,14 @@ import {
   createContextBusSnapshot
 } from './context-bus.js';
 import {
+  createDemonstrationProjectFixture,
+  DEMO_INITIAL_DOCUMENT_ID,
+  DEMO_INITIAL_SECTION_ID,
+  DEMO_PROJECT_ID,
+  DEMO_QUESTIONS,
+  validateDemonstrationProject
+} from './demo-project.js';
+import {
   firstText,
   sectionHeadingValue,
   sectionLocationValue,
@@ -138,6 +146,7 @@ let workflowTarget = null;
 let activeContextActivation = null;
 let contextClearedEvent = null;
 let contextBusSnapshot = createContextBusSnapshot();
+let demoGuideDismissed = false;
 
 app.innerHTML = `
 <a class="mc-skip-link" href="#workspaceMain">Skip to workspace</a>
@@ -173,6 +182,8 @@ app.innerHTML = `
       <label>ACTIVE PROJECT</label>
       <select id="projectSelect"></select>
       <button id="newProject" class="subtle">＋ New project</button>
+      <button id="loadDemoProject" class="mc-demo-load">Load Demonstration Project</button>
+      <button id="resetDemoProject" class="subtle mc-demo-reset" hidden>Reset Demonstration Project</button>
     </div>
 
     <div class="rail-foot">
@@ -880,6 +891,8 @@ app.innerHTML = `
   </main>
 </div>
 
+<aside id="demoGuide" class="mc-demo-guide" aria-labelledby="demoGuideTitle" hidden></aside>
+
 <div id="modal" class="modal" hidden>
   <div class="modal-card">
     <button id="closeModal" class="modal-x">×</button>
@@ -1555,18 +1568,44 @@ async function refresh() {
   renderMessages(documents, sections);
   renderProjectWorkspace(documents, sections);
   await renderKnowledgeWorkspace(documents);
+  renderDemonstrationControls();
 }
 
-$('#mode').onchange = () => {
-  engine.saveSettings({
-    mode: $('#mode').value
+function renderDemonstrationControls() {
+  const currentState = state();
+  const demoExists = currentState.projects.some(project => project.id === DEMO_PROJECT_ID);
+  const demoActive = currentState.activeProject === DEMO_PROJECT_ID;
+  $('#loadDemoProject').textContent = demoExists ? 'Open Demonstration Project' : 'Load Demonstration Project';
+  $('#resetDemoProject').hidden = !demoExists;
+  const guide = $('#demoGuide');
+  if (!demoActive || demoGuideDismissed) {
+    guide.hidden = true;
+    return;
+  }
+  guide.hidden = false;
+  guide.innerHTML = `
+    <button class="mc-demo-guide-close" data-demo-dismiss aria-label="Dismiss demonstration guide">×</button>
+    <span>FICTIONAL SAMPLE DATA</span>
+    <h2 id="demoGuideTitle">Explore the Demonstration Project</h2>
+    <p>Try an exact question or open a connected inspection surface.</p>
+    <div class="mc-demo-guide-actions">
+      ${DEMO_QUESTIONS.map((question, index) => `<button data-demo-question="${index}">${esc(question)}</button>`).join('')}
+      <button data-demo-view="versions">Compare drawing revisions</button>
+      <button data-demo-view="relationships">Inspect relationships</button>
+      <button data-demo-view="workflow">Open the synchronized workflow</button>
+    </div>`;
+  $('[data-demo-dismiss]').onclick = () => { demoGuideDismissed = true; renderDemonstrationControls(); };
+  $$('[data-demo-question]').forEach(button => button.onclick = () => {
+    show('chat');
+    $('#prompt').value = DEMO_QUESTIONS[Number(button.dataset.demoQuestion)];
+    resizeComposer();
+    $('#prompt').focus();
   });
+  $$('[data-demo-view]').forEach(button => button.onclick = () => show(button.dataset.demoView));
+}
 
-  refresh();
-};
-
-$('#projectSelect').onchange = async () => {
-  engine.setProject($('#projectSelect').value);
+async function selectProjectThroughProductionPath(projectId) {
+  engine.setProject(projectId);
   selectedDoc = null;
   selectedKnowledgeSection = 'all';
   knowledgeCatalogContext = null;
@@ -1578,8 +1617,60 @@ $('#projectSelect').onchange = async () => {
   revisionTarget = null;
   revisionFilter = 'all';
   selectedRevisionMatch = 0;
-  clearActiveContext(CONTEXT_ACTIVATION_SOURCES.projectSwitch, $('#projectSelect').value);
+  clearActiveContext(CONTEXT_ACTIVATION_SOURCES.projectSwitch, projectId);
   await refresh();
+}
+
+async function openDemonstrationProject({ reset = false } = {}) {
+  const existing = state().projects.some(project => project.id === DEMO_PROJECT_ID);
+  if (reset && existing) await engine.deleteProject(DEMO_PROJECT_ID);
+  if (!existing || reset) {
+    const fixture = createDemonstrationProjectFixture();
+    const validation = validateDemonstrationProject(fixture);
+    if (!validation.valid) throw new Error(validation.errors.join(' '));
+    await engine.importProject(fixture, { preserveIdentifiers: true });
+  }
+  await selectProjectThroughProductionPath(DEMO_PROJECT_ID);
+  selectedDoc = DEMO_INITIAL_DOCUMENT_ID;
+  demoGuideDismissed = false;
+  const demoDocument = (await engine.documents()).find(document => document.id === DEMO_INITIAL_DOCUMENT_ID);
+  await activateEngineeringContext({
+    projectId: DEMO_PROJECT_ID,
+    libraryId: demoDocument?.libraryId || '',
+    documentId: DEMO_INITIAL_DOCUMENT_ID,
+    sectionId: DEMO_INITIAL_SECTION_ID,
+    source: CONTEXT_ACTIVATION_SOURCES.knowledgeCatalog
+  });
+  await refresh();
+  show('engineering');
+  renderDemonstrationControls();
+}
+
+$('#mode').onchange = () => {
+  engine.saveSettings({
+    mode: $('#mode').value
+  });
+
+  refresh();
+};
+
+$('#projectSelect').onchange = async () => {
+  await selectProjectThroughProductionPath($('#projectSelect').value);
+};
+
+$('#loadDemoProject').onclick = () => {
+  const exists = state().projects.some(project => project.id === DEMO_PROJECT_ID);
+  if (exists) return void openDemonstrationProject().catch(error => alert(error.message));
+  openModal(`
+    <h2>Load Demonstration Project</h2>
+    <p class="mc-demo-disclosure"><strong>Fictional Sample Data</strong>This offline project contains original sample construction records for product exploration. It does not represent a real facility, contract, or project.</p>
+    <button id="confirmLoadDemo">Load Demonstration Project</button>
+  `, () => { $('#confirmLoadDemo').onclick = async () => { closeModal(); try { await openDemonstrationProject(); } catch (error) { alert(error.message); } }; });
+};
+
+$('#resetDemoProject').onclick = async () => {
+  if (!confirm('Reset the Demonstration Project? This deletes only the loaded fictional demonstration project and reloads its canonical sample data. Any changes made to that demo copy will be lost.')) return;
+  try { await openDemonstrationProject({ reset: true }); } catch (error) { alert(error.message); }
 };
 
 $('#newProject').onclick = () => openModal(
@@ -4669,6 +4760,7 @@ async function renderProjectWorkspace(
     ? `
       <div class="mc-project-header-copy">
         <span>ACTIVE PROJECT</span>
+        ${project.isDemonstration ? '<div class="mc-demo-project-label"><strong>Demonstration Project</strong><small>Fictional Sample Data</small></div>' : ''}
         <h2>${esc(project.name)}</h2>
         <p>
           ${project.description
