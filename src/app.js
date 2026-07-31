@@ -72,7 +72,7 @@ app.innerHTML = `
       <button data-view="chat" class="active">Command Desk</button>
       <button data-view="knowledge">Knowledge Workspace</button>
       <button data-view="sources">Source Inspector</button>
-      <button data-view="evaluate">SME Evaluations</button>
+      <button data-view="evaluate">Knowledge Validation</button>
       <button data-view="settings">Settings</button>
       <button data-view="diagnostics">Diagnostics</button>
     </nav>
@@ -416,32 +416,102 @@ app.innerHTML = `
     </section>
 
     <section id="evaluate" class="view">
-      <div class="split">
-        <section class="panel">
-          <div class="panel-head">
-            <div>
-              <span>ACCURACY BENCHMARK</span>
-              <h2>SME evaluation cases</h2>
-            </div>
-            <button id="addEval">＋ Add case</button>
-          </div>
-
-          <p class="intro">
-            Create known-answer questions. Each run scores required facts,
-            prohibited assumptions, source retrieval, and citation use.
+      <header class="mc-validation-header">
+        <div>
+          <span>KNOWLEDGE BASE READINESS</span>
+          <h2>Knowledge Validation</h2>
+          <p>
+            Deterministic checks of loaded knowledge, indexing state,
+            metadata, and coverage.
           </p>
+        </div>
+      </header>
 
-          <div id="evalList"></div>
+      <div id="validationHealth" class="mc-validation-health"></div>
+
+      <div class="mc-validation-grid">
+        <section
+          class="panel mc-validation-panel"
+          aria-labelledby="validationChecksTitle"
+        >
+          <div class="mc-validation-heading">
+            <div>
+              <span>DETERMINISTIC REVIEW</span>
+              <h2 id="validationChecksTitle">Validation Checks</h2>
+            </div>
+          </div>
+          <div id="validationChecks"></div>
         </section>
 
-        <aside class="panel">
-          <h3>Evaluation standard</h3>
-          <p><strong>Required facts</strong> are phrases the answer must contain.</p>
-          <p><strong>Expected source</strong> is a document or section the retrieval should find.</p>
-          <p><strong>Prohibited assumptions</strong> are statements that must not appear.</p>
-          <div id="evalResult"></div>
-        </aside>
+        <section
+          class="panel mc-validation-panel"
+          aria-labelledby="validationAttentionTitle"
+        >
+          <div class="mc-validation-heading">
+            <div>
+              <span>OBSERVED CONDITIONS</span>
+              <h2 id="validationAttentionTitle">Attention Items</h2>
+            </div>
+          </div>
+          <div id="validationAttention"></div>
+        </section>
+
+        <section
+          class="panel mc-validation-panel mc-validation-coverage-panel"
+          aria-labelledby="validationCoverageTitle"
+        >
+          <div class="mc-validation-heading">
+            <div>
+              <span>PRODUCTION COUNTS</span>
+              <h2 id="validationCoverageTitle">Coverage</h2>
+            </div>
+          </div>
+          <div id="validationCoverage" class="mc-validation-coverage"></div>
+        </section>
+
+        <section
+          class="panel mc-validation-panel"
+          aria-labelledby="validationActionsTitle"
+        >
+          <div class="mc-validation-heading">
+            <div>
+              <span>INTERFACE GUIDANCE</span>
+              <h2 id="validationActionsTitle">Recommended Actions</h2>
+            </div>
+          </div>
+          <div id="validationActions" class="mc-validation-actions"></div>
+        </section>
       </div>
+
+      <details class="panel mc-validation-advanced">
+        <summary>
+          <span>
+            <strong>Advanced AI Evaluation</strong>
+            <small>Used for controlled benchmark testing of Chief.</small>
+          </span>
+        </summary>
+
+        <div class="mc-validation-advanced-body">
+          <section>
+            <div class="mc-validation-heading">
+              <div>
+                <span>CONTROLLED BENCHMARKS</span>
+                <h2>Advanced AI Evaluation Cases</h2>
+              </div>
+              <button id="addEval">＋ Add case</button>
+            </div>
+            <div id="evalList"></div>
+          </section>
+
+          <aside>
+            <h3>Evaluation standard</h3>
+            <p><strong>Required facts</strong> are phrases the answer must contain.</p>
+            <p><strong>Expected source</strong> is a document or section the retrieval should find.</p>
+            <p><strong>Prohibited assumptions</strong> are statements that must not appear.</p>
+            <div id="evalResult"></div>
+          </aside>
+        </div>
+      </details>
     </section>
 
     <section id="settings" class="view">
@@ -597,7 +667,7 @@ app.innerHTML = `
             </li>
             <li>
               <strong>Build 7</strong>
-              <span>SME evaluation suite</span>
+              <span>Knowledge validation and advanced AI evaluation</span>
             </li>
             <li>
               <strong>Build 8–10</strong>
@@ -654,8 +724,8 @@ const titles = {
     'Review exactly what Mission Companion indexed.'
   ],
   evaluate: [
-    'SME Evaluations',
-    'Measure accuracy against known questions and required evidence.'
+    'Knowledge Validation',
+    'Validate knowledge-base readiness, metadata, indexing, and coverage.'
   ],
   settings: [
     'Settings',
@@ -3989,7 +4059,7 @@ async function renderSources() {
   drawSections();
 }
 
-function renderEvals() {
+function renderAdvancedEvaluations() {
   const evaluations = state().evaluations;
 
   $('#evalList').innerHTML = evaluations.length
@@ -4021,7 +4091,7 @@ function renderEvals() {
         button.dataset.delEval
       );
 
-      renderEvals();
+      renderAdvancedEvaluations();
     };
   });
 
@@ -4085,9 +4155,379 @@ function renderEvals() {
   });
 }
 
+async function renderEvals() {
+  const libraries = engine.libraries();
+  const documents = await engine.documents();
+  const sections = await engine.sections();
+  const catalog = knowledgeCatalogData(documents, sections, libraries);
+  const enabledLibraries = libraries.filter(library => library.enabled);
+  const indexed = documents.filter(document =>
+    documentStatus(document).className === 'indexed'
+  );
+  const pending = documents.filter(document =>
+    documentStatus(document).className === 'pending'
+  );
+  const unavailable = documents.filter(document =>
+    documentStatus(document).className === 'unavailable'
+  );
+  const unknown = documents.filter(document =>
+    documentStatus(document).className === 'unknown'
+  );
+  const uncategorized = documents.filter(document =>
+    documentCatalogSection(document) === 'Uncategorized'
+  );
+  const indexedWithoutSections = indexed.filter(document =>
+    Number(catalog.sectionCounts.get(document.id) || 0) <= 0
+  );
+  const missingMetadata = documents.filter(document => {
+    const library = libraries.find(item =>
+      item.id === document.libraryId
+    );
+
+    return !(
+      document.id &&
+      document.name &&
+      documentType(document) !== 'Type unavailable' &&
+      safeText(document.category || document.metadata?.category).trim() &&
+      library
+    );
+  });
+  const emptyEnabledLibraries = enabledLibraries.filter(library =>
+    !documents.some(document => document.libraryId === library.id)
+  );
+  const disabledLibrariesWithDocuments = libraries.filter(library =>
+    !library.enabled &&
+    documents.some(document => document.libraryId === library.id)
+  );
+
+  const healthCards = [
+    ['Libraries', libraries.length, `${enabledLibraries.length} enabled`],
+    ['Documents', documents.length, 'Loaded production documents'],
+    ['Indexed Documents', indexed.length, 'Recognized indexed status'],
+    ['Pending Documents', pending.length, 'Awaiting or processing'],
+    ['Indexed Sections', sections.length, 'Exposed production sections'],
+    ['Categories', catalog.entries.length, 'Represented knowledge categories'],
+    ['File Types', catalog.types.length, 'Represented file-type groups']
+  ];
+
+  $('#validationHealth').innerHTML = healthCards.map(([label, value, note]) => `
+    <article class="mc-validation-health-card">
+      <span>${esc(label)}</span>
+      <strong>${fmt(value)}</strong>
+      <small>${esc(note)}</small>
+    </article>
+  `).join('');
+
+  const checks = [
+    {
+      label: 'Documents loaded',
+      status: documents.length ? 'PASS' : 'INFO',
+      detail: documents.length
+        ? `${fmt(documents.length)} document${documents.length === 1 ? ' is' : 's are'} available.`
+        : 'No documents are currently loaded.'
+    },
+    {
+      label: 'Libraries enabled',
+      status: enabledLibraries.length
+        ? 'PASS'
+        : libraries.length ? 'WARNING' : 'INFO',
+      detail: enabledLibraries.length
+        ? `${fmt(enabledLibraries.length)} of ${fmt(libraries.length)} ${libraries.length === 1 ? 'library is' : 'libraries are'} enabled.`
+        : libraries.length
+          ? 'Libraries exist, but none are enabled.'
+          : 'No libraries are currently available.'
+    },
+    {
+      label: 'Indexed sections detected',
+      status: sections.length ? 'PASS' : documents.length ? 'WARNING' : 'INFO',
+      detail: sections.length
+        ? `${fmt(sections.length)} indexed section${sections.length === 1 ? ' is' : 's are'} exposed.`
+        : documents.length
+          ? 'Loaded documents expose no indexed sections.'
+          : 'Sections can be detected after documents are loaded and indexed.'
+    },
+    {
+      label: 'Categories assigned',
+      status: !documents.length
+        ? 'INFO'
+        : uncategorized.length ? 'WARNING' : 'PASS',
+      detail: !documents.length
+        ? 'Category coverage is unavailable without documents.'
+        : uncategorized.length
+          ? `${fmt(uncategorized.length)} document${uncategorized.length === 1 ? ' is' : 's are'} uncategorized.`
+          : `All ${fmt(documents.length)} loaded document${documents.length === 1 ? ' has' : 's have'} a category or deterministic type grouping.`
+    },
+    {
+      label: 'Pending indexing',
+      status: pending.length ? 'WARNING' : 'PASS',
+      detail: pending.length
+        ? `${fmt(pending.length)} document${pending.length === 1 ? ' is' : 's are'} pending indexing.`
+        : 'No documents have a pending indexing status.'
+    },
+    {
+      label: 'Metadata completeness',
+      status: missingMetadata.length ? 'WARNING' : documents.length ? 'PASS' : 'INFO',
+      detail: missingMetadata.length
+        ? `${fmt(missingMetadata.length)} document${missingMetadata.length === 1 ? ' is' : 's are'} missing identity, type, category, or library metadata.`
+        : documents.length
+          ? 'Required display metadata is available for all documents.'
+          : 'Metadata can be validated after documents are loaded.'
+    },
+    {
+      label: 'Unavailable documents',
+      status: unavailable.length ? 'WARNING' : 'PASS',
+      detail: unavailable.length
+        ? `${fmt(unavailable.length)} document${unavailable.length === 1 ? ' is' : 's are'} marked unavailable or failed by production state.`
+        : 'No documents are marked unavailable.'
+    },
+    {
+      label: 'Enabled library content',
+      status: emptyEnabledLibraries.length ? 'WARNING' : enabledLibraries.length ? 'PASS' : 'INFO',
+      detail: emptyEnabledLibraries.length
+        ? `${fmt(emptyEnabledLibraries.length)} enabled ${emptyEnabledLibraries.length === 1 ? 'library contains' : 'libraries contain'} no documents.`
+        : enabledLibraries.length
+          ? 'Every enabled library contains at least one document.'
+          : 'No enabled libraries are available to validate.'
+    },
+    {
+      label: 'Indexed document structure',
+      status: indexedWithoutSections.length ? 'WARNING' : indexed.length ? 'PASS' : 'INFO',
+      detail: indexedWithoutSections.length
+        ? `${fmt(indexedWithoutSections.length)} indexed document${indexedWithoutSections.length === 1 ? ' exposes' : 's expose'} zero sections.`
+        : indexed.length
+          ? 'Every indexed document exposes at least one section.'
+          : 'No indexed documents are available to validate.'
+    },
+    {
+      label: 'Recognized index status',
+      status: unknown.length ? 'WARNING' : documents.length ? 'PASS' : 'INFO',
+      detail: unknown.length
+        ? `${fmt(unknown.length)} document${unknown.length === 1 ? ' has' : 's have'} an unrecognized or unavailable status.`
+        : documents.length
+          ? 'All document statuses are recognized.'
+          : 'No document statuses are available.'
+    }
+  ];
+
+  const statusSymbol = {
+    PASS: '✓',
+    WARNING: '!',
+    INFO: 'i'
+  };
+
+  $('#validationChecks').innerHTML = `
+    <ul class="mc-validation-checks">
+      ${checks.map(check => `
+        <li>
+          <span
+            class="mc-validation-check-icon ${check.status.toLowerCase()}"
+            aria-hidden="true"
+          >${statusSymbol[check.status]}</span>
+          <div>
+            <strong>${esc(check.label)}</strong>
+            <p>${esc(check.detail)}</p>
+          </div>
+          <span class="mc-validation-badge ${check.status.toLowerCase()}">
+            ${check.status}
+          </span>
+        </li>
+      `).join('')}
+    </ul>
+  `;
+
+  const attention = [
+    ...(!libraries.length
+      ? ['No libraries are available in production state.']
+      : []),
+    ...(!documents.length
+      ? ['No content is loaded in the knowledge base.']
+      : []),
+    ...(documents.length && !sections.length
+      ? ['Loaded documents currently expose no indexed sections.']
+      : []),
+    ...(pending.length
+      ? [`${fmt(pending.length)} document${pending.length === 1 ? ' is' : 's are'} pending indexing.`]
+      : []),
+    ...(unavailable.length
+      ? [`${fmt(unavailable.length)} document${unavailable.length === 1 ? ' is' : 's are'} marked unavailable or failed by production state.`]
+      : []),
+    ...(missingMetadata.length
+      ? [`${fmt(missingMetadata.length)} document${missingMetadata.length === 1 ? ' is' : 's are'} missing identity, type, category, or library metadata.`]
+      : []),
+    ...(uncategorized.length
+      ? [`${fmt(uncategorized.length)} document${uncategorized.length === 1 ? ' is' : 's are'} assigned to Uncategorized.`]
+      : []),
+    ...(indexedWithoutSections.length
+      ? [`${fmt(indexedWithoutSections.length)} indexed document${indexedWithoutSections.length === 1 ? ' exposes' : 's expose'} zero available sections.`]
+      : []),
+    ...(unknown.length
+      ? [`${fmt(unknown.length)} document${unknown.length === 1 ? ' has' : 's have'} an unrecognized or unavailable indexing status.`]
+      : []),
+    ...emptyEnabledLibraries.map(library =>
+      `${library.name} is enabled but contains no documents.`
+    ),
+    ...disabledLibrariesWithDocuments.map(library => {
+      const count = documents.filter(document =>
+        document.libraryId === library.id
+      ).length;
+
+      return `${library.name} is disabled and contains ${fmt(count)} document${count === 1 ? '' : 's'}.`;
+    })
+  ];
+
+  $('#validationAttention').innerHTML = attention.length
+    ? `
+      <ul class="mc-validation-attention">
+        ${attention.map(item => `<li>${esc(item)}</li>`).join('')}
+      </ul>
+    `
+    : `
+      <div class="mc-validation-healthy">
+        <strong>Knowledge base ready</strong>
+        <p>No immediate knowledge-readiness issues were detected from system state.</p>
+      </div>
+    `;
+
+  const statusCoverage = [
+    ['Indexed', indexed.length],
+    ['Pending', pending.length],
+    ['Unavailable', unavailable.length],
+    ['Unknown', unknown.length]
+  ].filter(([, count]) => count || documents.length === 0);
+  const coverageGroups = [
+    {
+      title: 'Libraries',
+      empty: 'No libraries are available.',
+      items: libraries.map(library => {
+        const count = documents.filter(document =>
+          document.libraryId === library.id
+        ).length;
+
+        return [
+          library.name,
+          `${fmt(count)} document${count === 1 ? '' : 's'} · ${library.enabled ? 'Enabled' : 'Disabled'}`
+        ];
+      })
+    },
+    {
+      title: 'Knowledge Categories',
+      empty: 'No categories are represented.',
+      items: catalog.entries.map(entry => [
+        entry.name,
+        `${fmt(entry.documents.length)} document${entry.documents.length === 1 ? '' : 's'} · ${fmt(entry.exposedSections)} sections`
+      ])
+    },
+    {
+      title: 'File Types',
+      empty: 'No file types are represented.',
+      items: catalog.types.map(type => [
+        type.name,
+        `${fmt(type.documents.length)} · ${type.percentage}% of documents · ${fmt(type.indexed)} indexed`
+      ])
+    },
+    {
+      title: 'Indexed Status',
+      empty: 'No document statuses are available.',
+      items: statusCoverage.map(([label, count]) => [
+        label,
+        `${fmt(count)} document${count === 1 ? '' : 's'}`
+      ])
+    }
+  ];
+
+  $('#validationCoverage').innerHTML = coverageGroups.map(group => `
+    <section class="mc-validation-coverage-group">
+      <h3>${esc(group.title)}</h3>
+      ${group.items.length
+        ? `
+          <ul>
+            ${group.items.map(([label, value]) => `
+              <li>
+                <strong>${esc(label)}</strong>
+                <span>${esc(value)}</span>
+              </li>
+            `).join('')}
+          </ul>
+        `
+        : `<p>${esc(group.empty)}</p>`
+      }
+    </section>
+  `).join('');
+
+  const actions = [];
+  const addAction = (label, description, targetView) => {
+    if (!actions.some(action => action.label === label)) {
+      actions.push({ description, label, targetView });
+    }
+  };
+
+  if (!documents.length) {
+    addAction(
+      'Import Documents',
+      'Open the existing Knowledge Workspace document workflow.',
+      'knowledge'
+    );
+  } else {
+    addAction(
+      'Open Knowledge Workspace',
+      'Browse the catalog, documents, and knowledge objects.',
+      'knowledge'
+    );
+  }
+
+  if (unavailable.length || indexedWithoutSections.length || !sections.length) {
+    addAction(
+      'Inspect Source Extraction',
+      'Review the production sections exposed for loaded documents.',
+      'sources'
+    );
+  }
+
+  if (
+    pending.length ||
+    unavailable.length ||
+    unknown.length ||
+    missingMetadata.length ||
+    emptyEnabledLibraries.length ||
+    disabledLibrariesWithDocuments.length
+  ) {
+    addAction(
+      'Review Diagnostics',
+      'Inspect existing application and indexing diagnostics.',
+      'diagnostics'
+    );
+  }
+
+  if (indexed.length && sections.length) {
+    addAction(
+      'Ask Chief a Question',
+      'Return to the Command Desk and ask an evidence-based question.',
+      'chat'
+    );
+  }
+
+  $('#validationActions').innerHTML = actions.length
+    ? actions.slice(0, 4).map(action => `
+      <button
+        type="button"
+        data-validation-action="${esc(action.targetView)}"
+      >
+        <strong>${esc(action.label)}</strong>
+        <span>${esc(action.description)}</span>
+      </button>
+    `).join('')
+    : '<div class="mc-validation-empty">No action is required from the current system state.</div>';
+
+  $$('[data-validation-action]').forEach(button => {
+    button.onclick = () => show(button.dataset.validationAction);
+  });
+
+  renderAdvancedEvaluations();
+}
+
 $('#addEval').onclick = () => openModal(
   `
-    <h2>Add SME evaluation</h2>
+    <h2>Add advanced AI evaluation</h2>
 
     <label>
       Question
@@ -4127,7 +4567,7 @@ $('#addEval').onclick = () => openModal(
       });
 
       closeModal();
-      renderEvals();
+      renderAdvancedEvaluations();
     };
   }
 );
