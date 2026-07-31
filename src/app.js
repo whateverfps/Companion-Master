@@ -1,6 +1,11 @@
 import { engine } from './engine.js';
 import { logger, setLifecycle, registerModule, captureError, verifyButtons, runHealthChecks, diagnosticSnapshot, installGlobalHandlers } from './diagnostics.js';
 import {
+  completeImportQueueItem,
+  createImportQueueItem,
+  failImportQueueItem
+} from './import-queue.js';
+import {
   firstText,
   sectionHeadingValue,
   sectionLocationValue,
@@ -1467,6 +1472,60 @@ function renderEvidence(
 
 $('#upload').onclick = () => $('#fileInput').click();
 
+const importStageCopy = {
+  queued: 'Queued',
+  extracting: 'Extracting',
+  detecting: 'Detecting sections',
+  indexing: 'Indexing',
+  verifying: 'Verifying',
+  ready: 'Ready',
+  failed: 'Failed',
+  skipped: 'Duplicate detected'
+};
+
+function importFailureMessage(stage) {
+  return {
+    extracting: 'Mission Companion could not read or extract this document.',
+    detecting: 'Mission Companion could not detect document sections.',
+    indexing: 'Mission Companion could not save the document and its sections.',
+    verifying: 'Mission Companion could not verify the imported document.',
+    queued: 'Mission Companion could not start the document import.'
+  }[stage] || 'Mission Companion could not complete this document import.';
+}
+
+function updateQueueProgress(progress) {
+  const stage = importStageCopy[progress.stage]
+    ? progress.stage
+    : 'extracting';
+
+  importQueue = importQueue.map((queueItem, index) =>
+    index === progress.current - 1
+      ? {
+          ...queueItem,
+          status: 'processing',
+          stage,
+          detail: importStageCopy[stage],
+          technicalDetail: ''
+        }
+      : queueItem
+  );
+
+  renderImportQueue();
+
+  $('#ingestStatus').innerHTML = `
+    <div class="progress">
+      ${esc(importStageCopy[stage])}: ${esc(progress.name)}
+      (${progress.current}/${progress.total})
+    </div>
+  `;
+}
+
+async function refreshAfterImport() {
+  await refresh();
+  await renderSources();
+  await renderEvals();
+}
+
 $('#fileInput').onchange = async () => {
   const files = [...$('#fileInput').files];
 
@@ -1476,15 +1535,9 @@ $('#fileInput').onchange = async () => {
 
   const libraryId = state().activeLibrary;
 
-  importQueue = files.map((file, index) => ({
-    id: `q-${Date.now()}-${index}`,
-    file,
-    name: file.name,
-    size: file.size,
-    libraryId,
-    status: 'waiting',
-    detail: 'Waiting to process'
-  }));
+  importQueue = files.map(file =>
+    createImportQueueItem(file, libraryId)
+  );
 
   renderImportQueue();
 
@@ -1493,36 +1546,7 @@ $('#fileInput').onchange = async () => {
   try {
     const result = await engine.ingest(
       files,
-      progress => {
-        importQueue = importQueue.map((queueItem, index) => {
-          if (index < progress.current - 1) {
-            return {
-              ...queueItem,
-              status: 'complete',
-              detail: 'Indexed'
-            };
-          }
-
-          if (index === progress.current - 1) {
-            return {
-              ...queueItem,
-              status: 'processing',
-              detail: 'Extracting and indexing'
-            };
-          }
-
-          return queueItem;
-        });
-
-        renderImportQueue();
-
-        $('#ingestStatus').innerHTML = `
-          <div class="progress">
-            Processing ${esc(progress.name)}
-            (${progress.current}/${progress.total})…
-          </div>
-        `;
-      },
+      updateQueueProgress,
       libraryId
     );
 
@@ -1539,27 +1563,28 @@ $('#fileInput').onchange = async () => {
       );
 
       if (failed) {
-        return {
-          ...queueItem,
-          status: 'error',
-          detail: failed.error
-        };
+        return failImportQueueItem(
+          queueItem,
+          importFailureMessage(queueItem.stage),
+          [
+            failed.error || failed.healthDetail || 'Document extraction failed.',
+            failed.errorStack || ''
+          ].filter(Boolean).join('\n\n')
+        );
       }
 
       if (skipped) {
         return {
           ...queueItem,
           status: 'skipped',
+          stage: 'skipped',
           detail: duplicateDetail(skipped),
-          duplicate: skipped.duplicate
+          duplicate: skipped.duplicate,
+          technicalDetail: ''
         };
       }
 
-      return {
-        ...queueItem,
-        status: 'complete',
-        detail: 'Indexed and verified'
-      };
+      return completeImportQueueItem(queueItem);
     });
 
     renderImportQueue();
@@ -1578,21 +1603,29 @@ $('#fileInput').onchange = async () => {
     importQueue = importQueue.map(queueItem =>
       queueItem.status === 'complete'
         ? queueItem
-        : {
-            ...queueItem,
-            status: 'error',
-            detail: error.message
-          }
+        : failImportQueueItem(
+            queueItem,
+            importFailureMessage(queueItem.stage),
+            error.message
+          )
     );
+
+    logger.error('Document import failed', {
+      files: files.map(file => file.name),
+      message: error.message,
+      stack: error.stack || ''
+    });
 
     renderImportQueue();
 
     $('#ingestStatus').innerHTML = `
-      <div class="error">${esc(error.message)}</div>
+      <div class="error">
+        Import failed. Review the queue item for available actions.
+      </div>
     `;
   } finally {
     $('#fileInput').value = '';
-    await refresh();
+    await refreshAfterImport();
   }
 };
 
@@ -1648,7 +1681,22 @@ function duplicateDetail(skipped) {
 async function retryImport(queueId, duplicateAction) {
   const queueItem = importQueue.find(item => item.id === queueId);
 
-  if (!queueItem?.file) {
+  if (!queueItem || queueItem.status === 'processing') {
+    return;
+  }
+
+  if (!queueItem.file) {
+    importQueue = importQueue.map(item => item.id === queueId
+      ? {
+          ...item,
+          status: 'error',
+          stage: 'failed',
+          detail: 'Select this document again to retry the import.',
+          technicalDetail: 'The browser no longer provides access to the original File object.'
+        }
+      : item
+    );
+    renderImportQueue();
     return;
   }
 
@@ -1656,9 +1704,11 @@ async function retryImport(queueId, duplicateAction) {
     ? {
         ...item,
         status: 'processing',
+        stage: 'extracting',
         detail: duplicateAction === 'replace'
           ? 'Replacing existing document'
-          : 'Re-importing document'
+          : 'Extracting',
+        technicalDetail: ''
       }
     : item
   );
@@ -1671,7 +1721,11 @@ async function retryImport(queueId, duplicateAction) {
         importQueue = importQueue.map(item => item.id === queueId
           ? {
               ...item,
-              detail: `Extracting and indexing (${progress.current}/${progress.total})`
+              status: 'processing',
+              stage: progress.stage || 'extracting',
+              detail:
+                importStageCopy[progress.stage] ||
+                'Extracting'
             }
           : item
         );
@@ -1692,12 +1746,10 @@ async function retryImport(queueId, duplicateAction) {
     }
 
     importQueue = importQueue.map(item => item.id === queueId
-      ? {
-          ...item,
-          status: 'complete',
-          detail: `Indexed and verified (${document.sectionCount} sections)`,
-          duplicate: null
-        }
+      ? completeImportQueueItem(
+          item,
+          `Indexed and verified (${document.sectionCount} sections)`
+        )
       : item
     );
     $('#ingestStatus').innerHTML = `
@@ -1706,20 +1758,31 @@ async function retryImport(queueId, duplicateAction) {
       </div>
     `;
   } catch (error) {
+    const failedQueueItem = importQueue.find(item => item.id === queueId);
+
     importQueue = importQueue.map(item => item.id === queueId
-      ? {
-          ...item,
-          status: 'error',
-          detail: error.message
-        }
+      ? failImportQueueItem(
+          item,
+          importFailureMessage(failedQueueItem?.stage),
+          error.message
+        )
       : item
     );
+
+    logger.error('Document import retry failed', {
+      file: queueItem.name,
+      message: error.message,
+      stack: error.stack || ''
+    });
+
     $('#ingestStatus').innerHTML = `
-      <div class="error">${esc(error.message)}</div>
+      <div class="error">
+        Import failed. Review the queue item for available actions.
+      </div>
     `;
   } finally {
     renderImportQueue();
-    await refresh();
+    await refreshAfterImport();
   }
 }
 
@@ -1741,7 +1804,18 @@ function renderImportQueue() {
 
           <div>
             <strong>${esc(queueItem.name)}</strong>
+            <span class="mc-import-stage">
+              ${esc(importStageCopy[queueItem.stage] || queueItem.detail)}
+            </span>
             <small>${esc(queueItem.detail)}</small>
+            ${queueItem.status === 'error' && queueItem.technicalDetail
+              ? `
+                <details class="mc-import-technical">
+                  <summary>View technical details</summary>
+                  <pre>${esc(queueItem.technicalDetail)}</pre>
+                </details>
+              `
+              : ''}
             ${queueItem.status === 'skipped'
               ? `
                 <div class="queue-actions">
@@ -1757,7 +1831,13 @@ function renderImportQueue() {
                     <button class="subtle" data-queue-id="${esc(queueItem.id)}" data-import-action="dismiss">Dismiss</button>
                   </div>
                 `
-                : ''}
+                : queueItem.status === 'complete'
+                  ? `
+                    <div class="queue-actions">
+                      <button class="subtle" data-queue-id="${esc(queueItem.id)}" data-import-action="dismiss">Dismiss</button>
+                    </div>
+                  `
+                  : ''}
           </div>
         </article>
       `).join('')

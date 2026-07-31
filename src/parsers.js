@@ -1,4 +1,5 @@
 import { normalizeSectionNumber } from './data-model.js';
+import { createIdentifier } from './identifiers.js';
 
 const HIERARCHY_VERSION = 1;
 const TRADE_RULES = [
@@ -21,10 +22,6 @@ const BUILDING_SYSTEM_RULES = [
   ['controls', /control system|automation|\bbas\b/]
 ];
 const KEYWORD_STOP = /^(that|this|with|from|shall|will|section|page|have|into|their)$/;
-
-function uid() {
-  return crypto.randomUUID();
-}
 
 function clean(value) {
   return String(value ?? '')
@@ -313,12 +310,24 @@ export async function parseFiles(files, projectId, onProgress = () => {}, librar
   const sections = [];
   let index = 0;
   for (const file of files) {
-    onProgress({ current: ++index, total: files.length, name: file.name });
+    index += 1;
+    onProgress({
+      current: index,
+      total: files.length,
+      name: file.name,
+      stage: 'extracting'
+    });
     try {
       const text = clean(await parseFile(file));
-      const documentId = uid();
+      onProgress({
+        current: index,
+        total: files.length,
+        name: file.name,
+        stage: 'detecting'
+      });
+      const documentId = createIdentifier();
       const parts = buildSpecificationHierarchy(text, file.name);
-      const ids = new Map(parts.map(part => [part.key, uid()]));
+      const ids = new Map(parts.map(part => [part.key, createIdentifier()]));
       const sectionIds = new Map(parts
         .filter(part => part.hierarchyType === 'spec-section' && part.sectionNumber)
         .map(part => [part.sectionNumber.replace(/\D/g, ''), ids.get(part.key)]));
@@ -360,13 +369,14 @@ export async function parseFiles(files, projectId, onProgress = () => {}, librar
       });
     } catch (error) {
       documents.push({
-        id: uid(), projectId, libraryId, name: file.name,
+        id: createIdentifier(), projectId, libraryId, name: file.name,
         title: file.name.replace(/\.[^.]+$/, ''), type: file.type,
         extension: (file.name.split('.').pop() || '').toLowerCase(), size: file.size,
         lastModified: file.lastModified || null, category: categoryFor(file.name), tags: [],
         sectionCount: 0, characterCount: 0, hierarchyVersion: HIERARCHY_VERSION,
         indexedAt: new Date().toISOString(), status: 'error', health: 'error',
-        healthDetail: error.message, error: error.message
+        healthDetail: error.message, error: error.message,
+        errorStack: error.stack || ''
       });
     }
   }

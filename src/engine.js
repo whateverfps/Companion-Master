@@ -1,5 +1,6 @@
 import { parseFiles } from './parsers.js';
 import { arrayValue } from './data-model.js';
+import { createIdentifier } from './identifiers.js';
 import {
   retrieve,
   invalidateRetrievalCaches,
@@ -104,7 +105,7 @@ function loadState() {
 
       if (!hasLibrary) {
         loaded.libraries.push({
-          id: uid(),
+          id: createIdentifier(),
           projectId: project.id,
           name: `${project.name} Library`,
           description: 'Project knowledge library',
@@ -139,10 +140,6 @@ function loadState() {
 
 function save() {
   localStorage.setItem(STATE_KEY, JSON.stringify(state));
-}
-
-function uid() {
-  return crypto.randomUUID();
 }
 
 async function contentHash(file) {
@@ -314,6 +311,63 @@ async function putMany(store, items) {
   });
 }
 
+async function commitKnowledgeImport(
+  documents,
+  sections,
+  replacementIds = []
+) {
+  if (!documents.length && !sections.length && !replacementIds.length) {
+    return;
+  }
+
+  const db = await openDB();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(
+      ['documents', 'sections'],
+      'readwrite'
+    );
+    const documentStore = transaction.objectStore('documents');
+    const sectionStore = transaction.objectStore('sections');
+    const documentSectionIndex = sectionStore.index('documentId');
+
+    for (const replacementId of new Set(replacementIds.filter(Boolean))) {
+      const sectionKeys = documentSectionIndex.getAllKeys(replacementId);
+
+      sectionKeys.onsuccess = () => {
+        for (const key of sectionKeys.result || []) {
+          sectionStore.delete(key);
+        }
+      };
+
+      documentStore.delete(replacementId);
+    }
+
+    for (const document of documents) {
+      documentStore.put(document);
+    }
+
+    for (const section of sections) {
+      sectionStore.put(section);
+    }
+
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error);
+    };
+
+    transaction.onabort = () => {
+      db.close();
+      reject(transaction.error || new Error('Database transaction aborted.'));
+    };
+  });
+}
+
 async function delByIndex(store, index, key) {
   const rows = await all(store, index, key);
 
@@ -466,12 +520,12 @@ export const engine = {
     }
 
     const project = {
-      id: uid(),
+      id: createIdentifier(),
       name: cleanedName
     };
 
     const library = {
-      id: uid(),
+      id: createIdentifier(),
       projectId: project.id,
       name: `${project.name} Library`,
       description: 'Project knowledge library',
@@ -562,7 +616,7 @@ export const engine = {
     }
 
     const library = {
-      id: uid(),
+      id: createIdentifier(),
       projectId: state.activeProject,
       name: cleanedName,
       description: String(description || '').trim(),
@@ -690,6 +744,9 @@ export const engine = {
       throw new Error('The selected knowledge library is not available in this project.');
     }
 
+    const reportProgress = typeof onProgress === 'function'
+      ? onProgress
+      : () => {};
     const incoming = [...files];
     const action = ['skip', 'reimport', 'replace'].includes(options.duplicateAction)
       ? options.duplicateAction
@@ -775,7 +832,7 @@ export const engine = {
       const parsedResult = await parseFiles(
         accepted,
         state.activeProject,
-        onProgress,
+        reportProgress,
         libraryId
       );
 
@@ -786,34 +843,90 @@ export const engine = {
           contentHash: acceptedDescriptors[index]?.contentHash || null
         }))
       };
+      const successfulDocuments = parsed.documents.filter(document =>
+        document.status === 'verified'
+      );
+      const failedDocuments = parsed.documents.filter(document =>
+        document.status !== 'verified'
+      );
 
-      await putMany('documents', parsed.documents);
-      await putMany('sections', parsed.sections);
-      invalidateKnowledgeCache();
+      for (const document of failedDocuments) {
+        logger.error('Document extraction failed', {
+          document: document.name,
+          libraryId,
+          message:
+            document.error ||
+            document.healthDetail ||
+            'Document extraction failed.',
+          stack: document.errorStack || ''
+        });
+      }
 
-      if (action === 'replace') {
-        for (let index = 0; index < parsed.documents.length; index += 1) {
-          const document = parsed.documents[index];
-          const descriptor = acceptedDescriptors[index];
-          const replacementId = options.duplicateDocumentId || descriptor?.duplicate?.id;
+      const successfulIds = new Set(
+        successfulDocuments.map(document => document.id)
+      );
+      const registeredSections = parsed.sections.filter(section =>
+        successfulIds.has(section.documentId)
+      );
 
-          if (
-            replacementId &&
-            document.status === 'verified' &&
-            document.sectionCount > 0
-          ) {
-            const replacement = existing.find(item => item.id === replacementId);
+      for (const document of successfulDocuments) {
+        const detectedSections = registeredSections.filter(section =>
+          section.documentId === document.id
+        ).length;
 
-            if (replacement) {
-              await this.removeDocument(replacement.id);
-            }
-          }
+        if (
+          detectedSections <= 0 ||
+          detectedSections !== Number(document.sectionCount)
+        ) {
+          throw new Error(
+            `Document verification failed for ${document.name}: expected ${document.sectionCount} section(s), found ${detectedSections}.`
+          );
         }
       }
 
+      successfulDocuments.forEach((document, index) => {
+        reportProgress({
+          current: index + 1,
+          total: successfulDocuments.length,
+          name: document.name,
+          stage: 'indexing'
+        });
+      });
+
+      const replacementIds = action === 'replace'
+        ? successfulDocuments.map(document => {
+            const parsedIndex = parsed.documents.indexOf(document);
+            const descriptor = acceptedDescriptors[parsedIndex];
+            const replacementId =
+              options.duplicateDocumentId ||
+              descriptor?.duplicate?.id;
+
+            return existing.some(item => item.id === replacementId)
+              ? replacementId
+              : null;
+          }).filter(Boolean)
+        : [];
+
+      await commitKnowledgeImport(
+        successfulDocuments,
+        registeredSections,
+        replacementIds
+      );
+      invalidateKnowledgeCache();
+
+      successfulDocuments.forEach((document, index) => {
+        reportProgress({
+          current: index + 1,
+          total: successfulDocuments.length,
+          name: document.name,
+          stage: 'verifying'
+        });
+      });
+
       logger.info('Document ingestion completed', {
-        documents: parsed.documents.length,
-        sections: parsed.sections.length,
+        documents: successfulDocuments.length,
+        failedDocuments: failedDocuments.length,
+        sections: registeredSections.length,
         skipped: skipped.length,
         abandonedRemoved: abandoned.length,
         duplicateAction: action
@@ -821,6 +934,7 @@ export const engine = {
 
       return {
         ...parsed,
+        sections: registeredSections,
         skipped,
         abandonedRemoved: abandoned.map(document => document.id)
       };
@@ -1079,7 +1193,7 @@ export const engine = {
     );
 
     const message = {
-      id: uid(),
+      id: createIdentifier(),
       role: 'assistant',
       content: answer.content,
       citations: answer.citations,
@@ -1091,7 +1205,7 @@ export const engine = {
     };
 
     state.chat.push({
-      id: uid(),
+      id: createIdentifier(),
       role: 'user',
       content: cleanedPrompt,
       createdAt: new Date().toISOString()
@@ -1118,7 +1232,7 @@ export const engine = {
 
   addEvaluation(evaluation) {
     state.evaluations.push({
-      id: uid(),
+      id: createIdentifier(),
       ...evaluation
     });
 
@@ -1205,7 +1319,7 @@ export const engine = {
           sourceLibrary === importedLibraries[0] &&
           defaultLibrary
             ? defaultLibrary.id
-            : uid();
+            : createIdentifier();
 
         libraryIdMap.set(
           sourceLibrary.id,
@@ -1246,7 +1360,7 @@ export const engine = {
     const documentIdMap = new Map();
 
     const importedDocuments = data.documents.map(document => {
-      const newId = uid();
+      const newId = createIdentifier();
 
       documentIdMap.set(
         document.id,
@@ -1269,7 +1383,7 @@ export const engine = {
     );
 
     const sectionIdMap = new Map(
-      data.sections.map(section => [section.id, uid()])
+      data.sections.map(section => [section.id, createIdentifier()])
     );
     const importedSections = data.sections.map(section => ({
       ...section,
@@ -1301,7 +1415,7 @@ export const engine = {
       ...(Array.isArray(data.evaluations)
         ? data.evaluations.map(evaluation => ({
             ...evaluation,
-            id: uid()
+            id: createIdentifier()
           }))
         : [])
     );

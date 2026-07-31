@@ -1,3 +1,5 @@
+import { createIdentifier } from './identifiers.js';
+
 const LOG_KEY='mc-master-diagnostics-v1';
 const MAX_LOGS=500;
 const modules=new Map();
@@ -8,7 +10,7 @@ function safeParse(value,fallback){try{return JSON.parse(value)}catch{return fal
 let logs=safeParse(localStorage.getItem(LOG_KEY)||'[]',[]);
 function persist(){try{localStorage.setItem(LOG_KEY,JSON.stringify(logs.slice(-MAX_LOGS)))}catch{}}
 function write(level,message,details={}){
-  const entry={id:crypto.randomUUID?.()||String(Date.now()+Math.random()),time:new Date().toISOString(),level,message,details};
+  const entry={id:createIdentifier(),time:new Date().toISOString(),level,message,details};
   logs.push(entry);logs=logs.slice(-MAX_LOGS);persist();
   const fn=level==='error'?'error':level==='warning'?'warn':'log';
   console[fn](`[Mission Companion] ${message}`,details);
