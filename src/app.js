@@ -98,6 +98,11 @@ import {
   sectionTextValue,
   textValue
 } from './data-model.js';
+import { openPdfBlob, renderPdfPage } from './pdf-source.js';
+import { applyObservationVerification, DRAWING_ANALYSIS_VERSION, upgradeDrawingAnalysis } from './drawing-intelligence.js';
+import { createDrawingTarget, drawingMatchingSetTarget, resolveDrawingTarget } from './drawing-navigation.js';
+import { buildPlanQuery, planQuerySectionScope, searchDrawingSheets } from './plan-query.js';
+import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -167,6 +172,21 @@ let contextBusSnapshot = createContextBusSnapshot();
 let demoGuideDismissed = false;
 let selectedInspectionId = null;
 let modalCloseGuard = null;
+let drawingTarget = null;
+let drawingFilter = '';
+let drawingDiscipline = 'all';
+let drawingZoom = 1;
+let drawingRotation = 0;
+let activeDrawingRender = null;
+let activeDrawingPdf = null;
+let activeDrawingDocumentId = '';
+let activeDrawingSourceRecord = null;
+let activePlanQuery = null;
+let activeWorkPackage = null;
+let drawingMatchingSheetIds = [];
+let selectedWorkPackageItem = '';
+let pendingDrawingContext = null;
+let drawingSearchRevision = 0;
 
 app.innerHTML = `
 <a id="skipLink" class="mc-skip-link" href="#missionControlMain">Skip to workspace</a>
@@ -183,6 +203,7 @@ app.innerHTML = `
     <button data-control-projects>My Projects</button>
     <button data-control-view="inspections">Inspections</button>
     <button data-control-view="library">Project Library</button>
+    <button data-control-view="plans">Open Plans</button>
     <button data-control-view="chat">Ask Companion</button>
     <button data-control-destination="settings">Settings</button>
   </nav>
@@ -210,6 +231,7 @@ app.innerHTML = `
       <button data-view="inspections">Inspection Records</button>
       <span class="mc-nav-group-label">Inspect</span>
       <button data-view="sources">Source Inspector</button>
+      <button data-view="drawings">Drawing Set Inspector</button>
       <button data-view="evidence">Evidence Explorer</button>
       <button data-view="relationships">Relationship Explorer</button>
       <button data-view="versions">Version Explorer</button>
@@ -558,6 +580,10 @@ app.innerHTML = `
           </div>
         </section>
       </div>
+    </section>
+
+    <section id="drawings" class="view">
+      <div id="drawingInspector" class="mc-drawing-workspace"></div>
     </section>
 
     <section id="evidence" class="view">
@@ -1006,6 +1032,10 @@ const titles = {
     'Source Inspector',
     'Review exactly what Mission Companion indexed.'
   ],
+  drawings: [
+    'Drawing Set Inspector',
+    'Review authoritative PDF sheets, deterministic observations, and analysis warnings.'
+  ],
   evidence: [
     'Evidence Explorer',
     'Inspect the retrieval results and citations behind the latest answer.'
@@ -1045,6 +1075,7 @@ const titles = {
 };
 
 function show(name) {
+  if (name !== 'drawings') releaseDrawingSource();
   view = name;
   if (experience === 'professional-workspace') lastProfessionalView = name;
 
@@ -1082,6 +1113,7 @@ function show(name) {
     );
     renderSources();
   }
+  if (name === 'drawings') void renderDrawingWorkspace('professional');
 
   if (name === 'evidence') {
     renderEvidenceExplorer();
@@ -1210,25 +1242,42 @@ function missionControlProject() {
   return current.projects.find(project => project.id === current.activeProject) || null;
 }
 
-function missionControlMessageActions(message) {
+function missionControlMessageActions(message, drawingSourceIds = new Set()) {
   if (message.role !== 'assistant' || !Array.isArray(message.hits) || !message.hits.length) return '';
   const exact = message.hits.filter(hit => hit?.documentId);
   if (!exact.length) return '';
   const first = exact[0];
   const label = first.sectionNumber || first.heading || first.documentName || first.source || 'source';
-  return `<div class="mc-control-message-actions"><button data-control-source-document="${esc(first.documentId)}" data-control-source-section="${esc(first.id || first.sectionId || '')}">Open ${esc(label)}</button><button data-control-evidence-message="${esc(message.id)}">Review ${fmt(exact.length)} Supporting Reference${exact.length === 1 ? '' : 's'}</button></div>`;
+  const drawingHit = exact.find(hit => drawingSourceIds.has(hit.documentId) && Number(hit.pageStart || hit.pageNumber || hit.page) > 0);
+  return `<div class="mc-control-message-actions"><button data-control-source-document="${esc(first.documentId)}" data-control-source-section="${esc(first.id || first.sectionId || '')}">Open ${esc(label)}</button>${drawingHit ? `<button data-control-drawing-document="${esc(drawingHit.documentId)}" data-control-drawing-page="${Number(drawingHit.pageStart || drawingHit.pageNumber || drawingHit.page)}">Open drawing page ${Number(drawingHit.pageStart || drawingHit.pageNumber || drawingHit.page)}</button>` : ''}<button data-control-evidence-message="${esc(message.id)}">Review ${fmt(exact.length)} Supporting Reference${exact.length === 1 ? '' : 's'}</button></div>`;
 }
 
 async function renderMissionControlChat() {
   const conversation = engine.activeConversation();
   const project = missionControlProject();
   const messages = conversation?.messages || [];
-  const attachmentNames = new Map((project ? await engine.documents() : []).map(document => [document.id, document.name || document.title || document.id]));
+  if (!activeWorkPackage) {
+    let packageMessageIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) if (messages[index].role === 'assistant' && messages[index].workPackageReferences) { packageMessageIndex = index; break; }
+    const promptMessage = packageMessageIndex > 0 ? [...messages.slice(0, packageMessageIndex)].reverse().find(message => message.role === 'user') : null;
+    if (promptMessage && project) {
+      const reconstructed = await buildActiveConstructionPackage(promptMessage.content);
+      if (reconstructed) {
+        const expected = new Set(messages[packageMessageIndex].workPackageReferences.matchingSheetIds || []);
+        if (reconstructed.planResult.matchingSheetIds.every(id => expected.has(id)) && expected.size === reconstructed.planResult.matchingSheetIds.length) {
+          activePlanQuery = reconstructed.planResult; activeWorkPackage = reconstructed.workPackage; drawingMatchingSheetIds = [...reconstructed.planResult.matchingSheetIds];
+        }
+      }
+    }
+  }
+  const projectDocuments = project ? await engine.documents() : [];
+  const attachmentNames = new Map(projectDocuments.map(document => [document.id, document.name || document.title || document.id]));
+  const drawingSourceIds = new Set((await Promise.all(projectDocuments.filter(isPdfDocument).map(async document => [document.id, Boolean(await engine.sourceFile(document.id))]))).filter(([, available]) => available).map(([id]) => id));
   $('#missionControlContent').innerHTML = `
     <section class="mc-control-chat" aria-labelledby="missionControlTitle">
       <header class="mc-control-chat-header"><div><span>ASK COMPANION</span><h1 id="missionControlTitle" tabindex="-1">${esc(conversation?.title || 'New conversation')}</h1><p>${project ? `Using project knowledge from ${esc(project.name)}.` : 'Select a project or attach supported documents to ask an evidence-backed question.'}</p></div><div><button data-control-action="new-conversation">New Conversation</button><button class="subtle" data-control-view="history">Conversation History</button></div></header>
       <div class="mc-control-messages" role="log" aria-live="polite" aria-label="Conversation messages">
-        ${messages.length ? messages.map(message => `<article class="mc-control-message ${message.role}" id="mc-message-${esc(message.id)}"><header><strong>${message.role === 'assistant' ? 'Chief' : 'You'}</strong>${message.role === 'assistant' ? `<span>${esc(missionControlResponseModeLabel(message.mode))}</span>` : ''}</header><div class="mc-control-message-content">${esc(message.content).replace(/\n/g, '<br>')}</div>${missionControlMessageActions(message)}</article>`).join('') : `<div class="mc-control-chat-empty"><strong>Start a conversation</strong><p>Ask about the active project or attach a supported document. Answers remain linked to exact source records.</p></div>`}
+        ${messages.length ? messages.map(message => `<article class="mc-control-message ${message.role}" id="mc-message-${esc(message.id)}"><header><strong>${message.role === 'assistant' ? 'Chief' : 'You'}</strong>${message.role === 'assistant' ? `<span>${esc(missionControlResponseModeLabel(message.mode))}</span>` : ''}</header><div class="mc-control-message-content">${esc(message.content).replace(/\n/g, '<br>')}</div>${constructionWorkPackageMarkup(message)}${missionControlMessageActions(message, drawingSourceIds)}</article>`).join('') : `<div class="mc-control-chat-empty"><strong>Start a conversation</strong><p>Ask about the active project or attach a supported document. Answers remain linked to exact source records.</p></div>`}
       </div>
       <form id="missionControlComposer" class="mc-control-composer">
         <div class="mc-control-attachments" aria-live="polite">${(conversation?.attachmentDocumentIds || []).map(id => `<span data-attached-document="${esc(id)}">${esc(attachmentNames.get(id) || 'Attached document unavailable')} <button type="button" data-remove-attachment="${esc(id)}" aria-label="Remove attached document">×</button></span>`).join('')}${missionControlAttachments.map(item => `<span class="${esc(item.status)}">${esc(item.name)} · ${esc(item.status)}${item.error ? ` — ${esc(item.error)}` : ''}</span>`).join('')}</div>
@@ -1257,6 +1306,178 @@ async function renderMissionControlInspections() {
   $('#missionControlContent').innerHTML = `<section class="mc-control-library mc-control-inspections" aria-labelledby="missionControlTitle"><header><div><span>INSPECTIONS</span><h1 id="missionControlTitle" tabindex="-1">Inspection Records</h1><p>${project ? `Recorded field work for ${esc(project.name)}.` : 'Select a project to create or review inspections.'}</p></div>${project ? '<button data-control-action="create-inspection">Create Inspection Record</button>' : '<button data-control-view="projects">Open My Projects</button>'}</header>${records.length ? `<ol>${records.map(record => `<li><button data-control-inspection-id="${esc(record.inspectionId)}"><strong>${esc(record.inspectionNumber)} · ${esc(record.title)}</strong><span>${esc(record.status)} · ${esc(record.result)}${record.followUpRequired ? ' · Follow-up required' : ''}</span></button></li>`).join('')}</ol>` : missionControlEmpty(project ? 'No inspections yet' : 'No project open', project ? 'Create the first Inspection Record for this project.' : 'Open a project from My Projects first.')}</section>`;
 }
 
+function isPdfDocument(document) {
+  return String(document?.mimeType || '').toLowerCase() === 'application/pdf' || String(document?.extension || document?.type || '').toLowerCase().replace(/^\./, '') === 'pdf' || /\.pdf$/i.test(document?.name || '');
+}
+
+function drawingStatusCopy(document, source, analysis) {
+  if (!source) return { label: 'Original PDF unavailable', detail: 'Reattach the exact original PDF to view its sheets. Extracted text remains available.' };
+  if (!analysis) return { label: 'Analysis unavailable', detail: 'The authoritative PDF is stored, but deterministic sheet analysis is unavailable.' };
+  return { label: analysis.status || 'Ready for review', detail: `${analysis.sheets.length} sheet${analysis.sheets.length === 1 ? '' : 's'} indexed from positioned PDF text.` };
+}
+
+async function currentDrawingAnalyses() {
+  const analyses = await engine.drawingAnalyses();
+  return Promise.all(analyses.map(async analysis => {
+    if (Number(analysis.analysisVersion) >= DRAWING_ANALYSIS_VERSION) return analysis;
+    const upgraded = upgradeDrawingAnalysis(analysis);
+    await engine.saveDrawingAnalysis(upgraded);
+    return upgraded;
+  }));
+}
+
+async function buildActiveConstructionPackage(query, evidence = []) {
+  const projectId = state().activeProject;
+  if (!projectId || projectId === 'general') return null;
+  const [analyses, documents, sections, inspections] = await Promise.all([
+    currentDrawingAnalyses(), engine.documents(), engine.sections(), engine.inspectionRecords({ includeArchived: true })
+  ]);
+  const planResult = buildPlanQuery({ query, projectId, analyses });
+  if (!planResult.matchingSheetIds.length) return null;
+  const relationshipModel = buildKnowledgeRelationships({ documents, sections });
+  const relationships = [...relationshipModel.membership, ...relationshipModel.hierarchy, ...relationshipModel.explicitReferences, ...relationshipModel.reverseReferences, ...relationshipModel.documentReferences];
+  const revisions = buildRevisionMetrics({ documents, sections }).comparisons.map(comparison => ({ revisionId: `${comparison.earlierDocument.id}->${comparison.laterDocument.id}`, documentIds: [comparison.earlierDocument.id, comparison.laterDocument.id], status: comparison.status || '' }));
+  const workPackage = buildConstructionWorkPackage({ planResult, documents, sections, inspections, relationships, revisions, evidence, workflow: getWorkflowSession()?.workflow });
+  return { planResult, workPackage, analyses, sections };
+}
+
+function workPackageGroup(title, items, formatter) {
+  if (!items?.length) return '';
+  return `<section><h4>${esc(title)}</h4><ol>${items.map(item => `<li>${formatter(item)}<small>${esc(item.reason || '')}${item.confidence ? ` · Evidence confidence: ${esc(item.confidence)}` : ''}</small></li>`).join('')}</ol></section>`;
+}
+
+function constructionWorkPackageMarkup(message) {
+  const workPackage = activeWorkPackage;
+  if (!workPackage || message.role !== 'assistant' || !message.workPackageReferences) return '';
+  const sourceOnly = ['offline', 'source'].includes(message.mode);
+  const sheetActions = workPackage.responseActions.filter(action => action?.target?.sheetId);
+  const currentWorkTarget = currentWorkActivationTarget(workPackage);
+  return `<section class="mc-work-package" aria-labelledby="mcWorkPackage-${esc(message.id)}">
+    <header><div><span>CONSTRUCTION WORK PACKAGE</span><h3 id="mcWorkPackage-${esc(message.id)}">${esc([workPackage.discipline, workPackage.room ? `Room ${workPackage.room}` : '', workPackage.building ? `Building ${workPackage.building}` : ''].filter(Boolean).join(' · ') || 'Supported project work')}</h3></div><strong>${sourceOnly ? 'Evidence only' : 'Evidence with separate expert guidance'}</strong></header>
+    ${workPackageGroup('Work shown or referenced', workPackage.workSummary, item => `<strong>${esc(item.statement)}</strong><span>${esc(item.basis)}</span>`)}
+    ${workPackageGroup('Plans', workPackage.drawings, item => `<button data-work-package-sheet="${esc(item.sheetId)}">${esc(sheetActions.find(action => action.target.sheetId === item.sheetId)?.label || 'Open exact sheet')}</button>`)}
+    ${workPackage.discipline === 'Mechanical' ? `<section class="mc-work-package-mechanical"><h4>Mechanical Work</h4><dl><div><dt>Plans</dt><dd>${fmt(workPackage.drawings.length)}</dd></div><div><dt>Schedules</dt><dd>${fmt(workPackage.schedules.length)}</dd></div><div><dt>Details</dt><dd>${fmt(workPackage.details.length)}</dd></div><div><dt>Observed identifiers</dt><dd>${fmt(activePlanQuery?.matchingObservationIds?.length || 0)}</dd></div></dl><small>Potential coordination is shown only when exact project relationships support it. No routing, quantity, placement, connectivity, room boundary, or clash is asserted.</small></section>` : ''}
+    ${workPackageGroup('Supporting requirements', workPackage.specifications, item => `<strong>${esc(item.title || item.id)}</strong>`)}
+    ${workPackageGroup('RFIs', workPackage.rfis, item => `<strong>${esc(item.title || item.id)}</strong><span>${esc(item.status || '')}</span>`)}
+    ${workPackageGroup('Submittals', workPackage.submittals, item => `<strong>${esc(item.title || item.id)}</strong><span>${esc(item.status || '')}</span>`)}
+    ${workPackageGroup('Current inspections', workPackage.inspections, item => `<strong>${esc(item.inspectionNumber || item.id)} · ${esc(item.title || '')}</strong><span>${esc(item.status)} · ${esc(item.result)}</span>`)}
+    ${workPackageGroup('Open issues', workPackage.deficiencies, item => `<strong>${esc(item.title || item.id)}</strong><span>${esc(item.status || '')}</span>`)}
+    ${!sourceOnly ? workPackageGroup('Current risks', workPackage.risks, item => `<strong>${esc(item.label)}</strong>`) : ''}
+    <section><h4>Inspection preparation</h4><p>${esc(workPackage.inspectionPreparation.nextInspectionStatement)}</p></section>
+    <section class="mc-work-package-limitations"><h4>Limitations</h4><ul>${workPackage.limitations.map(item => `<li>${esc(item)}</li>`).join('')}</ul></section>
+    <div class="mc-work-package-actions">${sheetActions.slice(0, 8).map(action => `<button data-work-package-target='${esc(JSON.stringify(action.target))}'>${esc(action.label)}</button>`).join('')}${currentWorkTarget.available ? '<button data-work-package-current>Add to Current Work</button>' : ''}${workPackage.projectId ? '<button data-work-package-inspection>Create Inspection</button>' : ''}</div>
+  </section>`;
+}
+
+function groupedRoomEvidenceMarkup(roomObservations, sheet) {
+  const groups = new Map();
+  for (const observation of roomObservations) {
+    if (!groups.has(observation.value)) groups.set(observation.value, []);
+    groups.get(observation.value).push(observation);
+  }
+  return [...groups].map(([room, items]) => `<article><strong>Room ${esc(room)}</strong><span>${esc(sheet.discipline)} · ${esc(sheet.sheetNumber || `Page ${sheet.pageNumber}`)}</span><small>${fmt(items.length)} exact text observation${items.length === 1 ? '' : 's'} · ${esc(items[0].verification.status)}</small></article>`).join('');
+}
+
+function releaseDrawingSource() {
+  activeDrawingRender?.cancel?.();
+  activeDrawingRender?.release?.();
+  activeDrawingRender = null;
+  activeDrawingPdf?.cleanup?.();
+  activeDrawingPdf?.destroy?.();
+  activeDrawingPdf = null;
+  activeDrawingDocumentId = '';
+  activeDrawingSourceRecord = null;
+}
+
+async function paintDrawingPage(source, sheet, observation) {
+  const canvas = $('#mcDrawingCanvas');
+  const stage = $('#mcDrawingStage');
+  if (!canvas || !stage || !source || !sheet) return;
+  activeDrawingRender?.cancel?.();
+  activeDrawingRender?.release?.();
+  activeDrawingRender = null;
+  try {
+    if (!activeDrawingPdf || activeDrawingDocumentId !== source.documentId) {
+      activeDrawingPdf?.cleanup?.();
+      activeDrawingPdf?.destroy?.();
+      activeDrawingPdf = await openPdfBlob(source.sourceBlob);
+      activeDrawingDocumentId = source.documentId;
+    }
+    const boundedScale = Math.max(.35, Math.min(3, drawingZoom));
+    activeDrawingRender = await renderPdfPage(activeDrawingPdf, sheet.pageNumber, canvas, { scale: boundedScale, rotation: (sheet.rotation + drawingRotation) % 360 });
+    await activeDrawingRender.promise;
+    if (observation?.region && drawingRotation % 360 === 0 && sheet.rotation % 360 === 0) {
+      const overlay = document.createElement('div');
+      overlay.className = 'mc-drawing-highlight';
+      overlay.setAttribute('aria-label', `Highlighted ${observation.kind}: ${observation.value}`);
+      Object.assign(overlay.style, { left: `${observation.region.x * 100}%`, top: `${observation.region.y * 100}%`, width: `${observation.region.width * 100}%`, height: `${observation.region.height * 100}%` });
+      stage.append(overlay);
+    }
+  } catch (error) {
+    stage.innerHTML = `<div class="mc-drawing-unavailable" role="status"><strong>Drawing page could not be rendered.</strong><p>${esc(error.message)}</p><small>Rendering uses the existing PDF.js CDN resource and may be unavailable offline unless the browser has cached it.</small></div>`;
+  }
+}
+
+async function updateDrawingSearchResults() {
+  const revision = ++drawingSearchRevision;
+  const analysis = drawingTarget?.documentId ? await engine.drawingAnalysis(drawingTarget.documentId) : null;
+  const resultsHost = $('#mcDrawingResults');
+  const status = $('#mcDrawingResultStatus');
+  if (revision !== drawingSearchRevision || !analysis || !resultsHost || !status) return;
+  const results = searchDrawingSheets({ query: drawingFilter, discipline: drawingDiscipline, analysis });
+  drawingMatchingSheetIds = results.map(item => item.sheetId);
+  status.textContent = `${results.length} matching sheet${results.length === 1 ? '' : 's'}`;
+  resultsHost.innerHTML = results.length ? results.map(result => `<li><button data-drawing-sheet="${esc(result.sheetId)}" data-drawing-search-observation="${esc(result.observationId)}" class="${result.sheetId === drawingTarget?.sheetId ? 'active' : ''}"><strong>${esc(result.sheet.sheetNumber || 'Sheet number unavailable')}</strong><span>${esc(result.sheet.sheetTitle || 'Title unavailable')}</span><small>${esc(result.sheet.discipline)} · ${esc(result.sheet.sheetTypes.join(', '))}</small></button></li>`).join('') : '<li class="mc-drawing-no-results">No sheets match this exact search and discipline filter.</li>';
+  $('[data-drawing-clear-search]')?.toggleAttribute('hidden', !drawingFilter);
+}
+
+async function renderDrawingWorkspace(shell = 'professional') {
+  const host = shell === 'mission-control' ? $('#missionDrawingViewer') : $('#drawingInspector');
+  if (!host) return;
+  const documents = (await engine.documents()).filter(isPdfDocument);
+  const analyses = await currentDrawingAnalyses();
+  const analysesByDocument = new Map(analyses.map(item => [item.documentId, item]));
+  if (!documents.length) {
+    releaseDrawingSource();
+    host.innerHTML = '<div class="mc-drawing-empty"><strong>No drawing PDFs are available.</strong><p>Import a PDF into the active project. Newly imported PDFs preserve their original source for sheet viewing.</p></div>';
+    return;
+  }
+  const requestedDocument = drawingTarget?.documentId;
+  const selected = documents.find(item => item.id === requestedDocument) || documents.find(item => analysesByDocument.has(item.id)) || documents[0];
+  const analysis = analysesByDocument.get(selected.id) || null;
+  const source = activeDrawingSourceRecord?.documentId === selected.id && activeDrawingSourceRecord.projectId === state().activeProject
+    ? activeDrawingSourceRecord
+    : await engine.sourceFile(selected.id);
+  activeDrawingSourceRecord = source;
+  const resolved = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses }) : null;
+  const sheet = resolved?.sheet || analysis?.sheets?.find(item => item.sheetId === drawingTarget?.sheetId) || analysis?.sheets?.[0] || null;
+  const observation = resolved?.observation || null;
+  if (sheet) drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: selected.id, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId || '', region: observation?.region || null });
+  const status = drawingStatusCopy(selected, source, analysis);
+  const disciplines = [...new Set((analysis?.sheets || []).map(item => item.discipline).filter(Boolean))].sort();
+  const searchResults = analysis ? searchDrawingSheets({ query: drawingFilter, discipline: drawingDiscipline, analysis }) : [];
+  const shownSheets = searchResults.map(item => item.sheet);
+  const navigationSheetIds = drawingMatchingSheetIds.length ? drawingMatchingSheetIds : searchResults.map(item => item.sheetId);
+  const navigationIndex = navigationSheetIds.indexOf(sheet?.sheetId);
+  const observations = sheet ? (analysis?.observations || []).filter(item => item.sheetId === sheet.sheetId) : [];
+  const exactRooms = observations.filter(item => item.kind === 'room-number-text');
+  host.innerHTML = `
+    <header class="mc-drawing-header"><div><span>${shell === 'mission-control' ? 'PLAN REVIEW' : 'DRAWING SET INSPECTOR'}</span><h2>${esc(selected.title || selected.name || 'Drawing PDF')}</h2><p><strong>${esc(status.label)}</strong> — ${esc(status.detail)}</p></div><div>${shell === 'mission-control' ? '<button data-drawing-current-work>Open Current Work</button><button data-drawing-ask>Ask About This Sheet</button>' : ''}<button data-drawing-inspection>Create Inspection</button><button class="subtle" data-drawing-source>Open Source Inspector</button></div></header>
+    <div class="mc-drawing-layout">
+      <aside class="mc-drawing-index" aria-label="Sheet index"><label>Drawing PDF<select id="mcDrawingDocument">${documents.map(item => `<option value="${esc(item.id)}" ${item.id === selected.id ? 'selected' : ''}>${esc(item.title || item.name || item.id)}</option>`).join('')}</select></label>${analysis ? `<label>Search sheets, rooms, tags, or callouts<input id="mcDrawingSearch" value="${esc(drawingFilter)}" autocomplete="off"></label><button class="subtle" data-drawing-clear-search ${drawingFilter ? '' : 'hidden'}>Clear search</button><label>Discipline<select id="mcDrawingDiscipline"><option value="all">All disciplines</option>${disciplines.map(item => `<option ${item === drawingDiscipline ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></label><p id="mcDrawingResultStatus" role="status">${fmt(shownSheets.length)} matching sheet${shownSheets.length === 1 ? '' : 's'}</p><ol id="mcDrawingResults">${searchResults.map(result => `<li><button data-drawing-sheet="${esc(result.sheetId)}" data-drawing-search-observation="${esc(result.observationId)}" class="${result.sheetId === sheet?.sheetId ? 'active' : ''}"><strong>${esc(result.sheet.sheetNumber || 'Sheet number unavailable')}</strong><span>${esc(result.sheet.sheetTitle || 'Title unavailable')}</span><small>${esc(result.sheet.discipline)} · ${esc(result.sheet.sheetTypes.join(', '))}</small></button></li>`).join('') || '<li class="mc-drawing-no-results">No sheets match this exact search and discipline filter.</li>'}</ol>` : ''}</aside>
+      <main class="mc-drawing-viewer">
+        ${!source ? `<div class="mc-drawing-unavailable"><strong>Original drawing unavailable — reattach PDF to view sheet.</strong><p>The existing indexed text remains available. Mission Companion will not guess that a similarly named file is the original.</p><label class="mc-drawing-reattach"><input id="mcDrawingReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label></div>` : !analysis || !sheet ? `<div class="mc-drawing-unavailable"><strong>Sheet analysis unavailable.</strong><p>The PDF source is stored, but no deterministic sheet target can be displayed.</p></div>` : `<div class="mc-drawing-toolbar" aria-label="Drawing controls"><button data-drawing-previous ${navigationIndex <= 0 ? 'disabled' : ''}>Previous</button><button data-drawing-next ${navigationIndex < 0 || navigationIndex >= navigationSheetIds.length - 1 ? 'disabled' : ''}>Next</button><button data-drawing-zoom="out">Zoom out</button><button data-drawing-fit="page">Fit page</button><button data-drawing-fit="width">Fit width</button><button data-drawing-zoom="in">Zoom in</button><button data-drawing-rotate>Rotate</button><span>${Math.round(drawingZoom * 100)}% · ${drawingRotation}°</span></div><header class="mc-drawing-sheet-title"><div><span>SHEET ${esc(sheet.sheetNumber || 'NUMBER UNAVAILABLE')}</span><h3>${esc(sheet.sheetTitle || `Page ${sheet.pageNumber}`)}</h3></div><dl><div><dt>Page</dt><dd>${sheet.pageNumber}</dd></div><div><dt>Discipline</dt><dd>${esc(sheet.discipline)}</dd></div><div><dt>Types</dt><dd>${esc(sheet.sheetTypes.join(', '))}</dd></div></dl></header><div id="mcDrawingStage" class="mc-drawing-stage"><canvas id="mcDrawingCanvas" aria-label="Rendered PDF page ${sheet.pageNumber}"></canvas></div>${drawingRotation || sheet.rotation ? '<p class="mc-drawing-note">Region overlays are shown only at the authoritative unrotated orientation.</p>' : ''}`}
+      </main>
+      <aside class="mc-drawing-evidence"><h3>Sheet Evidence</h3>${sheet ? `<dl><div><dt>Extraction</dt><dd>${esc(sheet.extractionMethod)}</dd></div><div><dt>Confidence</dt><dd>${Math.round(sheet.confidence * 100)}%</dd></div><div><dt>Status</dt><dd>${esc(sheet.analysisStatus)}</dd></div></dl><h4>Observed identifiers</h4>${observations.length ? `<ol>${observations.slice(0,100).map(item => `<li><button data-drawing-observation="${esc(item.observationId)}"><strong>${esc(item.kind)}</strong><span>${esc(item.value)}</span><small>${esc(item.verification.status)} · ${Math.round(item.confidence * 100)}%</small></button>${shell === 'professional' ? `<div><button class="subtle" data-drawing-verify="Confirmed" data-observation-id="${esc(item.observationId)}">Confirm</button><button class="subtle" data-drawing-verify="Corrected" data-observation-id="${esc(item.observationId)}">Correct</button><button class="subtle" data-drawing-verify="Uncertain" data-observation-id="${esc(item.observationId)}">Uncertain</button><button class="subtle" data-drawing-verify="Rejected" data-observation-id="${esc(item.observationId)}">Reject</button></div>` : ''}</li>`).join('')}</ol>` : '<p>No bounded text observations were classified on this sheet.</p>'}${exactRooms.length ? `<section class="mc-drawing-room"><h4>Room Evidence</h4>${groupedRoomEvidenceMarkup(exactRooms, sheet)}<small>Graphical association has not been verified.</small></section>` : ''}` : '<p>Reattach the original PDF to create deterministic sheet evidence.</p>'}${analysis?.warnings?.length ? `<h4>Analysis warnings</h4><ul>${analysis.warnings.slice(0,30).map(item => `<li>${esc(item.message || item.type || item)}</li>`).join('')}</ul>` : ''}</aside>
+    </div>`;
+  if (source && sheet) await paintDrawingPage(source, sheet, observation);
+}
+
+async function renderMissionControlPlans() {
+  $('#missionControlContent').innerHTML = '<section class="mc-drawing-control" aria-labelledby="missionControlTitle"><h1 id="missionControlTitle" tabindex="-1">Plans</h1><div id="missionDrawingViewer" class="mc-drawing-workspace"></div></section>';
+  await renderDrawingWorkspace('mission-control');
+}
+
 async function renderMissionControl(prefetchedDocuments = null, prefetchedSections = null) {
   if (missionControlView === 'projects') {
     renderMyProjects();
@@ -1266,6 +1487,7 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
   if (missionControlView === 'history') { renderConversationHistory(); return; }
   if (missionControlView === 'library') { await renderMissionControlLibrary(); return; }
   if (missionControlView === 'inspections') { await renderMissionControlInspections(); return; }
+  if (missionControlView === 'plans') { await renderMissionControlPlans(); return; }
   const currentState = state();
   const project = currentState.activeProject === 'general'
     ? null
@@ -1293,7 +1515,7 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
   const quickActions = [
     { label: 'Create Inspection', action: 'create-inspection', show: Boolean(project) },
     { label: 'Open Inspection Records', target: { view: 'inspections' }, show: Boolean(project) },
-    { label: 'Browse Drawings', action: 'browse-drawings', show: model.summary.drawings > 0 },
+    { label: 'Open Plans', target: { view: 'plans' }, show: model.summary.drawings > 0 },
     { label: 'Browse Specifications', action: 'browse-specifications', show: model.summary.specifications > 0 },
     { label: 'Review RFIs', action: 'browse-rfis', show: model.summary.rfis > 0 },
     { label: 'Review Submittals', action: 'browse-submittals', show: model.summary.submittals > 0 },
@@ -1354,7 +1576,8 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
 $('#openProfessionalWorkspace').onclick = () => switchExperience('professional-workspace', { destination: view });
 $('#returnMissionControl').onclick = () => switchExperience('mission-control');
 function showMissionControlView(name = 'home') {
-  missionControlView = ['projects', 'chat', 'history', 'library', 'inspections'].includes(name) ? name : 'home';
+  if (name !== 'plans') releaseDrawingSource();
+  missionControlView = ['projects', 'chat', 'history', 'library', 'inspections', 'plans'].includes(name) ? name : 'home';
   $('[data-control-home]').toggleAttribute('aria-current', missionControlView === 'home');
   $('[data-control-projects]').toggleAttribute('aria-current', missionControlView === 'projects');
   return renderMissionControl().then(() => $('#missionControlTitle')?.focus());
@@ -1365,11 +1588,36 @@ $$('[data-control-view]').forEach(button => button.onclick = () => showMissionCo
 $('#missionControlContent').onclick = async event => {
   const button = event.target.closest('button');
   if (!button) return;
+  if (button.dataset.workPackageTarget) {
+    drawingTarget = createDrawingTarget(JSON.parse(button.dataset.workPackageTarget));
+    selectedWorkPackageItem = drawingTarget?.observationId || drawingTarget?.sheetId || '';
+    await showMissionControlView('plans');
+    return;
+  }
+  if (button.dataset.workPackageSheet && activeWorkPackage) {
+    const target = activeWorkPackage.viewerTargets.find(item => item.sheetId === button.dataset.workPackageSheet);
+    if (target) { drawingTarget = createDrawingTarget(target); selectedWorkPackageItem = target.observationId || target.sheetId; await showMissionControlView('plans'); }
+    return;
+  }
+  if (button.hasAttribute('data-work-package-current') && activeWorkPackage) {
+    const target = currentWorkActivationTarget(activeWorkPackage);
+    if (!target.available) { alert(target.reason); return; }
+    const result = await activateEngineeringContext({ ...target.request, source: CONTEXT_ACTIVATION_SOURCES.constructionWorkPackage });
+    if (!result.available) alert(result.reasons.join(' '));
+    else await showMissionControlView('home');
+    return;
+  }
+  if (button.hasAttribute('data-work-package-inspection') && activeWorkPackage) {
+    await openProfessionalDestination({ view: 'inspections' });
+    await openInspectionForm(null, inspectionPrefillFromWorkPackage(activeWorkPackage));
+    return;
+  }
   if (button.dataset.controlView) return showMissionControlView(button.dataset.controlView);
   if (button.dataset.controlTarget) {
     const target = JSON.parse(button.dataset.controlTarget);
     if (target.view === 'chat') return showMissionControlView('chat');
     if (target.view === 'knowledge') return showMissionControlView('library');
+    if (target.view === 'plans') return showMissionControlView('plans');
     return openProfessionalDestination(target);
   }
   if (button.dataset.controlDestination) return openProfessionalDestination({ view: button.dataset.controlDestination });
@@ -1418,6 +1666,11 @@ $('#missionControlContent').onclick = async event => {
     await openProfessionalDestination({ view: button.dataset.controlSourceSection ? 'knowledge' : 'sources', documentId: selectedDoc });
     return;
   }
+  if (button.dataset.controlDrawingDocument) {
+    drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: button.dataset.controlDrawingDocument, pageNumber: Number(button.dataset.controlDrawingPage) });
+    await showMissionControlView('plans');
+    return;
+  }
   if (button.dataset.controlEvidenceMessage) {
     const message = engine.activeConversation()?.messages.find(item => item.id === button.dataset.controlEvidenceMessage);
     if (message?.hits?.length) {
@@ -1434,6 +1687,7 @@ $('#missionControlContent').onclick = async event => {
     engine.createConversation({ projectId: missionControlProject()?.id || '' });
     activeRetrievalSession = null;
     missionControlAttachments = [];
+    activePlanQuery = null; activeWorkPackage = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = '';
     await showMissionControlView('chat');
     $('#missionControlPrompt')?.focus();
     return;
@@ -1474,12 +1728,32 @@ $('#missionControlContent').addEventListener('submit', async event => {
   try {
     const current = state();
     const conversation = engine.activeConversation();
-    const message = await engine.ask(promptValue, $('#missionControlMode')?.value || current.settings.mode, { documentIds: conversation?.attachmentDocumentIds || [] });
+    const construction = await buildActiveConstructionPackage(promptValue);
+    const drawingScope = construction ? planQuerySectionScope(construction.planResult, construction.sections, construction.analyses) : null;
+    const exactDrawingContext = construction?.planResult.viewerTarget || pendingDrawingContext;
+    let pendingScope = null;
+    if (!construction && exactDrawingContext) {
+      const sections = await engine.sections();
+      const analyses = await currentDrawingAnalyses();
+      pendingScope = planQuerySectionScope({ viewerTarget: exactDrawingContext, matchingSheetIds: [exactDrawingContext.sheetId] }, sections, analyses);
+    }
+    const message = await engine.ask(promptValue, $('#missionControlMode')?.value || current.settings.mode, exactDrawingContext ? {
+      ...(drawingScope || pendingScope), drawingContext: exactDrawingContext,
+      workPackageReferences: { matchingSheetIds: construction?.planResult.matchingSheetIds || [exactDrawingContext.sheetId], matchingObservationIds: construction?.planResult.matchingObservationIds || [exactDrawingContext.observationId].filter(Boolean) }
+    } : { documentIds: conversation?.attachmentDocumentIds || [] });
     const documents = await engine.documents();
     const sections = await engine.sections();
     const project = current.projects.find(item => item.id === current.activeProject);
     const libraries = engine.libraries();
     activeRetrievalSession = createRetrievalSession({ question: promptValue, timestamp: message.createdAt, project, library: libraries.find(item => item.id === current.activeLibrary), mode: message.mode, messageId: message.id, hits: message.hits, citations: message.citations, citationVerification: message.citationVerification, retrievalMeta: message.retrievalMeta, documents, libraries, sections });
+    if (construction) {
+      const completed = await buildActiveConstructionPackage(promptValue, activeRetrievalSession.evidence);
+      activePlanQuery = completed.planResult;
+      activeWorkPackage = completed.workPackage;
+      drawingMatchingSheetIds = [...activePlanQuery.matchingSheetIds];
+      drawingTarget = activePlanQuery.viewerTarget;
+    }
+    pendingDrawingContext = null;
     await renderMissionControlChat();
     $('.mc-control-messages')?.scrollTo({ top: $('.mc-control-messages').scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
   } catch (error) { alert(error.message); }
@@ -1506,6 +1780,97 @@ $('#missionControlContent').addEventListener('change', event => {
   if (event.target.id === 'missionControlLibraryFiles') void ingestMissionControlFiles([...event.target.files]).then(() => renderMissionControlLibrary());
 });
 
+app.addEventListener('input', event => {
+  if (event.target.id !== 'mcDrawingSearch') return;
+  drawingFilter = event.target.value;
+  void updateDrawingSearchResults();
+});
+
+app.addEventListener('keydown', event => {
+  if (event.target.id !== 'mcDrawingSearch' || event.key !== 'Enter') return;
+  event.preventDefault();
+  $('#mcDrawingResults button')?.click();
+});
+
+app.addEventListener('change', async event => {
+  const shell = experience === 'mission-control' ? 'mission-control' : 'professional';
+  if (event.target.id === 'mcDrawingDocument') {
+    drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: event.target.value });
+    drawingFilter = ''; drawingDiscipline = 'all'; drawingZoom = 1; drawingRotation = 0;
+    await renderDrawingWorkspace(shell);
+  }
+  if (event.target.id === 'mcDrawingDiscipline') {
+    drawingDiscipline = event.target.value;
+    await updateDrawingSearchResults();
+  }
+  if (event.target.id === 'mcDrawingReattach' && event.target.files?.[0]) {
+    const documentId = drawingTarget?.documentId || (await engine.documents()).find(isPdfDocument)?.id;
+    try {
+      const result = await engine.reattachPdfSource(documentId, event.target.files[0]);
+      releaseDrawingSource();
+      drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId, drawingSetId: result.drawingSetId, pageNumber: 1 });
+      await renderDrawingWorkspace(shell);
+    } catch (error) { alert(error.message); }
+  }
+});
+
+app.addEventListener('click', async event => {
+  const button = event.target.closest('button');
+  if (!button || !button.closest('.mc-drawing-workspace')) return;
+  const shell = experience === 'mission-control' ? 'mission-control' : 'professional';
+  const analysis = drawingTarget?.documentId ? await engine.drawingAnalysis(drawingTarget.documentId) : null;
+  if (button.dataset.drawingSheet && analysis) {
+    const sheet = analysis.sheets.find(item => item.sheetId === button.dataset.drawingSheet);
+    const observation = button.dataset.drawingSearchObservation ? analysis.observations.find(item => item.observationId === button.dataset.drawingSearchObservation) : null;
+    drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
+    await renderDrawingWorkspace(shell); return;
+  }
+  if (button.dataset.drawingObservation && analysis) {
+    const observation = analysis.observations.find(item => item.observationId === button.dataset.drawingObservation);
+    const sheet = analysis.sheets.find(item => item.sheetId === observation?.sheetId);
+    if (observation && sheet) drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation.observationId, region: observation.region });
+    await renderDrawingWorkspace(shell); return;
+  }
+  if (button.dataset.drawingVerify && analysis) {
+    const selectedObservation = analysis.observations.find(item => item.observationId === button.dataset.observationId);
+    let correctedValue = '';
+    if (button.dataset.drawingVerify === 'Corrected') {
+      correctedValue = prompt('Corrected observed value', selectedObservation?.verification?.correctedValue || selectedObservation?.originalValue || '')?.trim() || '';
+      if (!correctedValue) return;
+    }
+    const observations = analysis.observations.map(item => item.observationId === button.dataset.observationId ? applyObservationVerification(item, { status: button.dataset.drawingVerify, correctedValue, verifiedAt: new Date().toISOString() }) : item);
+    await engine.saveDrawingAnalysis({ ...analysis, observations });
+    await renderDrawingWorkspace(shell); return;
+  }
+  const currentIndex = analysis?.sheets.findIndex(item => item.sheetId === drawingTarget?.sheetId) ?? -1;
+  if ((button.hasAttribute('data-drawing-previous') || button.hasAttribute('data-drawing-next')) && analysis) {
+    const offset = button.hasAttribute('data-drawing-next') ? 1 : -1;
+    const matchingTarget = drawingMatchingSheetIds.length ? drawingMatchingSetTarget(drawingMatchingSheetIds, drawingTarget?.sheetId, offset, analysis) : null;
+    const next = analysis.sheets[currentIndex + offset];
+    if (matchingTarget) drawingTarget = matchingTarget;
+    else if (next) drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: next.sheetId, pageNumber: next.pageNumber });
+    await renderDrawingWorkspace(shell); return;
+  }
+  if (button.dataset.drawingZoom) {
+    drawingZoom = Math.max(.35, Math.min(3, drawingZoom + (button.dataset.drawingZoom === 'in' ? .2 : -.2)));
+    await renderDrawingWorkspace(shell); return;
+  }
+  if (button.dataset.drawingFit && analysis) {
+    const sheet = analysis.sheets.find(item => item.sheetId === drawingTarget?.sheetId);
+    const viewer = button.closest('.mc-drawing-viewer');
+    const widthScale = Math.max(.35, (viewer?.clientWidth || sheet.pageWidth) / Math.max(1, sheet.pageWidth) - .04);
+    const heightScale = Math.max(.35, Math.min(1.5, (globalThis.innerHeight || sheet.pageHeight) * .58 / Math.max(1, sheet.pageHeight)));
+    drawingZoom = Math.min(3, button.dataset.drawingFit === 'width' ? widthScale : Math.min(widthScale, heightScale));
+    await renderDrawingWorkspace(shell); return;
+  }
+  if (button.hasAttribute('data-drawing-rotate')) { drawingRotation = (drawingRotation + 90) % 360; await renderDrawingWorkspace(shell); return; }
+  if (button.hasAttribute('data-drawing-clear-search')) { drawingFilter = ''; const input = $('#mcDrawingSearch'); if (input) { input.value = ''; input.focus(); } await updateDrawingSearchResults(); return; }
+  if (button.hasAttribute('data-drawing-source')) { selectedDoc = drawingTarget?.documentId; sourceNavigationTarget = createSourceTarget({ projectId: state().activeProject, documentId: selectedDoc, pageNumber: drawingTarget?.pageNumber, sheetId: drawingTarget?.sheetId, region: drawingTarget?.region, observationId: drawingTarget?.observationId, originatingWorkspace: 'drawings' }); await openProfessionalDestination({ view: 'sources', documentId: selectedDoc }); return; }
+  if (button.hasAttribute('data-drawing-current-work')) { await openProfessionalDestination({ view: 'engineering', documentId: drawingTarget?.documentId }); return; }
+  if (button.hasAttribute('data-drawing-inspection')) { selectedDoc = drawingTarget?.documentId || selectedDoc; await openProfessionalDestination({ view: 'inspections' }); await openInspectionForm(); return; }
+  if (button.hasAttribute('data-drawing-ask')) { const sheet = analysis?.sheets.find(item => item.sheetId === drawingTarget?.sheetId); pendingDrawingContext = createDrawingTarget({ ...drawingTarget, projectId: state().activeProject, documentId: analysis?.documentId, drawingSetId: analysis?.drawingSetId, sheetNumber: sheet?.sheetNumber, origin: 'ask-about-sheet' }); await showMissionControlView('chat'); $('#missionControlPrompt').value = `What exact indexed information is available for sheet ${sheet?.sheetNumber || `page ${drawingTarget?.pageNumber}`}?`; $('#missionControlPrompt').focus(); }
+});
+
 const activationTimestamp = () => new Date().toISOString();
 
 function activationOrigin(source) {
@@ -1517,6 +1882,7 @@ function activationOrigin(source) {
   if (source.includes('Workflow')) return 'workflow';
   if (source.includes('Command Desk')) return 'chat';
   if (source.includes('Inspection Record')) return 'inspections';
+  if (source.includes('Construction Work Package')) return 'engineering';
   return 'knowledge';
 }
 
@@ -1650,7 +2016,7 @@ function publishContextSynchronization(context, documents, sections) {
 }
 
 async function renderContextBusBanner(workspace) {
-  const synchronizedViews = new Set(['chat','engineering','workflow','sources','relationships','versions','revisions','evidence','evaluate']);
+  const synchronizedViews = new Set(['chat','engineering','workflow','sources','drawings','relationships','versions','revisions','evidence','evaluate']);
   if (!synchronizedViews.has(workspace)) return;
   const container = document.getElementById(workspace);
   container?.querySelector('[data-context-bus-banner]')?.remove();
@@ -2070,6 +2436,13 @@ async function selectProjectThroughProductionPath(projectId) {
   revisionTarget = null;
   revisionFilter = 'all';
   selectedRevisionMatch = 0;
+  drawingTarget = null;
+  drawingFilter = '';
+  drawingDiscipline = 'all';
+  drawingZoom = 1;
+  drawingRotation = 0;
+  activePlanQuery = null; activeWorkPackage = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = ''; pendingDrawingContext = null;
+  releaseDrawingSource();
   clearActiveContext(CONTEXT_ACTIVATION_SOURCES.projectSwitch, projectId);
   await refresh();
 }
@@ -2089,6 +2462,13 @@ function clearDemonstrationTransientState() {
   revisionTarget = null;
   revisionFilter = 'all';
   selectedRevisionMatch = 0;
+  drawingTarget = null;
+  drawingFilter = '';
+  drawingDiscipline = 'all';
+  drawingZoom = 1;
+  drawingRotation = 0;
+  activePlanQuery = null; activeWorkPackage = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = ''; pendingDrawingContext = null;
+  releaseDrawingSource();
   engineeringTarget = null;
   workflowTarget = null;
   clearActiveContext(CONTEXT_ACTIVATION_SOURCES.projectSwitch, DEMO_PROJECT_ID);
@@ -4035,10 +4415,10 @@ function inspectionPrefill() {
   };
 }
 
-async function openInspectionForm(record = null) {
-  const prefill = record || inspectionPrefill();
+async function openInspectionForm(record = null, requestedPrefill = null) {
+  const prefill = record || requestedPrefill || inspectionPrefill();
   const context = getInspectionSession()?.context;
-  const evidenceCandidates = record ? [] : (activeRetrievalSession?.evidence || []).filter(item =>
+  const evidenceCandidates = record ? [] : requestedPrefill?.evidenceReferences?.length ? requestedPrefill.evidenceReferences : (activeRetrievalSession?.evidence || []).filter(item =>
     context && (context.documentIds.includes(item.documentId) || context.sectionIds.includes(item.sectionId))
   ).map(item => ({ documentId: item.documentId, sectionId: item.sectionId }));
   const number = record?.inspectionNumber || await engine.nextInspectionNumber();
@@ -4064,7 +4444,7 @@ async function openInspectionForm(record = null) {
         ${evidenceCandidates.length ? `<label class="check wide"><input id="inspectionAttachEvidence" type="checkbox"> Attach ${evidenceCandidates.length} exact source reference(s) from the active retrieval session</label>` : ''}
         <label>Follow-up date<input id="inspectionFollowUpDate" type="date" value="${esc(record?.followUpDate || '')}"></label>
       </div>
-      <div class="mc-inspection-reference-note"><strong>Exact source references</strong><span>${(record?.sourceDocumentIds || prefill.sourceDocumentIds || []).length} documents · ${(record?.sourceSectionIds || prefill.sourceSectionIds || []).length} sections · ${(record?.evidenceReferences || []).length} saved evidence source references</span></div>
+      <div class="mc-inspection-reference-note"><strong>Exact source references</strong><span>${(record?.sourceDocumentIds || prefill.sourceDocumentIds || []).length} documents · ${(record?.sourceSectionIds || prefill.sourceSectionIds || []).length} sections · ${(record?.evidenceReferences || prefill.evidenceReferences || []).length} saved evidence source references</span></div>
       <div class="mc-inspection-form-actions"><button type="button" class="subtle" data-inspection-cancel>Cancel</button><button type="submit">Save Inspection Record</button></div>
     </form>`, () => {
       let dirty = false;
@@ -4095,7 +4475,7 @@ async function openInspectionForm(record = null) {
           correctiveActionRequired: $('#inspectionCorrective').checked,
           followUpRequired: $('#inspectionFollowUp').checked,
           followUpDate: $('#inspectionFollowUpDate').value,
-          evidenceReferences: record?.evidenceReferences || ($('#inspectionAttachEvidence')?.checked ? evidenceCandidates : [])
+          evidenceReferences: record?.evidenceReferences || requestedPrefill?.evidenceReferences || ($('#inspectionAttachEvidence')?.checked ? evidenceCandidates : [])
         };
         try {
           const saved = record
@@ -6716,13 +7096,18 @@ async function renderSources() {
   const library = sourceLibraries.find(item =>
     item.id === selected.libraryId
   );
+  const [sourceDrawingAnalysis, sourcePdfRecord] = isPdfDocument(selected)
+    ? await Promise.all([engine.drawingAnalysis(selected.id), engine.sourceFile(selected.id)])
+    : [null, null];
   const sourceTargetResolution = sourceNavigationTarget?.destination === 'sources' &&
     sourceNavigationTarget.documentId === selected.id
     ? resolveSourceTarget(sourceNavigationTarget, {
         projects: state().projects,
         libraries: sourceLibraries,
         documents,
-        sections
+        sections,
+        analyses: sourceDrawingAnalysis ? [sourceDrawingAnalysis] : [],
+        sourceFiles: sourcePdfRecord ? [sourcePdfRecord] : []
       })
     : null;
   const sourceRelationshipModel = buildKnowledgeRelationships({
@@ -6833,6 +7218,8 @@ async function renderSources() {
         · ${esc(selected.category || 'General')}
       </p>
     </div>
+
+    ${isPdfDocument(selected) ? `<section class="mc-drawing-source-status"><div><span>AUTHORITATIVE DRAWING SOURCE</span><h3>${sourcePdfRecord ? 'Original PDF available' : 'Original PDF unavailable'}</h3><p>${sourcePdfRecord ? `${fmt(sourceDrawingAnalysis?.sheets?.length || 0)} deterministic sheet records are available.` : 'Reattach the exact original PDF to enable visual sheet review. Extracted text remains available.'}</p></div>${sourcePdfRecord ? '<button data-source-open-drawing>Open Drawing</button>' : '<label class="mc-drawing-reattach"><input id="sourcePdfReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label>'}</section>` : ''}
 
     <section class="mc-relationship-source-summary" aria-labelledby="sourceRelationshipTitle">
       <div>
@@ -7069,6 +7456,15 @@ async function renderSources() {
   $('#reviewSourceValidation').onclick = () => {
     show('evaluate');
   };
+  $('[data-source-open-drawing]')?.addEventListener('click', () => {
+    drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: selected.id, drawingSetId: sourceDrawingAnalysis?.drawingSetId, sheetId: sourceTargetResolution?.sheet?.sheetId, pageNumber: sourceTargetResolution?.sheet?.pageNumber || 1, observationId: sourceTargetResolution?.observation?.observationId, region: sourceTargetResolution?.observation?.region || sourceNavigationTarget?.region });
+    show('drawings');
+  });
+  $('#sourcePdfReattach')?.addEventListener('change', async event => {
+    if (!event.target.files?.[0]) return;
+    try { await engine.reattachPdfSource(selected.id, event.target.files[0]); await renderSources(); }
+    catch (error) { alert(error.message); }
+  });
 
   $('[data-source-return-evidence]')?.addEventListener(
     'click',
@@ -8585,6 +8981,7 @@ function verifyStartup() {
     '[data-view="chat"]',
     '[data-view="knowledge"]',
     '[data-view="sources"]',
+    '[data-view="drawings"]',
     '[data-view="evaluate"]',
     '[data-view="settings"]',
     '[data-view="diagnostics"]',

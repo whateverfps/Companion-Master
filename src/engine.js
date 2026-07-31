@@ -1,4 +1,4 @@
-import { parseFiles } from './parsers.js';
+import { parseFiles, parsePdfFile } from './parsers.js';
 import { arrayValue } from './data-model.js';
 import { createIdentifier } from './identifiers.js';
 import {
@@ -28,10 +28,12 @@ import {
   moduleStatus
 } from './diagnostics.js';
 import { analyzeCorpus } from './core/reasoning.js';
+import { createPdfSourceRecord, inspectStorageCapacity } from './pdf-source.js';
+import { buildDrawingAnalysis } from './drawing-intelligence.js';
 
 const STATE_KEY = 'mc-master-state-v2';
 const DOC_DB = 'mc-master-documents-v2';
-const DOC_DB_VERSION = 4;
+const DOC_DB_VERSION = 5;
 const APP_VERSION = '2.8.1';
 const STARTUP_EXPERIENCES = new Set(['mission-control', 'professional-workspace']);
 const normalizeStartupExperience = value => STARTUP_EXPERIENCES.has(value) ? value : 'mission-control';
@@ -266,6 +268,20 @@ function openDB() {
       if (!inspectionRecords.indexNames.contains('projectId')) inspectionRecords.createIndex('projectId', 'projectId');
       if (!inspectionRecords.indexNames.contains('inspectionNumber')) inspectionRecords.createIndex('inspectionNumber', 'inspectionNumber');
       if (!inspectionRecords.indexNames.contains('status')) inspectionRecords.createIndex('status', 'status');
+
+      let sourceFiles;
+      if (!db.objectStoreNames.contains('sourceFiles')) sourceFiles = db.createObjectStore('sourceFiles', { keyPath: 'documentId' });
+      else sourceFiles = request.transaction.objectStore('sourceFiles');
+      if (!sourceFiles.indexNames.contains('projectId')) sourceFiles.createIndex('projectId', 'projectId');
+      if (!sourceFiles.indexNames.contains('contentHash')) sourceFiles.createIndex('contentHash', 'contentHash');
+
+      let drawingAnalyses;
+      if (!db.objectStoreNames.contains('drawingAnalyses')) drawingAnalyses = db.createObjectStore('drawingAnalyses', { keyPath: 'drawingSetId' });
+      else drawingAnalyses = request.transaction.objectStore('drawingAnalyses');
+      if (!drawingAnalyses.indexNames.contains('projectId')) drawingAnalyses.createIndex('projectId', 'projectId');
+      if (!drawingAnalyses.indexNames.contains('documentId')) drawingAnalyses.createIndex('documentId', 'documentId');
+      if (!drawingAnalyses.indexNames.contains('analysisVersion')) drawingAnalyses.createIndex('analysisVersion', 'analysisVersion');
+      if (!drawingAnalyses.indexNames.contains('status')) drawingAnalyses.createIndex('status', 'status');
     };
 
     request.onsuccess = () => resolve(request.result);
@@ -324,6 +340,15 @@ async function all(store, index = null, key = null) {
   });
 }
 
+async function one(store, key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(store, 'readonly').objectStore(store).get(key);
+    request.onsuccess = () => { db.close(); resolve(request.result || null); };
+    request.onerror = () => { db.close(); reject(request.error); };
+  });
+}
+
 async function putMany(store, items) {
   if (!Array.isArray(items) || items.length === 0) {
     return;
@@ -359,9 +384,11 @@ async function putMany(store, items) {
 async function commitKnowledgeImport(
   documents,
   sections,
-  lineageUpdates = []
+  lineageUpdates = [],
+  sourceFiles = [],
+  drawingAnalyses = []
 ) {
-  if (!documents.length && !sections.length && !lineageUpdates.length) {
+  if (!documents.length && !sections.length && !lineageUpdates.length && !sourceFiles.length && !drawingAnalyses.length) {
     return;
   }
 
@@ -369,11 +396,13 @@ async function commitKnowledgeImport(
 
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(
-      ['documents', 'sections'],
+      ['documents', 'sections', 'sourceFiles', 'drawingAnalyses'],
       'readwrite'
     );
     const documentStore = transaction.objectStore('documents');
     const sectionStore = transaction.objectStore('sections');
+    const sourceFileStore = transaction.objectStore('sourceFiles');
+    const drawingAnalysisStore = transaction.objectStore('drawingAnalyses');
 
     for (const document of lineageUpdates) {
       documentStore.put(document);
@@ -386,6 +415,8 @@ async function commitKnowledgeImport(
     for (const section of sections) {
       sectionStore.put(section);
     }
+    for (const sourceFile of sourceFiles) sourceFileStore.put(sourceFile);
+    for (const analysis of drawingAnalyses) drawingAnalysisStore.put(analysis);
 
     transaction.oncomplete = () => {
       db.close();
@@ -418,7 +449,7 @@ async function delByIndex(store, index, key) {
     const objectStore = transaction.objectStore(store);
 
     for (const row of rows) {
-      objectStore.delete(row.id || row.inspectionId);
+      objectStore.delete(row.id || row.inspectionId || row.documentId || row.drawingSetId);
     }
 
     transaction.oncomplete = () => {
@@ -670,6 +701,8 @@ export const engine = {
 
     await delByIndex('sections', 'projectId', id);
     await delByIndex('inspectionRecords', 'projectId', id);
+    await delByIndex('sourceFiles', 'projectId', id);
+    await delByIndex('drawingAnalyses', 'projectId', id);
 
     const documents = await all('documents', 'projectId', id);
 
@@ -821,6 +854,57 @@ export const engine = {
     return libraryId
       ? documentCache.documents.filter(document => document.libraryId === libraryId)
       : documentCache.documents;
+  },
+
+  async sourceFile(documentId) {
+    const record = await one('sourceFiles', documentId);
+    if (record?.projectId !== state.activeProject) return null;
+    return record ? structuredClone(record) : null;
+  },
+
+  async drawingAnalysis(documentId) {
+    const records = await all('drawingAnalyses', 'documentId', documentId);
+    const record = records.find(item => item.projectId === state.activeProject);
+    return record ? structuredClone(record) : null;
+  },
+
+  async drawingAnalyses() {
+    return structuredClone(await all('drawingAnalyses', 'projectId', state.activeProject));
+  },
+
+  async saveDrawingAnalysis(analysis) {
+    if (!analysis?.drawingSetId || analysis.projectId !== state.activeProject) throw new Error('Drawing analysis does not belong to the active project.');
+    const document = (await this.documents()).find(item => item.id === analysis.documentId);
+    if (!document) throw new Error('Drawing analysis document is unavailable.');
+    await tx('drawingAnalyses', 'readwrite', store => store.put(structuredClone(analysis)));
+    return structuredClone(analysis);
+  },
+
+  async reattachPdfSource(documentId, file) {
+    const document = (await this.documents()).find(item => item.id === documentId);
+    if (!document) throw new Error('Document not found.');
+    if (!(file instanceof Blob) || (file.type && file.type !== 'application/pdf')) throw new Error('Select the original PDF file.');
+    if (!document.contentHash) throw new Error('The stored document has no authoritative content hash, so the original PDF cannot be validated deterministically. Reimport it as a new document.');
+    const hash = await contentHash(file);
+    if (document.contentHash && (!hash || hash !== document.contentHash)) throw new Error('The selected PDF does not match the stored document hash.');
+    const capacity = await inspectStorageCapacity(file.size);
+    if (capacity.sufficient === false) throw new Error(`Not enough browser storage is available for this ${file.size}-byte PDF.`);
+    const parsed = await parsePdfFile(file);
+    const sourceBlob = file.type === 'application/pdf' ? file : new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
+    const sourceRecord = createPdfSourceRecord({ documentId, projectId: state.activeProject, sourceBlob, contentHash: hash || document.contentHash || '', storedAt: new Date().toISOString() });
+    const analysis = buildDrawingAnalysis({ documentId, projectId: state.activeProject, pages: parsed.pages, analyzedAt: new Date().toISOString() });
+    const db = await openDB();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(['documents', 'sourceFiles', 'drawingAnalyses'], 'readwrite');
+      transaction.objectStore('documents').put({ ...document, pageCount: parsed.pageCount, sourceAvailability: 'available', drawingAnalysisStatus: analysis.status });
+      transaction.objectStore('sourceFiles').put(sourceRecord);
+      transaction.objectStore('drawingAnalyses').put(analysis);
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => { db.close(); reject(transaction.error); };
+      transaction.onabort = () => { db.close(); reject(transaction.error || new Error('PDF reattachment transaction aborted.')); };
+    });
+    invalidateKnowledgeCache();
+    return { documentId, drawingSetId: analysis.drawingSetId, pageCount: parsed.pageCount };
   },
 
   async inspectionRecords({ includeArchived = false } = {}) {
@@ -1024,6 +1108,14 @@ export const engine = {
           contentHash: acceptedDescriptors[index]?.contentHash || null
         }))
       };
+      const sourceFiles = (parsed.sourceFiles || []).map(sourceFile => {
+        const descriptorIndex = parsed.documents.findIndex(document => document.id === sourceFile.documentId);
+        return { ...sourceFile, contentHash: acceptedDescriptors[descriptorIndex]?.contentHash || '' };
+      });
+      for (const sourceFile of sourceFiles) {
+        const capacity = await inspectStorageCapacity(sourceFile.byteLength);
+        if (capacity.sufficient === false) throw new Error(`Not enough browser storage is available to preserve ${sourceFile.byteLength} PDF bytes. Import was not registered.`);
+      }
       const successfulDocuments = parsed.documents.filter(document =>
         document.status === 'verified'
       );
@@ -1063,6 +1155,16 @@ export const engine = {
             `Document verification failed for ${document.name}: expected ${document.sectionCount} section(s), found ${detectedSections}.`
           );
         }
+      }
+
+      const successfulSourceFiles = sourceFiles.filter(sourceFile => successfulIds.has(sourceFile.documentId));
+      const successfulDrawingAnalyses = (parsed.drawingAnalyses || []).filter(analysis => successfulIds.has(analysis.documentId));
+      for (const document of successfulDocuments.filter(item => item.extension === 'pdf')) {
+        const source = successfulSourceFiles.find(item => item.documentId === document.id);
+        const analysis = successfulDrawingAnalyses.find(item => item.documentId === document.id);
+        if (!source || !analysis) throw new Error(`Authoritative PDF source registration was unavailable for ${document.name}. Import was not registered.`);
+        document.sourceAvailability = 'available';
+        document.drawingAnalysisStatus = analysis.status;
       }
 
       successfulDocuments.forEach((document, index) => {
@@ -1118,7 +1220,9 @@ export const engine = {
       await commitKnowledgeImport(
         successfulDocuments,
         registeredSections,
-        lineageUpdates
+        lineageUpdates,
+        successfulSourceFiles,
+        successfulDrawingAnalyses
       );
       invalidateKnowledgeCache();
 
@@ -1161,6 +1265,8 @@ export const engine = {
       'documentId',
       id
     );
+    await tx('sourceFiles', 'readwrite', store => store.delete(id));
+    await delByIndex('drawingAnalyses', 'documentId', id);
     invalidateKnowledgeCache();
 
     await tx(
@@ -1177,9 +1283,17 @@ export const engine = {
   async search(query, options = {}) {
     const allSections = await this.retrievableSections();
     const scopeIds = normalizeAttachmentDocumentIds(options.documentIds);
-    const sections = scopeIds.length
+    const sectionIds = normalizeAttachmentDocumentIds(options.sectionIds);
+    const pageNumbers = [...new Set((Array.isArray(options.pageNumbers) ? options.pageNumbers : []).map(Number).filter(value => Number.isInteger(value) && value > 0))];
+    let sections = scopeIds.length
       ? allSections.filter(section => scopeIds.includes(section.documentId))
       : allSections;
+    if (sectionIds.length) sections = sections.filter(section => sectionIds.includes(section.id));
+    if (pageNumbers.length) sections = sections.filter(section => {
+      const start = Number(section.pageStart || section.metadata?.pageRange?.start || 0);
+      const end = Number(section.pageEnd || section.metadata?.pageRange?.end || start);
+      return pageNumbers.some(page => start <= page && end >= page);
+    });
 
     const hits = retrieve(
       query,
@@ -1321,9 +1435,12 @@ export const engine = {
     });
 
     const documentIds = normalizeAttachmentDocumentIds(options.documentIds);
-    const hits = await this.search(cleanedPrompt, { documentIds });
-    if (documentIds.length && !hits.length) {
-      throw new Error('The selected attachments do not contain usable indexed sections for this question.');
+    const sectionIds = normalizeAttachmentDocumentIds(options.sectionIds);
+    const pageNumbers = [...new Set((Array.isArray(options.pageNumbers) ? options.pageNumbers : []).map(Number).filter(value => Number.isInteger(value) && value > 0))];
+    const sheetIds = normalizeAttachmentDocumentIds(options.sheetIds);
+    const hits = await this.search(cleanedPrompt, { documentIds, sectionIds, pageNumbers });
+    if ((documentIds.length || sectionIds.length || pageNumbers.length) && !hits.length && !options.drawingContext) {
+      throw new Error(pageNumbers.length || sectionIds.length ? 'The exact drawing scope has no usable indexed section evidence. The drawing viewer remains available.' : 'The selected attachments do not contain usable indexed sections for this question.');
     }
 
     let answer;
@@ -1417,7 +1534,18 @@ export const engine = {
       retrievalMeta: hits.meta || {},
       citationVerification,
       createdAt: new Date().toISOString(),
-      mode
+      mode,
+      drawingContext: options.drawingContext ? {
+        projectId: String(options.drawingContext.projectId || ''), documentId: String(options.drawingContext.documentId || ''),
+        drawingSetId: String(options.drawingContext.drawingSetId || ''), sheetId: String(options.drawingContext.sheetId || ''),
+        pageNumber: Number(options.drawingContext.pageNumber) || null, sheetNumber: String(options.drawingContext.sheetNumber || ''),
+        observationId: String(options.drawingContext.observationId || ''), region: options.drawingContext.region ? structuredClone(options.drawingContext.region) : null
+      } : null,
+      workPackageReferences: options.workPackageReferences ? {
+        matchingSheetIds: normalizeAttachmentDocumentIds(options.workPackageReferences.matchingSheetIds),
+        matchingObservationIds: normalizeAttachmentDocumentIds(options.workPackageReferences.matchingObservationIds),
+        documentIds, sectionIds, pageNumbers, sheetIds
+      } : null
     };
 
     if (!selectActiveConversation(state.conversations, state.activeConversationId)) {
@@ -1507,6 +1635,8 @@ export const engine = {
       documents: await this.documents(),
       sections: await this.sections(),
       inspectionRecords: await this.inspectionRecords({ includeArchived: true }),
+      drawingAnalyses: await this.drawingAnalyses(),
+      sourceFilesIncluded: false,
       evaluations: structuredClone(state.evaluations)
     };
   },
@@ -1643,13 +1773,15 @@ export const engine = {
         newId
       );
 
+      const pdf = String(document.extension || '').toLowerCase() === 'pdf' || String(document.type || '').toLowerCase().includes('pdf');
       return {
         ...document,
         id: newId,
         projectId: importedProject.id,
         libraryId:
           libraryIdMap.get(document.libraryId) ||
-          fallbackLibraryId
+          fallbackLibraryId,
+        ...(pdf ? { sourceAvailability: 'reattachment-required' } : {})
       };
     });
 
@@ -1701,6 +1833,15 @@ export const engine = {
             return mappedEarlier && mappedLater ? `${mappedEarlier}->${mappedLater}` : '';
           }).filter(Boolean)
     }));
+    const importedDrawingAnalyses = (Array.isArray(data.drawingAnalyses) ? data.drawingAnalyses : []).flatMap(sourceAnalysis => {
+      const mappedDocumentId = documentIdMap.get(sourceAnalysis.documentId);
+      if (!mappedDocumentId) return [];
+      const pages = (sourceAnalysis.sheets || []).map(sheet => ({
+        pageNumber: sheet.pageNumber, width: sheet.pageWidth, height: sheet.pageHeight,
+        rotation: sheet.rotation, textItems: sheet.textItems || []
+      }));
+      return [buildDrawingAnalysis({ documentId: mappedDocumentId, projectId: importedProject.id, pages, analyzedAt: sourceAnalysis.analyzedAt || new Date().toISOString() })];
+    });
     for (const record of importedInspectionRecords) {
       const validation = validateInspectionRecord(record, { projectIds: [importedProject.id], existingRecords: [...existingInspectionRecords, ...importedInspectionRecords], currentInspectionId: record.inspectionId });
       if (!validation.valid) throw new Error(`Invalid imported Inspection Record: ${validation.errors.join(' ')}`);
@@ -1713,6 +1854,7 @@ export const engine = {
       importedSections
     );
     await putMany('inspectionRecords', importedInspectionRecords);
+    await putMany('drawingAnalyses', importedDrawingAnalyses);
     invalidateKnowledgeCache();
 
     state.evaluations.push(

@@ -160,6 +160,24 @@ test('Mission Control retains the shared dark visual system without white surfac
   assert.doesNotMatch(refinement, /background(?:-color)?:#fff(?:fff)?(?:[;}]|$)/i);
 });
 
+test('Mission Control presents synchronized deterministic work packages without dead graphical claims', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  assert.match(app, /buildActiveConstructionPackage/);
+  assert.match(app, /CONSTRUCTION WORK PACKAGE/);
+  assert.match(app, /Work shown or referenced/);
+  assert.match(app, /Supporting requirements/);
+  assert.match(app, /Current inspections/);
+  assert.match(app, /Graphical association has not been verified/);
+  assert.match(app, /data-work-package-current/);
+  assert.match(app, /data-work-package-inspection/);
+  assert.match(app, /data-work-package-target/);
+  assert.match(app, /updateDrawingSearchResults/);
+  assert.match(app, /pendingDrawingContext/);
+  assert.match(css, /\.mc-work-package/);
+  assert.doesNotMatch(app, /duct routing (?:is|shown)|diffuser quantity (?:is|shown)|clash detected/i);
+});
+
 test('Mission Control exposes My Projects and an accessible demonstration orientation banner', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.match(app, /data-control-projects>My Projects/);

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 function createLocalStorage() {
   const values = new Map();
@@ -60,7 +61,7 @@ function createIndexedDB() {
           const records = ensureStore(operation.store).records;
 
           if (operation.type === 'put') {
-            records.set(operation.value.id || operation.value.inspectionId, structuredClone(operation.value));
+            records.set(operation.value.id || operation.value.inspectionId || operation.value.documentId || operation.value.drawingSetId, structuredClone(operation.value));
           } else {
             records.delete(operation.key);
           }
@@ -101,7 +102,7 @@ function createIndexedDB() {
         const request = {};
         setTimeout(() => {
               request.result = matchingRecords(storeName, indexName, key)
-                .map(record => record.id || record.inspectionId);
+                .map(record => record.id || record.inspectionId || record.documentId || record.drawingSetId);
           request.onsuccess?.();
         }, 0);
         return request;
@@ -132,6 +133,9 @@ function createIndexedDB() {
       getAll() {
         return requestResult([...store.records.values()]);
       },
+      get(key) {
+        return requestResult(store.records.get(key) || null);
+      },
       index(indexName) {
         const api = indexApi(name, indexName, operations);
 
@@ -141,12 +145,12 @@ function createIndexedDB() {
             const request = {};
             setTimeout(() => {
               request.result = matchingRecords(name, indexName, key)
-                .map(record => record.id || record.inspectionId);
+                .map(record => record.id || record.inspectionId || record.documentId || record.drawingSetId);
               request.onsuccess?.();
 
               for (const record of matchingRecords(name, indexName, key)) {
                 operations.push({
-                  key: record.id || record.inspectionId,
+                  key: record.id || record.inspectionId || record.documentId || record.drawingSetId,
                   store: name,
                   type: 'delete'
                 });
@@ -235,16 +239,17 @@ const {
 } = await import('../src/demo-project.js');
 const { retrieve } = await import('../src/retrieval.js');
 
-test('startup experience uses existing settings persistence without a schema change', async () => {
+test('schema version 5 preserves existing settings and all prior stores', async () => {
   await engine.documents();
+  assert.match(readFileSync(new URL('../src/engine.js', import.meta.url), 'utf8'), /const DOC_DB_VERSION = 5;/);
   assert.equal(engine.state().settings.startupExperience, 'mission-control');
-  assert.deepEqual(database.storeNames(), ['documents', 'inspectionRecords', 'sections']);
+  assert.deepEqual(database.storeNames(), ['documents', 'drawingAnalyses', 'inspectionRecords', 'sections', 'sourceFiles']);
   engine.saveSettings({ startupExperience: 'professional-workspace' });
   assert.equal(engine.state().settings.startupExperience, 'professional-workspace');
   assert.equal(JSON.parse(globalThis.localStorage.getItem('mc-master-state-v2')).settings.startupExperience, 'professional-workspace');
   engine.saveSettings({ startupExperience: 'unsupported' });
   assert.equal(engine.state().settings.startupExperience, 'mission-control');
-  assert.deepEqual(database.storeNames(), ['documents', 'inspectionRecords', 'sections']);
+  assert.deepEqual(database.storeNames(), ['documents', 'drawingAnalyses', 'inspectionRecords', 'sections', 'sourceFiles']);
 });
 
 test('successful imports atomically register one document and its sections', async () => {
@@ -519,6 +524,26 @@ test('ordinary project imports retain identifier remapping and imported naming b
   assert.notEqual(importedInspection.inspectionId, ordinary.inspectionRecords[0].inspectionId);
   assert.deepEqual(importedInspection.sourceDocumentIds, [(await engine.documents())[0].id]);
   assert.deepEqual(importedInspection.sourceSectionIds, [(await engine.sections())[0].id]);
+});
+
+test('drawing metadata imports without source bytes and requires exact PDF reattachment', async () => {
+  const drawingPackage = {
+    manifest: { project: { id: 'drawing-package-project', name: 'Drawing Package' } },
+    libraries: [{ id: 'drawing-library', projectId: 'drawing-package-project', name: 'Drawings', enabled: true }],
+    documents: [{ id: 'drawing-document', projectId: 'drawing-package-project', libraryId: 'drawing-library', name: 'Plans.pdf', extension: 'pdf', type: 'application/pdf', status: 'verified', sectionCount: 1 }],
+    sections: [{ id: 'drawing-section', projectId: 'drawing-package-project', libraryId: 'drawing-library', documentId: 'drawing-document', text: 'M-101 MECHANICAL PLAN', crossReferenceIds: [] }],
+    drawingAnalyses: [{ drawingSetId: 'source-analysis', documentId: 'drawing-document', projectId: 'drawing-package-project', analyzedAt: '2026-07-31T00:00:00Z', sheets: [{ pageNumber: 1, pageWidth: 1000, pageHeight: 700, rotation: 0, textItems: [{ text: 'M-101', region: { x: .8, y: .9, width: .1, height: .02 } }, { text: 'MECHANICAL PLAN', region: { x: .6, y: .86, width: .3, height: .02 } }] }] }]
+  };
+  await engine.importProject(drawingPackage);
+  const [document] = await engine.documents();
+  assert.equal(document.sourceAvailability, 'reattachment-required');
+  assert.equal(await engine.sourceFile(document.id), null);
+  const analysis = await engine.drawingAnalysis(document.id);
+  assert.equal(analysis.sheets[0].sheetNumber, 'M-101');
+  const exported = await engine.exportProject();
+  assert.equal(exported.sourceFilesIncluded, false);
+  assert.equal(Object.hasOwn(exported, 'sourceFiles'), false);
+  assert.equal(exported.drawingAnalyses.length, 1);
 });
 
 test('Inspection Record CRUD is project-isolated, archived numbers are not reused, and export includes records', async () => {

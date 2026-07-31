@@ -46,6 +46,16 @@ test('activates an Inspection Record through exact document and section identifi
   assert.equal(result.activation.documentId, 'd');
   assert.equal(result.activation.sectionId, 's');
 });
+test('activates a Construction Work Package primary source without retaining the package', () => {
+  const result = exact(S.constructionWorkPackage, { sectionId: 's' });
+  assert.equal(result.available, true);
+  assert.equal(result.activation.source, 'Construction Work Package');
+  assert.equal(result.activation.documentId, 'd');
+  assert.equal(result.activation.sectionId, 's');
+  assert.equal('workPackage' in result.activation, false);
+  assert.equal(createContextActivation(request(S.constructionWorkPackage, { documentId: 'missing' }), records).available, false);
+  assert.match(createContextActivation(request(S.constructionWorkPackage), { ...records, documents: [...records.documents, { ...records.documents[0] }] }).reasons[0], /ambiguous/i);
+});
 test('rejects invalid optional and required identifiers', () => {
   for (const [field, value] of [['documentId','x'],['sectionId','x'],['evidenceId','x'],['relationshipId','x'],['lineageId','x'],['revisionId','x']]) {
     assert.equal(createContextActivation(request(S.evidence, { [field]: value }), records).available, false);

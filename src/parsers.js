@@ -1,5 +1,7 @@
 import { normalizeSectionNumber } from './data-model.js';
 import { createIdentifier } from './identifiers.js';
+import { createPdfSourceRecord, openPdfBlob, readPdfPage } from './pdf-source.js';
+import { buildDrawingAnalysis } from './drawing-intelligence.js';
 
 const HIERARCHY_VERSION = 1;
 const TRADE_RULES = [
@@ -249,30 +251,35 @@ async function loadScript(src, test) {
   });
 }
 
-async function parsePDF(file) {
-  const pdfjs = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
-  pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
-  const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+export async function parsePdfFile(file, options = {}) {
+  const sourceBlob = file instanceof Blob && file.type === 'application/pdf'
+    ? file
+    : new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
+  const pdf = await openPdfBlob(sourceBlob, options);
   const pages = [];
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const content = await page.getTextContent();
-    const lines = [];
-    let currentY = null;
-    let line = [];
-    for (const item of content.items) {
-      const y = Math.round(item.transform?.[5] || 0);
-      if (currentY !== null && Math.abs(y - currentY) > 2) {
-        if (line.length) lines.push(line.join(' ').replace(/\s+/g, ' ').trim());
-        line = [];
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await readPdfPage(pdf, pageNumber);
+      const lines = [];
+      let currentY = null;
+      let line = [];
+      for (const item of page.textItems.slice().sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x)) {
+        const y = item.region.y;
+        if (currentY !== null && Math.abs(y - currentY) > .006) {
+          if (line.length) lines.push(line.join(' ').replace(/\s+/g, ' ').trim());
+          line = [];
+        }
+        line.push(item.text);
+        currentY = y;
       }
-      line.push(item.str);
-      currentY = y;
+      if (line.length) lines.push(line.join(' ').replace(/\s+/g, ' ').trim());
+      pages.push({ ...page, sourceText: lines.filter(Boolean).join('\n') });
     }
-    if (line.length) lines.push(line.join(' ').replace(/\s+/g, ' ').trim());
-    pages.push(`PAGE ${pageNumber}\n${lines.filter(Boolean).join('\n')}`);
+  } finally {
+    pdf.cleanup?.();
+    pdf.destroy?.();
   }
-  return pages.join('\n');
+  return { text: pages.map(page => `PAGE ${page.pageNumber}\n${page.sourceText}`).join('\n'), pages, pageCount: pages.length, sourceBlob };
 }
 
 async function parseDocx(file) {
@@ -286,12 +293,12 @@ async function parseXlsx(file) {
   return workbook.SheetNames.map(sheet => `SHEET: ${sheet}\n${window.XLSX.utils.sheet_to_csv(workbook.Sheets[sheet])}`).join('\n\n');
 }
 
-async function parseFile(file) {
+async function parseFile(file, options = {}) {
   const extension = file.name.split('.').pop().toLowerCase();
-  if (['txt', 'md', 'csv', 'json', 'html', 'htm', 'xml', 'log'].includes(extension)) return file.text();
-  if (extension === 'docx') return parseDocx(file);
-  if (['xlsx', 'xls'].includes(extension)) return parseXlsx(file);
-  if (extension === 'pdf') return parsePDF(file);
+  if (['txt', 'md', 'csv', 'json', 'html', 'htm', 'xml', 'log'].includes(extension)) return { text: await file.text() };
+  if (extension === 'docx') return { text: await parseDocx(file) };
+  if (['xlsx', 'xls'].includes(extension)) return { text: await parseXlsx(file) };
+  if (extension === 'pdf') return parsePdfFile(file, options);
   throw new Error(`Unsupported file type: .${extension}`);
 }
 
@@ -305,9 +312,11 @@ function categoryFor(name) {
   return 'General';
 }
 
-export async function parseFiles(files, projectId, onProgress = () => {}, libraryId = null) {
+export async function parseFiles(files, projectId, onProgress = () => {}, libraryId = null, options = {}) {
   const documents = [];
   const sections = [];
+  const sourceFiles = [];
+  const drawingAnalyses = [];
   let index = 0;
   for (const file of files) {
     index += 1;
@@ -318,7 +327,8 @@ export async function parseFiles(files, projectId, onProgress = () => {}, librar
       stage: 'extracting'
     });
     try {
-      const text = clean(await parseFile(file));
+      const parsedFile = await parseFile(file, options);
+      const text = clean(parsedFile.text);
       onProgress({
         current: index,
         total: files.length,
@@ -341,6 +351,7 @@ export async function parseFiles(files, projectId, onProgress = () => {}, librar
         largestSection: Math.max(0, ...parts.map(part => part.text.length)),
         averageSection: parts.length ? Math.round(text.length / parts.length) : 0,
         hierarchyVersion: HIERARCHY_VERSION, indexedAt: new Date().toISOString(), status: 'verified',
+        ...(extension === 'pdf' ? { pageCount: parsedFile.pageCount, sourceAvailability: 'pending-registration', drawingAnalysisStatus: 'pending-registration' } : {}),
         health: text.length < 100 ? 'warning' : 'healthy',
         healthDetail: text.length < 100 ? 'Very little extractable text was found.' : 'Text extraction and hierarchy indexing completed.'
       });
@@ -367,6 +378,11 @@ export async function parseFiles(files, projectId, onProgress = () => {}, librar
           citations: [{ document: file.name, pageStart: part.pageStart, pageEnd: part.pageEnd, location: part.location, sectionNumber: part.sectionNumber || '' }]
         });
       });
+      if (extension === 'pdf') {
+        const storedAt = new Date().toISOString();
+        sourceFiles.push(createPdfSourceRecord({ documentId, projectId, sourceBlob: parsedFile.sourceBlob, storedAt }));
+        drawingAnalyses.push(buildDrawingAnalysis({ documentId, projectId, pages: parsedFile.pages, analyzedAt: storedAt }));
+      }
     } catch (error) {
       documents.push({
         id: createIdentifier(), projectId, libraryId, name: file.name,
@@ -380,5 +396,5 @@ export async function parseFiles(files, projectId, onProgress = () => {}, librar
       });
     }
   }
-  return { documents, sections };
+  return { documents, sections, sourceFiles, drawingAnalyses };
 }
