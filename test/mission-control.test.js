@@ -11,7 +11,8 @@ import {
   countMissionControlSources,
   buildMissionControlModel,
   separateMissionControlProjects,
-  resolvePreviousProject
+  resolvePreviousProject,
+  missionControlResponseModeLabel
 } from '../src/mission-control.js';
 import fs from 'node:fs';
 import { createDemonstrationProjectFixture, DEMO_PROJECT_ID } from '../src/demo-project.js';
@@ -26,6 +27,13 @@ test('startup experience defaults and invalid values normalize to Mission Contro
   assert.equal(normalizeStartupExperience(), 'mission-control');
   assert.equal(normalizeStartupExperience('invalid'), 'mission-control');
   assert.equal(normalizeStartupExperience('professional-workspace'), 'professional-workspace');
+});
+
+test('Mission Control labels each response mode without combining answer surfaces', () => {
+  assert.equal(missionControlResponseModeLabel('offline'), 'Source-only evidence');
+  assert.equal(missionControlResponseModeLabel('source'), 'Source-only AI');
+  assert.equal(missionControlResponseModeLabel('assisted'), 'Expert-assisted AI');
+  assert.equal(missionControlResponseModeLabel('general'), 'General assistant AI');
 });
 
 test('priorities use the approved practical urgency order', () => {
@@ -156,16 +164,44 @@ test('Mission Control exposes My Projects and an accessible demonstration orient
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.match(app, /data-control-projects>My Projects/);
   assert.match(app, /aria-labelledby="mcDemoBannerTitle"/);
-  assert.match(app, /Return to My Projects/);
+  assert.match(app, /Stop Demonstration/);
   assert.match(app, /Reset Demonstration Project/);
 });
 
-test('returning from the demonstration clears transient state without deleting the fixture', () => {
+test('stopping the demonstration clears transient state without deleting the fixture or restoring a project', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const lifecycle = app.slice(app.indexOf('function clearDemonstrationTransientState'), app.indexOf('async function openDemonstrationProject'));
   assert.match(lifecycle, /activeRetrievalSession = null/);
   assert.match(lifecycle, /selectedInspectionId = null/);
   assert.match(lifecycle, /clearActiveContext/);
-  assert.match(lifecycle, /resolvePreviousProject/);
+  assert.match(lifecycle, /engine\.setProject\('general'\)/);
+  assert.match(lifecycle, /engine\.createConversation/);
   assert.doesNotMatch(lifecycle, /deleteProject|resetDemoProject/);
+});
+
+test('Mission Control explicitly isolates inactive shells from layout and focus', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  assert.match(app, /\.inert = !missionControl/);
+  assert.match(app, /\.inert = missionControl/);
+  assert.match(app, /setAttribute\('aria-hidden'/);
+  assert.match(css, /\[hidden\],\.mc-shell-inactive\{display:none!important\}/);
+});
+
+test('Mission Control owns native chat, conversation history, attachments, and precise source actions', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /function renderMissionControlChat/);
+  assert.match(app, /function renderConversationHistory/);
+  assert.match(app, /id="missionControlComposer"/);
+  assert.match(app, /id="missionControlFiles"/);
+  assert.match(app, /data-control-source-document/);
+  assert.doesNotMatch(app.slice(app.indexOf('if \(button\.dataset\.controlPrompt\)'), app.indexOf('const action = button.dataset.controlAction')), /openProfessionalDestination\(\{ view: 'chat'/);
+});
+
+test('Stop Demonstration is top-positioned and starts a fresh conversation', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const banner = app.indexOf('Stop Demonstration');
+  const dashboard = app.indexOf('mc-control-project"');
+  assert.ok(banner > -1 && banner < dashboard);
+  assert.match(app.slice(app.indexOf('async function returnFromDemonstrationProject'), app.indexOf('async function openDemonstrationProject')), /missionControlView = 'chat'/);
 });

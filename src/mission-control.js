@@ -12,6 +12,15 @@ export function normalizeStartupExperience(value) {
   return MISSION_CONTROL_EXPERIENCES.includes(value) ? value : 'mission-control';
 }
 
+export function missionControlResponseModeLabel(value) {
+  return ({
+    offline: 'Source-only evidence',
+    source: 'Source-only AI',
+    assisted: 'Expert-assisted AI',
+    general: 'General assistant AI'
+  })[text(value)] || 'Response mode unavailable';
+}
+
 export function separateMissionControlProjects(projects = [], demonstrationProjectId = '') {
   const ordered = list(projects).filter(project => text(project?.id)).slice().sort((a, b) =>
     text(a.name).localeCompare(text(b.name)) || text(a.id).localeCompare(text(b.id))

@@ -487,6 +487,8 @@ test('deterministic import rejects collisions before duplicating fixture records
 
 test('reset deletes only the deterministic demonstration project and restores canonical records', async () => {
   engine.saveSettings({ startupExperience: 'professional-workspace' });
+  const retainedConversation = engine.createConversation({ projectId: DEMO_PROJECT_ID });
+  engine.appendConversationMessage({ role: 'user', content: 'Retain this demonstration conversation.' }, retainedConversation.conversationId);
   const unrelated = engine.addProject('Unaffected import test project');
   const unrelatedId = unrelated.id;
   await engine.deleteProject(DEMO_PROJECT_ID);
@@ -495,6 +497,7 @@ test('reset deletes only the deterministic demonstration project and restores ca
   assert.ok(engine.state().projects.some(project => project.id === DEMO_PROJECT_ID));
   assert.ok(engine.state().projects.some(project => project.id === unrelatedId));
   assert.equal(engine.state().settings.startupExperience, 'professional-workspace');
+  assert.ok(engine.conversations().some(item => item.conversationId === retainedConversation.conversationId));
   assert.equal((await engine.inspectionRecords({ includeArchived: true })).length, 5);
   engine.saveSettings({ startupExperience: 'mission-control' });
 });
@@ -540,4 +543,51 @@ test('Inspection Record CRUD is project-isolated, archived numbers are not reuse
 test('ordinary import remains backward compatible when Inspection Records are absent', async () => {
   await engine.importProject({ manifest: { project: { name: 'Legacy without inspections' } }, libraries: [], documents: [], sections: [] });
   assert.deepEqual(await engine.inspectionRecords({ includeArchived: true }), []);
+});
+
+test('conversations persist in existing localStorage and active chat remains compatible', () => {
+  const conversation = engine.createConversation({ projectId: engine.state().activeProject, now: '2026-07-31T12:00:00Z' });
+  engine.appendConversationMessage({ id: 'conversation-user-message', role: 'user', content: 'Persist this thread', createdAt: '2026-07-31T12:01:00Z' }, conversation.conversationId);
+  engine.addConversationAttachment('stable-document-reference', conversation.conversationId);
+  const stored = JSON.parse(globalThis.localStorage.getItem('mc-master-state-v2'));
+  assert.equal(stored.activeConversationId, conversation.conversationId);
+  assert.equal(stored.conversations.find(item => item.conversationId === conversation.conversationId).messages.length, 1);
+  assert.deepEqual(engine.state().chat.map(item => item.id), ['conversation-user-message']);
+  assert.deepEqual(engine.activeConversation().attachmentDocumentIds, ['stable-document-reference']);
+  engine.clearChat();
+  assert.equal(engine.conversations().some(item => item.conversationId === conversation.conversationId), true);
+});
+
+test('attachment scope constrains eligible sections without changing ordinary search', async () => {
+  engine.setProject('general');
+  const documents = await engine.documents();
+  const scoped = documents[0];
+  if (!scoped) return;
+  const ordinary = await engine.search('Chief preserve evidence');
+  const attached = await engine.search('Chief preserve evidence', { documentIds: [scoped.id] });
+  assert.ok(attached.every(hit => hit.documentId === scoped.id));
+  assert.ok(ordinary.length >= attached.length);
+});
+
+test('legacy flat chat migrates once into the active conversation compatibility view', async () => {
+  const legacyStorage = createLocalStorage();
+  legacyStorage.setItem('mc-master-state-v2', JSON.stringify({
+    projects: [{ id: 'general', name: 'General' }],
+    libraries: [{ id: 'general-library', projectId: 'general', name: 'General Library', enabled: true }],
+    activeProject: 'general', activeLibrary: 'general-library',
+    chat: [{ id: 'legacy-message', role: 'user', content: 'Legacy retained message', createdAt: '2026-01-01T00:00:00Z' }]
+  }));
+  const originalStorage = globalThis.localStorage;
+  globalThis.localStorage = legacyStorage;
+  try {
+    const { engine: migratedEngine } = await import(`../src/engine.js?legacy-migration=${Date.now()}`);
+    assert.equal(migratedEngine.conversations().length, 1);
+    assert.deepEqual(migratedEngine.state().chat.map(item => item.id), ['legacy-message']);
+    migratedEngine.saveSettings({ topK: 10 });
+    const stored = JSON.parse(legacyStorage.getItem('mc-master-state-v2'));
+    assert.equal(stored.conversations.length, 1);
+    assert.equal(stored.activeConversationId, stored.conversations[0].conversationId);
+  } finally {
+    globalThis.localStorage = originalStorage;
+  }
 });

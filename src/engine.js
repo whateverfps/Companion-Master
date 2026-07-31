@@ -2,6 +2,15 @@ import { parseFiles } from './parsers.js';
 import { arrayValue } from './data-model.js';
 import { createIdentifier } from './identifiers.js';
 import {
+  defaultConversationTitle,
+  migrateLegacyChat,
+  normalizeAttachmentDocumentIds,
+  normalizeConversation,
+  renameConversation as renameConversationRecord,
+  selectActiveConversation,
+  sortConversations
+} from './conversations.js';
+import {
   nextInspectionNumber,
   normalizeInspectionRecord,
   validateInspectionRecord,
@@ -56,6 +65,8 @@ const defaults = {
   ],
   activeLibrary: 'general-library',
   chat: [],
+  conversations: [],
+  activeConversationId: '',
   evaluations: []
 };
 
@@ -103,9 +114,16 @@ function loadState() {
       ? loaded.libraries
       : structuredClone(defaults.libraries);
 
-    loaded.chat = Array.isArray(loaded.chat)
-      ? loaded.chat
-      : [];
+    loaded.chat = Array.isArray(loaded.chat) ? loaded.chat : [];
+    const migrated = migrateLegacyChat({
+      chat: loaded.chat,
+      conversations: loaded.conversations,
+      activeConversationId: loaded.activeConversationId,
+      projectId: loaded.activeProject
+    });
+    loaded.conversations = migrated.conversations;
+    loaded.activeConversationId = migrated.activeConversationId;
+    loaded.chat = selectActiveConversation(loaded.conversations, loaded.activeConversationId)?.messages || [];
 
     loaded.evaluations = Array.isArray(loaded.evaluations)
       ? loaded.evaluations
@@ -152,7 +170,9 @@ function loadState() {
 }
 
 function save() {
-  localStorage.setItem(STATE_KEY, JSON.stringify(state));
+  const { chat: compatibilityChat, ...persistedState } = state;
+  void compatibilityChat;
+  localStorage.setItem(STATE_KEY, JSON.stringify(persistedState));
 }
 
 async function contentHash(file) {
@@ -415,7 +435,80 @@ async function delByIndex(store, index, key) {
 
 export const engine = {
   state() {
-    return structuredClone(state);
+    const active = selectActiveConversation(state.conversations, state.activeConversationId);
+    return structuredClone({ ...state, chat: active?.messages || [] });
+  },
+
+  conversations() {
+    return structuredClone(sortConversations(state.conversations));
+  },
+
+  activeConversation() {
+    return structuredClone(selectActiveConversation(state.conversations, state.activeConversationId));
+  },
+
+  createConversation({ projectId = '', title = '', now = new Date().toISOString() } = {}) {
+    const conversation = normalizeConversation({
+      conversationId: createIdentifier(),
+      title,
+      projectId: projectId && state.projects.some(project => project.id === projectId) ? projectId : '',
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      attachmentDocumentIds: []
+    }, { now });
+    state.conversations.push(conversation);
+    state.activeConversationId = conversation.conversationId;
+    state.chat = conversation.messages;
+    save();
+    return structuredClone(conversation);
+  },
+
+  activateConversation(conversationId) {
+    const conversation = state.conversations.find(item => item.conversationId === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    state.activeConversationId = conversationId;
+    state.chat = conversation.messages;
+    save();
+    return structuredClone(conversation);
+  },
+
+  renameConversation(conversationId, title) {
+    const index = state.conversations.findIndex(item => item.conversationId === conversationId);
+    if (index < 0) throw new Error('Conversation not found.');
+    state.conversations[index] = renameConversationRecord(state.conversations[index], title, new Date().toISOString());
+    save();
+    return structuredClone(state.conversations[index]);
+  },
+
+  appendConversationMessage(message, conversationId = state.activeConversationId) {
+    const conversation = state.conversations.find(item => item.conversationId === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    const normalized = { ...structuredClone(message), id: message?.id || createIdentifier(), createdAt: message?.createdAt || new Date().toISOString() };
+    conversation.messages.push(normalized);
+    conversation.updatedAt = normalized.createdAt;
+    if (conversation.title === 'New conversation') conversation.title = defaultConversationTitle(conversation.messages);
+    if (conversationId === state.activeConversationId) state.chat = conversation.messages;
+    save();
+    return structuredClone(normalized);
+  },
+
+  addConversationAttachment(documentId, conversationId = state.activeConversationId) {
+    const conversation = state.conversations.find(item => item.conversationId === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    conversation.attachmentDocumentIds = normalizeAttachmentDocumentIds([...conversation.attachmentDocumentIds, documentId]);
+    conversation.updatedAt = new Date().toISOString();
+    save();
+    return structuredClone(conversation);
+  },
+
+  removeConversationAttachment(documentId, conversationId = state.activeConversationId) {
+    const conversation = state.conversations.find(item => item.conversationId === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    conversation.attachmentDocumentIds = conversation.attachmentDocumentIds.filter(id => id !== documentId);
+    conversation.updatedAt = new Date().toISOString();
+    save();
+    return structuredClone(conversation);
   },
 
   async healthCheck() {
@@ -1081,8 +1174,12 @@ export const engine = {
     });
   },
 
-  async search(query) {
-    const sections = await this.retrievableSections();
+  async search(query, options = {}) {
+    const allSections = await this.retrievableSections();
+    const scopeIds = normalizeAttachmentDocumentIds(options.documentIds);
+    const sections = scopeIds.length
+      ? allSections.filter(section => scopeIds.includes(section.documentId))
+      : allSections;
 
     const hits = retrieve(
       query,
@@ -1211,7 +1308,7 @@ export const engine = {
     });
   },
 
-  async ask(prompt, mode = state.settings.mode) {
+  async ask(prompt, mode = state.settings.mode, options = {}) {
     const cleanedPrompt = String(prompt || '').trim();
 
     if (!cleanedPrompt) {
@@ -1223,7 +1320,11 @@ export const engine = {
       promptLength: cleanedPrompt.length
     });
 
-    const hits = await this.search(cleanedPrompt);
+    const documentIds = normalizeAttachmentDocumentIds(options.documentIds);
+    const hits = await this.search(cleanedPrompt, { documentIds });
+    if (documentIds.length && !hits.length) {
+      throw new Error('The selected attachments do not contain usable indexed sections for this question.');
+    }
 
     let answer;
 
@@ -1319,15 +1420,16 @@ export const engine = {
       mode
     };
 
-    state.chat.push({
+    if (!selectActiveConversation(state.conversations, state.activeConversationId)) {
+      this.createConversation({ projectId: state.activeProject });
+    }
+    this.appendConversationMessage({
       id: createIdentifier(),
       role: 'user',
       content: cleanedPrompt,
       createdAt: new Date().toISOString()
     });
-
-    state.chat.push(message);
-    save();
+    this.appendConversationMessage(message);
 
     logger.info('Analysis completed', {
       mode,
@@ -1341,7 +1443,13 @@ export const engine = {
   },
 
   clearChat() {
-    state.chat = [];
+    const active = state.conversations.find(item => item.conversationId === state.activeConversationId);
+    if (active) {
+      active.messages = [];
+      active.title = 'New conversation';
+      active.updatedAt = new Date().toISOString();
+      state.chat = active.messages;
+    }
     save();
   },
 
