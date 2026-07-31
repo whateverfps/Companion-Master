@@ -40,6 +40,15 @@ import {
   revisionPairStatus
 } from './revision-comparison.js';
 import {
+  clearInspectionSession,
+  createEngineeringContext,
+  engineeringContextMetrics,
+  engineeringNavigationTarget,
+  getInspectionSession,
+  startInspectionSession,
+  updateInspectionNotes
+} from './engineering-context.js';
+import {
   firstText,
   sectionHeadingValue,
   sectionLocationValue,
@@ -104,6 +113,7 @@ let lineageTarget = null;
 let revisionTarget = null;
 let revisionFilter = 'all';
 let selectedRevisionMatch = 0;
+let engineeringTarget = null;
 
 app.innerHTML = `
 <div class="shell">
@@ -123,6 +133,7 @@ app.innerHTML = `
       <button data-view="sources">Source Inspector</button>
       <button data-view="evidence">Evidence Explorer</button>
       <button data-view="relationships">Relationship Explorer</button>
+      <button data-view="engineering">Engineering Workspace</button>
       <button data-view="versions">Version Explorer</button>
       <button data-view="evaluate">Knowledge Validation</button>
       <button data-view="settings">Settings</button>
@@ -537,6 +548,15 @@ app.innerHTML = `
       </div>
     </section>
 
+    <section id="engineering" class="view">
+      <header id="engineeringHeader" class="mc-engineering-header"></header>
+      <div class="mc-engineering-workspace">
+        <section class="panel mc-engineering-context-panel" aria-labelledby="engineeringContextTitle"><div class="mc-engineering-heading"><span>TRANSIENT WORK PACKAGE</span><h2 id="engineeringContextTitle">Current Context</h2></div><div id="engineeringContext"></div></section>
+        <section class="panel mc-engineering-knowledge-panel" aria-labelledby="engineeringKnowledgeTitle"><div class="mc-engineering-heading"><span>EXACT COMPOSITION</span><h2 id="engineeringKnowledgeTitle">Inspection Knowledge</h2></div><div id="engineeringKnowledge"></div></section>
+        <aside class="panel mc-engineering-session-panel" aria-labelledby="engineeringSessionTitle"><div class="mc-engineering-heading"><span>UNSAVED SESSION</span><h2 id="engineeringSessionTitle">Inspection Session</h2></div><div id="engineeringSession"></div></aside>
+      </div>
+    </section>
+
     <section id="revisions" class="view">
       <header id="revisionHeader" class="mc-revision-header"></header>
       <div id="revisionSummary" class="mc-revision-summary"></div>
@@ -881,6 +901,10 @@ const titles = {
     'Revision Review',
     'Inspect objective structural and stored-content changes between explicitly linked revisions.'
   ],
+  engineering: [
+    'Engineering Workspace',
+    'Assemble exact project knowledge for an inspection or construction activity.'
+  ],
   evaluate: [
     'Knowledge Validation',
     'Validate knowledge-base readiness, metadata, indexing, and coverage.'
@@ -931,6 +955,9 @@ function show(name) {
 
   if (name === 'revisions') {
     renderRevisionReview();
+  }
+  if (name === 'engineering') {
+    renderEngineeringWorkspace();
   }
 
   if (name === 'evaluate') {
@@ -1066,6 +1093,26 @@ function openRevisionReview(earlierDocumentId, laterDocumentId) {
   revisionFilter = 'all';
   selectedRevisionMatch = 0;
   show('revisions');
+}
+
+function openEngineeringWorkspace({ documentId, sectionId = '', evidenceId = '', libraryId = '', origin = view } = {}) {
+  const target = engineeringNavigationTarget({
+    projectId: state().activeProject,
+    documentId,
+    sectionId,
+    evidenceId,
+    libraryId,
+    origin
+  });
+  if (!target) return;
+  engineeringTarget = target;
+  clearInspectionSession();
+  show('engineering');
+}
+
+function clearEngineeringWorkspace() {
+  engineeringTarget = null;
+  clearInspectionSession();
 }
 
 function returnToRevisionReview() {
@@ -1235,6 +1282,7 @@ $('#projectSelect').onchange = async () => {
   revisionTarget = null;
   revisionFilter = 'all';
   selectedRevisionMatch = 0;
+  clearEngineeringWorkspace();
   await refresh();
 };
 
@@ -1517,6 +1565,9 @@ function renderAssistantToolbar(message, messageIndex) {
           ${message.hits[0]?.documentId
             ? `<button type="button" data-open-version-explorer="${esc(message.hits[0].documentId)}">Explore Versions</button>`
             : ''}
+          ${message.hits[0]?.documentId
+            ? `<button type="button" data-open-engineering="${esc(message.hits[0].documentId)}">Open Engineering Workspace</button>`
+            : ''}
         `
         : ''}
     </div>
@@ -1775,6 +1826,19 @@ $('#messages').onclick = event => {
     return;
   }
 
+  const engineeringButton = event.target.closest('[data-open-engineering]');
+  if (engineeringButton && activeRetrievalSession) {
+    const evidence = activeRetrievalSession.evidence[0];
+    openEngineeringWorkspace({
+      documentId: engineeringButton.dataset.openEngineering,
+      sectionId: evidence?.sectionId || '',
+      evidenceId: evidence?.id || '',
+      libraryId: evidence?.libraryId || '',
+      origin: 'chat'
+    });
+    return;
+  }
+
   const currentVersionButton = event.target.closest('[data-open-current-version]');
   if (currentVersionButton) {
     selectedDoc = currentVersionButton.dataset.openCurrentVersion;
@@ -1814,6 +1878,7 @@ $('#clearChat').onclick = () => {
   revisionTarget = null;
   revisionFilter = 'all';
   selectedRevisionMatch = 0;
+  clearEngineeringWorkspace();
   setChiefState('idle');
   refresh();
 };
@@ -2197,6 +2262,9 @@ function renderEvidenceExplorer() {
           ${selected?.documentId
             ? '<button type="button" data-evidence-relationships class="subtle">Explore Relationships</button>'
             : ''}
+          ${selected?.documentId
+            ? '<button type="button" data-evidence-engineering class="subtle">Open Engineering Workspace</button>'
+            : ''}
           ${session.messageId && state().chat.some(message => message.id === session.messageId)
             ? '<button type="button" data-evidence-back-answer class="subtle">Back to Answer</button>'
             : ''}
@@ -2238,6 +2306,9 @@ function renderEvidenceExplorer() {
   );
   $('[data-evidence-relationships]')?.addEventListener('click', () =>
     openRelationshipExplorerFromEvidence(selected)
+  );
+  $('[data-evidence-engineering]')?.addEventListener('click', () =>
+    openEngineeringWorkspace({ documentId: selected.documentId, sectionId: selected.sectionId, evidenceId: selected.id, libraryId: selected.libraryId, origin: 'evidence' })
   );
 }
 
@@ -2340,6 +2411,7 @@ async function renderRelationshipExplorer() {
         : ''}
       <button type="button" class="subtle" data-relationship-knowledge>Open Knowledge Object</button>
       <button type="button" class="subtle" data-relationship-source>Open Source Inspector</button>
+      <button type="button" class="subtle" data-relationship-engineering>Open Engineering Workspace</button>
     </nav>
   `;
 
@@ -2452,6 +2524,9 @@ async function renderRelationshipExplorer() {
   $('[data-relationship-return-revisions]')?.addEventListener('click', returnToRevisionReview);
   $('[data-relationship-knowledge]')?.addEventListener('click', () => openRelationshipSource('knowledge'));
   $('[data-relationship-source]')?.addEventListener('click', () => openRelationshipSource('sources'));
+  $('[data-relationship-engineering]')?.addEventListener('click', () =>
+    openEngineeringWorkspace({ documentId: selectedDocument.id, sectionId: activeContext.section?.id || '', libraryId: selectedDocument.libraryId, origin: 'relationships' })
+  );
 }
 
 async function renderVersionExplorer() {
@@ -2535,6 +2610,7 @@ async function renderVersionExplorer() {
         ? '<button type="button" data-lineage-compare>Compare with Previous Version</button>'
         : ''}
       <button type="button" data-lineage-knowledge>Open Knowledge Object</button>
+      <button type="button" class="subtle" data-lineage-engineering>Open Engineering Workspace</button>
       <button type="button" class="subtle" data-lineage-source>Open Source Inspector</button>
       ${lineageTarget.originatingMessageId && state().chat.some(message => message.id === lineageTarget.originatingMessageId)
         ? '<button type="button" class="subtle" data-lineage-answer>Back to Answer</button>'
@@ -2628,6 +2704,9 @@ async function renderVersionExplorer() {
     show('sources');
   });
   $('[data-lineage-answer]')?.addEventListener('click', returnToOriginatingAnswer);
+  $('[data-lineage-engineering]')?.addEventListener('click', () =>
+    openEngineeringWorkspace({ documentId: selected.id, libraryId: selected.libraryId, origin: 'versions' })
+  );
   $('[data-lineage-compare]')?.addEventListener('click', () =>
     openRevisionReview(exactPrevious.id, selected.id)
   );
@@ -2666,6 +2745,7 @@ async function renderRevisionReview() {
         <button type="button" class="subtle" data-revision-object="earlier">Earlier Knowledge Object</button>
         <button type="button" class="subtle" data-revision-object="later">Later Knowledge Object</button>
         <button type="button" class="subtle" data-revision-relationships>Relationship Explorer</button>
+        <button type="button" class="subtle" data-revision-engineering>Engineering Workspace</button>
       ` : ''}
     </nav>
   `;
@@ -2801,11 +2881,116 @@ async function renderRevisionReview() {
     selectedDoc = later.id;
     show('relationships');
   });
+  $('[data-revision-engineering]')?.addEventListener('click', () =>
+    openEngineeringWorkspace({ documentId: later.id, sectionId: selected?.later?.id || '', libraryId: later.libraryId, origin: 'revisions' })
+  );
   $('[data-revision-version]')?.addEventListener('click', () => {
     lineageTarget = { ...lineageNavigationTarget(later.id), originatingWorkspace: 'revisions' };
     selectedDoc = later.id;
     show('versions');
   });
+}
+
+async function renderEngineeringWorkspace() {
+  const currentState = state();
+  const documents = await engine.documents();
+  const sections = await engine.sections();
+  const target = engineeringTarget;
+  const context = target ? createEngineeringContext({
+    ...target,
+    projects: currentState.projects,
+    documents,
+    sections,
+    retrievalSession: activeRetrievalSession
+  }) : null;
+  const documentById = id => documents.find(item => item.id === id);
+  const sectionById = id => sections.find(item => item.id === id);
+  const labelDocument = id => documentById(id)?.title || documentById(id)?.name || id;
+  const labelSection = id => sectionHeadingValue(sectionById(id)) || id;
+  const originValid = target && ({
+    chat: Boolean(activeRetrievalSession?.messageId && activeRetrievalSession.evidence.some(item => item.documentId === target.documentId)),
+    evidence: Boolean(activeRetrievalSession?.evidence.some(item => item.documentId === target.documentId)),
+    relationships: relationshipTarget?.documentId === target.documentId,
+    knowledge: selectedDoc === target.documentId,
+    versions: lineageTarget?.documentId === target.documentId,
+    revisions: Boolean(revisionTarget && [revisionTarget.earlierDocumentId, revisionTarget.laterDocumentId].includes(target.documentId))
+  }[target.origin]);
+
+  if (!context) {
+    if (target) clearEngineeringWorkspace();
+    $('#engineeringHeader').innerHTML = '<div><span>READ-ONLY CONTEXT</span><h2>Engineering context unavailable</h2><p>Select an exact document from a supported workspace to assemble an inspection context.</p></div>';
+    $('#engineeringContext').innerHTML = '<div class="mc-engineering-empty">No valid exact project and document seed is active.</div>';
+    $('#engineeringKnowledge').innerHTML = '<div class="mc-engineering-empty">No project knowledge has been composed.</div>';
+    $('#engineeringSession').innerHTML = '<div class="mc-engineering-empty">Temporary notes become available after a valid context is opened.</div>';
+    return;
+  }
+  let session = getInspectionSession();
+  if (!session || session.context.projectId !== context.projectId || session.context.documentId !== context.documentId || session.context.sectionId !== context.sectionId) {
+    session = startInspectionSession(context, { origin: target.origin });
+  }
+  const seedDocument = documentById(context.documentId);
+  const seedSection = sectionById(context.sectionId);
+  const renderDocuments = (items, empty) => items.length
+    ? `<ul>${items.map(item => `<li><strong>${esc(labelDocument(item.documentId))}</strong><span>${item.basis ? `Exact classification: ${esc(item.basis)}` : esc(item.documentId)}</span></li>`).join('')}</ul>`
+    : `<div class="mc-engineering-empty">${esc(empty)}</div>`;
+  const returnLabel = ({ chat: 'Back to Command Desk', evidence: 'Back to Evidence Explorer', relationships: 'Back to Relationship Explorer', knowledge: 'Back to Knowledge Object', versions: 'Back to Version Explorer', revisions: 'Back to Revision Review' })[target.origin] || '';
+
+  $('#engineeringHeader').innerHTML = `
+    <div><span>TRANSIENT ENGINEERING CONTEXT</span><h2>${esc(seedDocument.title || seedDocument.name)}</h2><p>Exact project, document, section, relationship, lineage, and active-session evidence identifiers only.</p></div>
+    <nav class="mc-engineering-actions" aria-label="Engineering workspace navigation">
+      ${originValid ? `<button type="button" data-engineering-return>${esc(returnLabel)}</button>` : ''}
+      <button type="button" class="subtle" data-engineering-object>Open Knowledge Object</button>
+      <button type="button" class="subtle" data-engineering-source>Open Source Inspector</button>
+      <button type="button" class="subtle" data-engineering-relationships>Relationship Explorer</button>
+      <button type="button" class="subtle" data-engineering-versions>Version Explorer</button>
+    </nav>
+  `;
+  $('#engineeringContext').innerHTML = `
+    <dl class="mc-engineering-facts">
+      <div><dt>Project ID</dt><dd>${esc(context.projectId)}</dd></div><div><dt>Library ID</dt><dd>${esc(context.libraryId)}</dd></div>
+      <div><dt>Seed document</dt><dd>${esc(seedDocument.title || seedDocument.name)}</dd></div><div><dt>Seed section</dt><dd>${seedSection ? esc(labelSection(seedSection.id)) : 'Unavailable'}</dd></div>
+      <div><dt>Building</dt><dd>${context.buildingId ? esc(context.buildingId) : 'Unavailable'}</dd></div><div><dt>Room</dt><dd>${context.roomId ? esc(context.roomId) : 'Unavailable'}</dd></div>
+      <div><dt>Discipline</dt><dd>${context.discipline ? esc(context.discipline) : 'Unavailable'}</dd></div><div><dt>Trade</dt><dd>${context.trade ? esc(context.trade) : 'Unavailable'}</dd></div>
+    </dl>
+    <div class="mc-engineering-status ${context.incomplete ? 'incomplete' : 'complete'}"><strong>${context.incomplete ? 'Incomplete context' : 'Context assembled'}</strong><span>${fmt(context.documentIds.length)} exact document(s) · ${fmt(context.sectionIds.length)} exact section(s)</span></div>
+    ${context.unavailableFields.length ? `<div class="mc-engineering-unavailable"><strong>Unavailable context fields</strong><span>${esc(context.unavailableFields.join(', '))}</span></div>` : ''}
+  `;
+  const evidence = context.evidence.map(item => activeRetrievalSession?.evidence.find(candidate => candidate.id === item.id)).filter(Boolean);
+  const referenced = context.referencedDocumentIds.map(documentId => ({ documentId, basis: '' }));
+  const contextualList = items => items.length ? `<ul>${items.map(item => `<li><strong>${esc(labelDocument(item.documentId))}</strong><span>Contextual association only</span></li>`).join('')}</ul>` : '<div class="mc-engineering-empty">None available.</div>';
+  $('#engineeringKnowledge').innerHTML = `
+    <div class="mc-engineering-groups">
+      <section><h3>Explicit Specifications <span>${context.classification.specifications.length}</span></h3>${renderDocuments(context.classification.specifications, 'No exactly classified specifications.')}</section>
+      <section><h3>Exact Drawings <span>${context.classification.drawings.length}</span></h3>${renderDocuments(context.classification.drawings, 'No exactly classified drawings.')}</section>
+      <section><h3>Exact Procedures <span>${context.classification.procedures.length}</span></h3>${renderDocuments(context.classification.procedures, 'No exactly classified procedures.')}</section>
+      <section><h3>Unclassified <span>${context.classification.unclassified.length}</span></h3>${renderDocuments(context.classification.unclassified, 'No unclassified context documents.')}</section>
+      <section><h3>Referenced Documents <span>${referenced.length}</span></h3>${renderDocuments(referenced, 'No resolved cross-document references.')}</section>
+      <section><h3>Explicit Relationships <span>${context.relationshipIds.length}</span></h3>${context.relationshipIds.length ? `<ul>${context.relationshipIds.map(id => `<li><strong>${esc(id)}</strong></li>`).join('')}</ul>` : '<div class="mc-engineering-empty">No exact hierarchy or reference relationships.</div>'}</section>
+      <section><h3>Contextual Same Division <span>${context.contextualSameDivision.length}</span></h3>${contextualList(context.contextualSameDivision)}</section>
+      <section><h3>Contextual Same Library <span>${context.contextualSameLibrary.length}</span></h3>${contextualList(context.contextualSameLibrary)}</section>
+      <section><h3>Active-Session Evidence <span>${evidence.length}</span></h3>${evidence.length ? `<ul>${evidence.map(item => `<li><strong>${esc(item.citationReference)} · ${esc(item.heading)}</strong><span>${esc(item.documentName)}</span></li>`).join('')}</ul>` : '<div class="mc-engineering-empty">No exact evidence from the active retrieval session.</div>'}</section>
+      <section><h3>Version Status</h3><dl class="mc-engineering-mini-facts"><div><dt>Status</dt><dd>${esc(context.lineage.status)}</dd></div><div><dt>Current</dt><dd>${esc(context.lineage.currentDocumentId || 'Unavailable')}</dd></div><div><dt>Previous</dt><dd>${esc(context.lineage.previousDocumentId || 'Unavailable')}</dd></div><div><dt>Duplicates</dt><dd>${context.lineage.duplicateDocumentIds.length}</dd></div></dl></section>
+    </div>
+  `;
+  const requirementItems = [
+    ...context.classification.specifications.map(item => `Specification: ${labelDocument(item.documentId)}`),
+    ...context.classification.procedures.map(item => `Procedure: ${labelDocument(item.documentId)}`),
+    ...context.referencedDocumentIds.map(id => `Referenced document: ${labelDocument(id)}`),
+    `Version status: ${context.lineage.status}`,
+    ...context.warnings,
+    ...context.unavailableFields.map(field => `Unavailable: ${field}`)
+  ];
+  $('#engineeringSession').innerHTML = `
+    <section class="mc-engineering-summary"><h3>Requirements Summary</h3>${requirementItems.length ? `<ul>${requirementItems.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : '<div class="mc-engineering-empty">No objective requirements summary items are available.</div>'}</section>
+    <section class="mc-engineering-notes"><label for="engineeringNotes"><strong>Temporary Inspection Notes</strong><span>Unsaved. Cleared when this context closes or is replaced.</span></label><textarea id="engineeringNotes" rows="8" placeholder="Temporary session notes">${esc(session.notes)}</textarea></section>
+    <section class="mc-engineering-warnings"><h3>Context Warnings</h3>${context.warnings.length ? `<ul>${context.warnings.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : '<div class="mc-engineering-clear">No explicit context warnings.</div>'}</section>
+  `;
+  $('#engineeringNotes')?.addEventListener('input', event => updateInspectionNotes(event.target.value));
+  $('[data-engineering-return]')?.addEventListener('click', () => show(target.origin === 'knowledge' ? 'knowledge' : target.origin));
+  $('[data-engineering-object]')?.addEventListener('click', () => { selectedDoc = context.documentId; selectedKnowledgeSection = 'all'; show('knowledge'); });
+  $('[data-engineering-source]')?.addEventListener('click', () => { selectedDoc = context.documentId; show('sources'); });
+  $('[data-engineering-relationships]')?.addEventListener('click', () => { relationshipTarget = { ...relationshipNavigationTarget({ documentId: context.documentId, sectionId: context.sectionId }), projectId: context.projectId, libraryId: context.libraryId, originatingWorkspace: 'engineering' }; show('relationships'); });
+  $('[data-engineering-versions]')?.addEventListener('click', () => openVersionExplorer(context.documentId));
 }
 
 $('#upload').onclick = () => $('#fileInput').click();
@@ -5060,6 +5245,9 @@ function renderDocumentMetadata(document, allSections = []) {
       <button type="button" class="subtle mc-relationship-open" data-object-relationships>
         Open Relationship Explorer
       </button>
+      <button type="button" class="subtle mc-engineering-open" data-object-engineering>
+        Open Engineering Workspace
+      </button>
     </section>
 
     <section class="mc-object-section mc-object-section-wide" aria-labelledby="objectMetadataRelationshipsTitle">
@@ -5167,6 +5355,9 @@ function renderDocumentMetadata(document, allSections = []) {
   });
   $('[data-object-lineage]')?.addEventListener('click', () =>
     openVersionExplorer(document.id, activeRetrievalSession?.messageId || '')
+  );
+  $('[data-object-engineering]')?.addEventListener('click', () =>
+    openEngineeringWorkspace({ documentId: document.id, sectionId: objectTargetSection?.id || '', libraryId: document.libraryId, origin: 'knowledge' })
   );
 
   if (objectTargetSection) {
@@ -6094,6 +6285,7 @@ async function renderEvals() {
   const lineageModel = buildDocumentLineage({ documents, sections });
   const lineageValidation = lineageModel.validation;
   const revisionMetrics = buildRevisionMetrics({ documents, sections });
+  const engineeringMetrics = engineeringContextMetrics(getInspectionSession()?.context || null);
   const lineageIssueCount =
     lineageValidation.brokenLineage.length +
     lineageValidation.circularPreviousLinks.length +
@@ -6191,7 +6383,15 @@ async function renderEvals() {
     ['Added Revision Sections', revisionMetrics.addedSections, 'Unmatched later-revision sections'],
     ['Removed Revision Sections', revisionMetrics.removedSections, 'Unmatched earlier-revision sections'],
     ['Changed Revision Sections', revisionMetrics.changedSections, 'Matched sections with objective changes'],
-    ['Unmatched Revision Sections', revisionMetrics.unmatchedSections, 'Sections without a deterministic pair']
+    ['Unmatched Revision Sections', revisionMetrics.unmatchedSections, 'Sections without a deterministic pair'],
+    ['Active Engineering Context', engineeringMetrics.activeEngineeringContext, 'Current transient context only'],
+    ['Context Has Evidence', engineeringMetrics.contextHasEvidence, 'Exact active-session evidence'],
+    ['Context Has Relationships', engineeringMetrics.contextHasExplicitRelationships, 'Exact hierarchy or explicit references'],
+    ['Context Has Version History', engineeringMetrics.contextHasVersionHistory, 'Explicit lineage records'],
+    ['Context Has Specifications', engineeringMetrics.contextHasSpecifications, 'Exact metadata classification'],
+    ['Context Has Drawings', engineeringMetrics.contextHasDrawings, 'Exact metadata classification'],
+    ['Context Has Procedures', engineeringMetrics.contextHasProcedures, 'Exact metadata classification'],
+    ['Incomplete Context', engineeringMetrics.incompleteContext, 'Current transient context only']
   ];
 
   if (activeRetrievalSession) {
