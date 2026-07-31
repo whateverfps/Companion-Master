@@ -10,6 +10,10 @@ import {
   verifyExtraction
 } from './extraction-verification.js';
 import {
+  createRetrievalSession,
+  evidenceNavigationTarget
+} from './retrieval-session.js';
+import {
   firstText,
   sectionHeadingValue,
   sectionLocationValue,
@@ -64,6 +68,8 @@ let selectedKnowledgeSection = 'all';
 let knowledgeCatalogContext = null;
 let busy = false;
 let importQueue = [];
+let activeRetrievalSession = null;
+let selectedEvidenceId = null;
 
 app.innerHTML = `
 <div class="shell">
@@ -81,6 +87,7 @@ app.innerHTML = `
       <button data-view="chat" class="active">Command Desk</button>
       <button data-view="knowledge">Knowledge Workspace</button>
       <button data-view="sources">Source Inspector</button>
+      <button data-view="evidence">Evidence Explorer</button>
       <button data-view="evaluate">Knowledge Validation</button>
       <button data-view="settings">Settings</button>
       <button data-view="diagnostics">Diagnostics</button>
@@ -424,6 +431,31 @@ app.innerHTML = `
       </div>
     </section>
 
+    <section id="evidence" class="view">
+      <header id="evidenceSessionHeader" class="mc-evidence-header"></header>
+      <div id="evidencePipeline" class="mc-evidence-pipeline"></div>
+      <div class="mc-evidence-workspace">
+        <section class="panel mc-evidence-list-panel" aria-labelledby="evidenceListTitle">
+          <div class="mc-evidence-panel-heading">
+            <div>
+              <span>ENGINE ORDER</span>
+              <h2 id="evidenceListTitle">Ranked Evidence</h2>
+            </div>
+          </div>
+          <div id="evidenceExplorerList" class="mc-evidence-list"></div>
+        </section>
+        <aside class="panel mc-evidence-detail-panel" aria-labelledby="evidenceDetailTitle">
+          <div class="mc-evidence-panel-heading">
+            <div>
+              <span>STORED SECTION</span>
+              <h2 id="evidenceDetailTitle">Evidence Details</h2>
+            </div>
+          </div>
+          <div id="evidenceExplorerDetail"></div>
+        </aside>
+      </div>
+    </section>
+
     <section id="evaluate" class="view">
       <header class="mc-validation-header">
         <div>
@@ -732,6 +764,10 @@ const titles = {
     'Source Inspector',
     'Review exactly what Mission Companion indexed.'
   ],
+  evidence: [
+    'Evidence Explorer',
+    'Inspect the retrieval results and citations behind the latest answer.'
+  ],
   evaluate: [
     'Knowledge Validation',
     'Validate knowledge-base readiness, metadata, indexing, and coverage.'
@@ -766,6 +802,10 @@ function show(name) {
 
   if (name === 'sources') {
     renderSources();
+  }
+
+  if (name === 'evidence') {
+    renderEvidenceExplorer();
   }
 
   if (name === 'evaluate') {
@@ -1090,6 +1130,8 @@ function renderAssistantCitations(message, messageIndex) {
 
 function renderAssistantToolbar(message, messageIndex) {
   const hasCitations = Array.isArray(message.hits) && message.hits.length > 0;
+  const canExploreEvidence = hasCitations &&
+    activeRetrievalSession?.messageId === message.id;
   const canCopy = Boolean(navigator.clipboard?.writeText);
 
   return `
@@ -1116,6 +1158,13 @@ function renderAssistantToolbar(message, messageIndex) {
       >
         Collapse citations
       </button>
+      ${canExploreEvidence
+        ? `
+          <button type="button" data-view-evidence="${esc(message.id)}">
+            View Evidence
+          </button>
+        `
+        : ''}
     </div>
   `;
 }
@@ -1309,6 +1358,17 @@ $('#messages').onclick = event => {
         ? 'Collapse citations'
         : 'Expand citations';
     }
+    return;
+  }
+
+  const evidenceButton = event.target.closest('[data-view-evidence]');
+
+  if (
+    evidenceButton &&
+    activeRetrievalSession?.messageId === evidenceButton.dataset.viewEvidence
+  ) {
+    selectedEvidenceId = activeRetrievalSession.evidence[0]?.id || null;
+    show('evidence');
   }
 };
 
@@ -1333,6 +1393,8 @@ $('#messages').addEventListener('toggle', event => {
 
 $('#clearChat').onclick = () => {
   engine.clearChat();
+  activeRetrievalSession = null;
+  selectedEvidenceId = null;
   setChiefState('idle');
   refresh();
 };
@@ -1353,10 +1415,37 @@ async function ask() {
   renderPreparingAnswer(revealResponse);
 
   try {
+    const retrievalContext = state();
+    const project = retrievalContext.projects.find(item =>
+      item.id === retrievalContext.activeProject
+    );
+    const libraries = engine.libraries();
+    const library = libraries.find(item =>
+      item.id === retrievalContext.activeLibrary
+    );
     const message = await engine.ask(
       prompt,
       $('#mode').value
     );
+    const documents = await engine.documents();
+    const sections = await engine.sections();
+
+    activeRetrievalSession = createRetrievalSession({
+      question: prompt,
+      timestamp: message.createdAt,
+      project,
+      library,
+      mode: message.mode,
+      messageId: message.id,
+      hits: message.hits,
+      citations: message.citations,
+      citationVerification: message.citationVerification,
+      retrievalMeta: message.retrievalMeta,
+      documents,
+      libraries,
+      sections
+    });
+    selectedEvidenceId = activeRetrievalSession.evidence[0]?.id || null;
 
     $('#prompt').value = '';
     resizeComposer();
@@ -1472,6 +1561,230 @@ function renderEvidence(
         `).join('')
       : '<div class="empty">No project evidence was retrieved.</div>'
   );
+}
+
+function renderEvidenceExplorer() {
+  const session = activeRetrievalSession;
+
+  if (!session) {
+    $('#evidenceSessionHeader').innerHTML = `
+      <div>
+        <span>RETRIEVAL TRANSPARENCY</span>
+        <h2>No active retrieval session</h2>
+        <p>
+          Ask Chief a question to inspect the retrieval results for the
+          latest successful answer. Retrieval sessions are not persisted.
+        </p>
+      </div>
+    `;
+    $('#evidencePipeline').innerHTML = '';
+    $('#evidenceExplorerList').innerHTML = `
+      <div class="mc-evidence-empty">No ranked evidence is available.</div>
+    `;
+    $('#evidenceExplorerDetail').innerHTML = `
+      <div class="mc-evidence-empty">No evidence item is selected.</div>
+    `;
+    return;
+  }
+
+  const timestamp = new Date(session.timestamp);
+  const timestampLabel = Number.isNaN(timestamp.getTime())
+    ? session.timestamp
+    : timestamp.toLocaleString();
+  const verification = session.citationVerification;
+  const missingCitations = verification.uncited.length;
+
+  $('#evidenceSessionHeader').innerHTML = `
+    <div>
+      <span>ACTIVE RETRIEVAL SESSION</span>
+      <h2>${esc(session.coverageClassification)}</h2>
+      <p>
+        Evidence availability only. This classification does not establish
+        answer correctness.
+      </p>
+    </div>
+    <dl class="mc-evidence-session-facts">
+      <div><dt>Question</dt><dd>${esc(session.question)}</dd></div>
+      <div><dt>Retrieved</dt><dd>${esc(timestampLabel)}</dd></div>
+      <div><dt>Project</dt><dd>${esc(session.project.name)}</dd></div>
+      <div><dt>Library context</dt><dd>${esc(session.library.name)}</dd></div>
+      <div><dt>Mode</dt><dd>${esc(modeLabel(session.mode))}</dd></div>
+      <div><dt>Retrieval version</dt><dd>${session.retrievalMeta.retrievalVersion ? esc(session.retrievalMeta.retrievalVersion) : 'Unavailable'}</dd></div>
+      <div><dt>Citations returned</dt><dd>${session.citationsReturned.length ? session.citationsReturned.map(item => `[S${fmt(item)}]`).join(', ') : 'None'}</dd></div>
+    </dl>
+    <section class="mc-evidence-citation-health" aria-label="Citation verification">
+      <div>
+        <span>CITATION COVERAGE</span>
+        <strong>${verification.coverage === null ? 'Unavailable' : `${fmt(verification.coverage)}%`}</strong>
+      </div>
+      <div>
+        <span>CITED EVIDENCE</span>
+        <strong>${fmt(session.evidenceUsed)}</strong>
+      </div>
+      <div>
+        <span>UNCITED CLAIMS</span>
+        <strong>${fmt(missingCitations)}</strong>
+      </div>
+      <div>
+        <span>INVALID CITATIONS</span>
+        <strong>${fmt(verification.invalid.length)}</strong>
+      </div>
+    </section>
+    ${missingCitations || verification.invalid.length
+      ? `
+        <details class="mc-evidence-citation-details">
+          <summary>Review citation verification details</summary>
+          ${missingCitations
+            ? `
+              <h3>Material claims without citations</h3>
+              <ul>${verification.uncited.map(item => `<li>${esc(item)}</li>`).join('')}</ul>
+            `
+            : ''}
+          ${verification.invalid.length
+            ? `
+              <h3>Invalid citation references</h3>
+              <p>${verification.invalid.map(item => `[S${fmt(item)}]`).join(', ')}</p>
+            `
+            : ''}
+        </details>
+      `
+      : ''}
+  `;
+
+  const pipeline = [
+    ['Question', 1, 'Submitted prompt'],
+    [
+      'Candidate Documents',
+      session.candidateDocumentsRepresented,
+      'Represented in returned hits'
+    ],
+    [
+      'Candidate Sections',
+      session.candidateSections,
+      session.retrievalMeta.hierarchyFirst
+        ? 'Hierarchy-filtered search scope'
+        : 'Search scope'
+    ],
+    ['Matched Sections', session.matchedSections, 'Positive-scoring candidates'],
+    ['Evidence Used', session.evidenceUsed, 'Cited in the answer'],
+    ['Final Response', 1, 'Answer returned']
+  ];
+
+  $('#evidencePipeline').innerHTML = pipeline.map(([label, count, note], index) => `
+    <article>
+      <span>${esc(label)}</span>
+      <strong>${fmt(count)}</strong>
+      <small>${esc(note)}</small>
+      ${index < pipeline.length - 1 ? '<b aria-hidden="true">↓</b>' : ''}
+    </article>
+  `).join('');
+
+  if (
+    selectedEvidenceId &&
+    !session.evidence.some(item => item.id === selectedEvidenceId)
+  ) {
+    selectedEvidenceId = null;
+  }
+
+  if (!selectedEvidenceId) {
+    selectedEvidenceId = session.evidence[0]?.id || null;
+  }
+
+  $('#evidenceExplorerList').innerHTML = session.evidence.length
+    ? session.evidence.map(item => `
+      <button
+        type="button"
+        class="mc-evidence-item ${item.id === selectedEvidenceId ? 'active' : ''}"
+        data-evidence-id="${esc(item.id)}"
+      >
+        <span class="mc-evidence-rank">${fmt(item.order + 1)}</span>
+        <span class="mc-evidence-item-copy">
+          <strong>[${esc(item.citationReference)}] ${esc(item.heading)}</strong>
+          <small>${esc(item.documentName)} · ${esc(item.libraryName)}</small>
+          <em>${esc(item.retrievalStatus)}</em>
+          <p>${item.excerpt ? esc(item.excerpt) : 'No stored section text is available.'}</p>
+        </span>
+        <span class="mc-evidence-score">
+          ${item.retrievalScore === null ? 'Score unavailable' : `Score ${item.retrievalScore.toFixed(1)}`}
+        </span>
+      </button>
+    `).join('')
+    : `
+      <div class="mc-evidence-empty">
+        No supporting evidence was retrieved for the latest question.
+      </div>
+    `;
+
+  const selected = session.evidence.find(item =>
+    item.id === selectedEvidenceId
+  );
+
+  $('#evidenceExplorerDetail').innerHTML = selected
+    ? `
+      <article class="mc-evidence-detail">
+        <header>
+          <span>${esc(selected.retrievalStatus)}</span>
+          <h3>[${esc(selected.citationReference)}] ${esc(selected.heading)}</h3>
+          <p>${esc(selected.documentName)} · ${esc(selected.libraryName)}</p>
+        </header>
+        <dl>
+          <div><dt>Section number</dt><dd>${selected.sectionNumber ? esc(selected.sectionNumber) : 'Unavailable'}</dd></div>
+          <div><dt>Section title</dt><dd>${selected.sectionTitle ? esc(selected.sectionTitle) : 'Unavailable'}</dd></div>
+          <div><dt>Parent heading</dt><dd>${selected.parentHeading ? esc(selected.parentHeading) : 'Unavailable'}</dd></div>
+          <div><dt>Hierarchy level</dt><dd>${selected.hierarchyLevel === null ? 'Unavailable' : fmt(selected.hierarchyLevel)}</dd></div>
+          <div><dt>Hierarchy path</dt><dd>${selected.hierarchyPath.length ? esc(selected.hierarchyPath.join(' › ')) : 'Unavailable'}</dd></div>
+          <div><dt>Location</dt><dd>${selected.location ? esc(selected.location) : 'Unavailable'}</dd></div>
+          <div><dt>Document type</dt><dd>${selected.documentMetadata.type ? esc(selected.documentMetadata.type) : 'Unavailable'}</dd></div>
+          <div><dt>Document status</dt><dd>${selected.documentMetadata.status ? esc(selected.documentMetadata.status) : 'Unavailable'}</dd></div>
+          <div><dt>Retrieval score</dt><dd>${selected.retrievalScore === null ? 'Unavailable' : selected.retrievalScore.toFixed(1)}</dd></div>
+          <div><dt>Matched terms</dt><dd>${selected.matchedTerms.length ? esc(selected.matchedTerms.join(', ')) : 'Unavailable'}</dd></div>
+          <div><dt>Matched phrases</dt><dd>${selected.matchedPhrases.length ? esc(selected.matchedPhrases.join(', ')) : 'Unavailable'}</dd></div>
+          <div><dt>Matched intents</dt><dd>${selected.matchedIntents.length ? esc(selected.matchedIntents.join(', ')) : 'Unavailable'}</dd></div>
+          <div><dt>Matched references</dt><dd>${selected.matchedReferences.length ? esc(selected.matchedReferences.join(', ')) : 'Unavailable'}</dd></div>
+          <div><dt>Score components</dt><dd>${Object.keys(selected.retrievalComponents).length ? esc(Object.entries(selected.retrievalComponents).map(([name, value]) => `${name}: ${value}`).join(' · ')) : 'Unavailable'}</dd></div>
+        </dl>
+        <section>
+          <h4>Complete stored section text</h4>
+          ${selected.fullText
+            ? `<pre>${esc(selected.fullText)}</pre>`
+            : '<div class="mc-evidence-empty">No stored section text is available.</div>'}
+        </section>
+        <div class="mc-evidence-detail-actions">
+          <button type="button" data-evidence-navigation="knowledge">Open Knowledge Object</button>
+          <button type="button" data-evidence-navigation="sources" class="subtle">Open Source Inspector</button>
+        </div>
+      </article>
+    `
+    : '<div class="mc-evidence-empty">Select an evidence item to inspect its stored section.</div>';
+
+  $$('[data-evidence-id]').forEach(button => {
+    button.onclick = () => {
+      selectedEvidenceId = button.dataset.evidenceId;
+      renderEvidenceExplorer();
+    };
+  });
+
+  $$('[data-evidence-navigation]').forEach(button => {
+    button.onclick = () => {
+      const target = evidenceNavigationTarget(
+        session,
+        selectedEvidenceId
+      );
+
+      if (!target?.documentId) {
+        return;
+      }
+
+      selectedDoc = target.documentId;
+
+      if (button.dataset.evidenceNavigation === 'knowledge') {
+        selectedKnowledgeSection = 'all';
+        show(target.knowledgeView);
+      } else {
+        show(target.sourceView);
+      }
+    };
+  });
 }
 
 $('#upload').onclick = () => $('#fileInput').click();
@@ -4452,6 +4765,26 @@ async function renderEvals() {
     documents,
     sections
   );
+  const sessionEvidenceDocumentIds = new Set(
+    (activeRetrievalSession?.evidence || [])
+      .map(item => item.documentId)
+      .filter(Boolean)
+  );
+  const sessionEvidenceSectionIds = new Set(
+    (activeRetrievalSession?.evidence || [])
+      .map(item => item.sectionId)
+      .filter(Boolean)
+  );
+  const documentsNotRetrieved = activeRetrievalSession
+    ? documents.filter(document =>
+        !sessionEvidenceDocumentIds.has(document.id)
+      ).length
+    : null;
+  const sectionsNotRetrieved = activeRetrievalSession
+    ? sections.filter(section =>
+        !sessionEvidenceSectionIds.has(section.id)
+      ).length
+    : null;
   const enabledLibraries = libraries.filter(library => library.enabled);
   const indexed = documents.filter(document =>
     documentStatus(document).className === 'indexed'
@@ -4504,6 +4837,21 @@ async function renderEvals() {
     ['Categories', catalog.entries.length, 'Represented knowledge categories'],
     ['File Types', catalog.types.length, 'Represented file-type groups']
   ];
+
+  if (activeRetrievalSession) {
+    healthCards.push(
+      [
+        'Recent Evidence',
+        activeRetrievalSession.evidence.length,
+        activeRetrievalSession.coverageClassification
+      ],
+      [
+        'Citations Used',
+        activeRetrievalSession.evidenceUsed,
+        'Latest active retrieval session'
+      ]
+    );
+  }
 
   $('#validationHealth').innerHTML = healthCards.map(([label, value, note]) => `
     <article class="mc-validation-health-card">
@@ -4669,6 +5017,42 @@ async function renderEvals() {
     }
   ];
 
+  if (activeRetrievalSession) {
+    const evidenceClassification =
+      activeRetrievalSession.coverageClassification;
+    const verification = activeRetrievalSession.citationVerification;
+    const missingCitationCount = verification.uncited.length;
+
+    checks.push(
+      {
+        label: 'Evidence coverage',
+        status: evidenceClassification === 'High Evidence' ||
+          evidenceClassification === 'Moderate Evidence'
+          ? 'PASS'
+          : 'WARNING',
+        detail: `${evidenceClassification}. This describes available support, not answer correctness.`
+      },
+      {
+        label: 'Recent retrieval health',
+        status:
+          activeRetrievalSession.evidence.length &&
+          activeRetrievalSession.evidenceUsed
+            ? 'PASS'
+            : 'WARNING',
+        detail: `${fmt(activeRetrievalSession.evidence.length)} section(s) retrieved and ${fmt(activeRetrievalSession.evidenceUsed)} cited in the latest answer.`
+      },
+      {
+        label: 'Missing citation detection',
+        status: missingCitationCount || verification.invalid.length
+          ? 'WARNING'
+          : 'PASS',
+        detail: missingCitationCount || verification.invalid.length
+          ? `${fmt(missingCitationCount)} uncited material claim(s) and ${fmt(verification.invalid.length)} invalid citation reference(s) were detected.`
+          : 'No missing or invalid citations were detected in the latest answer.'
+      }
+    );
+  }
+
   const statusSymbol = {
     PASS: '✓',
     WARNING: '!',
@@ -4754,7 +5138,16 @@ async function renderEvals() {
       ).length;
 
       return `${library.name} is disabled and contains ${fmt(count)} document${count === 1 ? '' : 's'}.`;
-    })
+    }),
+    ...(activeRetrievalSession?.coverageClassification === 'No Supporting Evidence'
+      ? ['The latest retrieval returned no supporting evidence.']
+      : []),
+    ...((activeRetrievalSession?.citationVerification?.uncited?.length || 0)
+      ? [`${fmt(activeRetrievalSession.citationVerification.uncited.length)} material claim${activeRetrievalSession.citationVerification.uncited.length === 1 ? ' lacks' : 's lack'} a citation in the latest answer.`]
+      : []),
+    ...((activeRetrievalSession?.citationVerification?.invalid?.length || 0)
+      ? [`${fmt(activeRetrievalSession.citationVerification.invalid.length)} invalid citation reference${activeRetrievalSession.citationVerification.invalid.length === 1 ? ' was' : 's were'} detected in the latest answer.`]
+      : [])
   ];
 
   $('#validationAttention').innerHTML = attention.length
@@ -4829,6 +5222,35 @@ async function renderEvals() {
       ])
     }
   ];
+
+  if (activeRetrievalSession) {
+    coverageGroups.push({
+      title: 'Active Retrieval Session',
+      empty: 'No active retrieval session is available.',
+      items: [
+        [
+          'Evidence coverage',
+          activeRetrievalSession.coverageClassification
+        ],
+        [
+          'Evidence returned',
+          `${fmt(activeRetrievalSession.evidence.length)} sections`
+        ],
+        [
+          'Evidence cited',
+          `${fmt(activeRetrievalSession.evidenceUsed)} sections`
+        ],
+        [
+          'Documents not retrieved',
+          `${fmt(documentsNotRetrieved)} in current session`
+        ],
+        [
+          'Sections not retrieved',
+          `${fmt(sectionsNotRetrieved)} in current session`
+        ]
+      ]
+    });
+  }
 
   $('#validationCoverage').innerHTML = coverageGroups.map(group => `
     <section class="mc-validation-coverage-group">
