@@ -3170,8 +3170,9 @@ function renderDocumentMetadata(document, allSections = []) {
     return;
   }
 
-  const sections = document
-    .filter(section => section.documentId === document.id);
+  const sections = allSections
+    .filter(section => section.documentId === document.id)
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
   const status = documentStatus(document);
   const pageCount = documentPageCount(document);
   const modifiedAt = documentModifiedAt(document);
@@ -3182,134 +3183,321 @@ function renderDocumentMetadata(document, allSections = []) {
     document.metadata?.description
   );
   const tags = Array.isArray(document.tags)
-    ? document.tags
-    : Array.isArray(document.metadata?.tags)
-      ? document.metadata.tags
-      : [];
+    ? [...document.tags]
+    : [];
+  const metadataTags = Array.isArray(document.metadata?.tags)
+    ? document.metadata.tags
+    : [];
+  const allTags = [...new Set(
+    [...tags, ...metadataTags]
+      .map(tag => safeText(tag).trim())
+      .filter(Boolean)
+  )];
   const library = engine.libraries().find(
     item => item.id === document.libraryId
   );
+  const allDocuments =
+    knowledgeCatalogContext?.catalog?.all?.documents || [];
+  const normalizedTags = new Set(
+    allTags.map(tag => tag.toLowerCase())
+  );
+  const category = safeText(document.category).trim();
+  const relationships = allDocuments
+    .filter(candidate => candidate.id !== document.id)
+    .map(candidate => {
+      const reasons = [];
+      const candidateTags = [
+        ...(Array.isArray(candidate.tags) ? candidate.tags : []),
+        ...(Array.isArray(candidate.metadata?.tags)
+          ? candidate.metadata.tags
+          : [])
+      ].map(tag => safeText(tag).trim()).filter(Boolean);
+      const sharedTags = candidateTags.filter(tag =>
+        normalizedTags.has(tag.toLowerCase())
+      );
 
-  $('#documentDetailsEyebrow').textContent = 'DOCUMENT CONTROL';
-  $('#documentDetailsTitle').textContent = 'Document Details';
+      if (
+        document.libraryId &&
+        candidate.libraryId === document.libraryId
+      ) {
+        reasons.push('Same library');
+      }
+
+      if (
+        category &&
+        safeText(candidate.category).trim() === category
+      ) {
+        reasons.push('Same category');
+      }
+
+      if (sharedTags.length) {
+        reasons.push(`Shared ${sharedTags.length === 1 ? 'tag' : 'tags'}: ${sharedTags.join(', ')}`);
+      }
+
+      return {
+        document: candidate,
+        reasons
+      };
+    })
+    .filter(relationship => relationship.reasons.length);
+  const optionalCount = (...values) => {
+    const value = values.find(item =>
+      item !== null &&
+      item !== undefined &&
+      item !== '' &&
+      Number.isFinite(Number(item)) && Number(item) >= 0
+    );
+
+    return value === undefined ? null : Number(value);
+  };
+  const tableCount = optionalCount(
+    document.tableCount,
+    document.metadata?.tableCount,
+    Array.isArray(document.tables) ? document.tables.length : undefined
+  );
+  const imageCount = optionalCount(
+    document.imageCount,
+    document.metadata?.imageCount,
+    Array.isArray(document.images) ? document.images.length : undefined
+  );
+  const attachmentCount = optionalCount(
+    document.attachmentCount,
+    document.metadata?.attachmentCount,
+    Array.isArray(document.attachments)
+      ? document.attachments.length
+      : undefined
+  );
+  const createdAt = preferredText(
+    document.createdAt,
+    document.metadata?.createdAt
+  );
+  const updatedAt = preferredText(
+    document.updatedAt,
+    document.metadata?.updatedAt
+  );
+  const indexedAt = preferredText(document.indexedAt);
+  const formatTimestamp = value => {
+    const date = value ? new Date(value) : null;
+
+    return date && !Number.isNaN(date.getTime())
+      ? date.toLocaleString()
+      : 'Unavailable';
+  };
+  const metadataIncomplete = !(
+    document.id &&
+    document.name &&
+    documentType(document) !== 'Type unavailable' &&
+    category &&
+    library
+  );
+  const healthIndicators = [
+    {
+      className: status.className,
+      label: status.label
+    },
+    ...(metadataIncomplete
+      ? [{
+          className: 'attention',
+          label: 'Metadata incomplete'
+        }]
+      : []),
+    ...(!sections.length
+      ? [{
+          className: 'attention',
+          label: 'Sections unavailable'
+        }]
+      : [])
+  ];
+  const availability = status.className === 'unavailable'
+    ? 'Document unavailable'
+    : !library
+      ? 'Source library unavailable'
+      : !library.enabled
+        ? 'Source library disabled'
+        : 'Available in Knowledge Workspace';
+
+  $('#documentDetailsEyebrow').textContent = 'KNOWLEDGE OBJECT';
+  $('#documentDetailsTitle').textContent = 'Knowledge Object';
   $('#documentMetadata').innerHTML = `
-      <header class="mc-knowledge-detail-header">
-        <div class="mc-library-detail-actions">
-          <span class="mc-knowledge-status ${status.className}">
-            ${esc(status.label)}
+    <div class="mc-object-inspector">
+    <header class="mc-object-header">
+      <div class="mc-object-header-actions">
+        <span>READ-ONLY KNOWLEDGE OBJECT</span>
+        <button
+          type="button"
+          id="backToCatalogCoverage"
+          class="subtle"
+        >
+          Back to Catalog
+        </button>
+      </div>
+      <h3>${esc(document.title || document.name)}</h3>
+      <div class="mc-object-health" aria-label="Knowledge health">
+        ${healthIndicators.map(indicator => `
+          <span class="${esc(indicator.className)}">
+            ${esc(indicator.label)}
           </span>
-          <button
-            type="button"
-            id="backToCatalogCoverage"
-            class="subtle"
-          >
-            Back to section
-          </button>
-        </div>
-        <h3>${esc(document.title || document.name)}</h3>
-        <p>${esc(document.name)}</p>
-      </header>
+        `).join('')}
+      </div>
+    </header>
 
-      <section class="mc-knowledge-detail-section">
-        <h4>Document summary</h4>
-        ${summary
-          ? `<p>${esc(summary)}</p>`
-          : `
-            <p class="mc-knowledge-placeholder">
-              No document summary is available.
-            </p>
-          `}
-      </section>
+    <section class="mc-object-section" aria-labelledby="objectIdentityTitle">
+      <h4 id="objectIdentityTitle">Identity</h4>
+      <dl class="mc-object-facts">
+        <div><dt>Title</dt><dd>${esc(document.title || document.name)}</dd></div>
+        <div><dt>Original filename</dt><dd>${esc(document.name)}</dd></div>
+        <div><dt>Document type</dt><dd>${esc(documentType(document))}</dd></div>
+        <div><dt>Category</dt><dd>${category ? esc(category) : 'Unavailable'}</dd></div>
+        <div><dt>Library</dt><dd>${library ? esc(library.name) : 'Unavailable'}</dd></div>
+        <div><dt>Unique identifier</dt><dd>${document.id ? esc(document.id) : 'Unavailable'}</dd></div>
+      </dl>
+    </section>
 
-      <section class="mc-knowledge-detail-section">
-        <h4>Metadata</h4>
-        <div class="mc-knowledge-detail-chips">
-          <span>${esc(documentType(document))}</span>
-          ${document.category
-            ? `<span>${esc(document.category)}</span>`
-            : ''}
-          ${pageCount
-            ? `<span>${fmt(pageCount)} page${pageCount === 1 ? '' : 's'}</span>`
-            : ''}
-          ${Number(document.size) > 0
-            ? `<span>${formatBytes(document.size)}</span>`
-            : ''}
-          <span>${fmt(sections.length)} indexed sections</span>
-          ${tags.map(tag => `<span>${esc(tag)}</span>`).join('')}
-        </div>
+    <section class="mc-object-section" aria-labelledby="objectClassificationTitle">
+      <h4 id="objectClassificationTitle">Classification</h4>
+      <div class="mc-object-chips">
+        <span>${esc(documentCatalogSection(document))}</span>
+        <span>${esc(knowledgeTypeGroup(document))}</span>
+        <span>${esc(status.label)}</span>
+        ${allTags.map(tag => `<span>${esc(tag)}</span>`).join('')}
+      </div>
+      <dl class="mc-object-facts mc-object-facts-compact">
+        <div><dt>Knowledge section</dt><dd>${esc(documentCatalogSection(document))}</dd></div>
+        <div><dt>File type</dt><dd>${esc(documentType(document))}</dd></div>
+        <div><dt>Tags</dt><dd>${allTags.length ? esc(allTags.join(', ')) : 'Unavailable'}</dd></div>
+      </dl>
+    </section>
 
-        <dl>
-          <dt>Indexed status</dt>
-          <dd>${esc(status.label)}</dd>
+    <section class="mc-object-section" aria-labelledby="objectSourceTitle">
+      <h4 id="objectSourceTitle">Source</h4>
+      <dl class="mc-object-facts mc-object-facts-compact">
+        <div><dt>Source library</dt><dd>${library ? esc(library.name) : 'Unavailable'}</dd></div>
+        <div><dt>Filename</dt><dd>${esc(document.name)}</dd></div>
+        <div><dt>MIME/type</dt><dd>${document.type ? esc(document.type) : 'Unavailable'}</dd></div>
+        <div><dt>File size</dt><dd>${Number(document.size) > 0 ? formatBytes(document.size) : 'Unavailable'}</dd></div>
+        ${document.path
+          ? `<div><dt>Source path</dt><dd>${esc(document.path)}</dd></div>`
+          : ''}
+      </dl>
+    </section>
 
-          <dt>Source file</dt>
-          <dd>${esc(document.name)}</dd>
+    <section class="mc-object-section" aria-labelledby="objectIndexTitle">
+      <h4 id="objectIndexTitle">Index Status</h4>
+      <dl class="mc-object-facts mc-object-facts-compact">
+        <div><dt>Status</dt><dd>${esc(status.label)}</dd></div>
+        <div><dt>Exposed sections</dt><dd>${fmt(sections.length)}</dd></div>
+        <div><dt>Recorded section count</dt><dd>${fmt(document.sectionCount)}</dd></div>
+        <div><dt>Characters</dt><dd>${Number(document.characterCount) > 0 ? fmt(document.characterCount) : 'Unavailable'}</dd></div>
+        <div><dt>Hierarchy version</dt><dd>${esc(document.hierarchyVersion ?? 'Unavailable')}</dd></div>
+        ${document.healthDetail
+          ? `<div class="mc-object-fact-wide"><dt>Production detail</dt><dd>${esc(document.healthDetail)}</dd></div>`
+          : ''}
+      </dl>
+    </section>
 
-          <dt>Last modified</dt>
-          <dd>${modifiedAt ? esc(modifiedAt) : 'Not available'}</dd>
+    <section class="mc-object-section" aria-labelledby="objectSummaryTitle">
+      <h4 id="objectSummaryTitle">Content Summary</h4>
+      ${summary
+        ? `<p>${esc(summary)}</p>`
+        : `
+          <div class="mc-object-empty">
+            No content summary is available in production state.
+          </div>
+        `}
+    </section>
 
-          <dt>Indexed</dt>
-          <dd>
-            ${document.indexedAt &&
-              !Number.isNaN(new Date(document.indexedAt).getTime())
-              ? esc(new Date(document.indexedAt).toLocaleString())
-              : 'Not available'}
-          </dd>
+    <section class="mc-object-section mc-object-section-wide" aria-labelledby="objectStructureTitle">
+      <h4 id="objectStructureTitle">Structure</h4>
+      <div class="mc-object-structure">
+        <article><span>Pages</span><strong>${pageCount === null ? 'Unavailable' : fmt(pageCount)}</strong></article>
+        <article><span>Sections</span><strong>${fmt(sections.length)}</strong></article>
+        <article><span>Tables</span><strong>${tableCount === null ? 'Unavailable' : fmt(tableCount)}</strong></article>
+        <article><span>Images</span><strong>${imageCount === null ? 'Unavailable' : fmt(imageCount)}</strong></article>
+        <article><span>Attachments</span><strong>${attachmentCount === null ? 'Unavailable' : fmt(attachmentCount)}</strong></article>
+      </div>
+      ${sections.length
+        ? `
+          <ol class="mc-object-outline">
+            ${sections.map((section, index) => `
+              <li>
+                <strong>${esc(sectionHeadingValue(section, index))}</strong>
+                ${sectionLocationValue(section)
+                  ? `<span>${esc(sectionLocationValue(section))}</span>`
+                  : ''}
+              </li>
+            `).join('')}
+          </ol>
+        `
+        : `
+          <div class="mc-object-empty">
+            No indexed sections are currently available.
+          </div>
+        `}
+    </section>
 
-          <dt>Characters</dt>
-          <dd>
-            ${Number(document.characterCount) > 0
-              ? fmt(document.characterCount)
-              : 'Not available'}
-          </dd>
-        </dl>
-      </section>
+    <section class="mc-object-section mc-object-section-wide" aria-labelledby="objectRelationshipsTitle">
+      <h4 id="objectRelationshipsTitle">Relationships</h4>
+      ${relationships.length
+        ? `
+          <ul class="mc-object-relationships">
+            ${relationships.map(relationship => `
+              <li>
+                <button
+                  type="button"
+                  data-related-object="${esc(relationship.document.id)}"
+                >
+                  <strong>${esc(relationship.document.title || relationship.document.name)}</strong>
+                  <span>${esc(relationship.reasons.join(' · '))}</span>
+                </button>
+              </li>
+            `).join('')}
+          </ul>
+        `
+        : `
+          <div class="mc-object-empty">
+            No related knowledge objects are currently available.
+          </div>
+        `}
+    </section>
 
-      <section class="mc-knowledge-detail-section mc-knowledge-outline">
-        <div class="mc-knowledge-outline-heading">
-          <h4>Document outline</h4>
-          ${sections.length
-            ? `<span>${fmt(sections.length)}</span>`
-            : ''}
-        </div>
+    <section class="mc-object-section" aria-labelledby="objectTimelineTitle">
+      <h4 id="objectTimelineTitle">Timeline</h4>
+      <dl class="mc-object-timeline">
+        <div><dt>Created</dt><dd>${esc(formatTimestamp(createdAt))}</dd></div>
+        <div><dt>Modified</dt><dd>${modifiedAt ? esc(modifiedAt) : 'Unavailable'}</dd></div>
+        <div><dt>Indexed</dt><dd>${esc(formatTimestamp(indexedAt))}</dd></div>
+        <div><dt>Updated</dt><dd>${esc(formatTimestamp(updatedAt))}</dd></div>
+      </dl>
+    </section>
 
-        ${sections.length
-          ? `
-            <ol>
-              ${sections.map((section, index) => `
-                <li>
-                  <strong>${esc(sectionHeadingValue(section, index))}</strong>
-                  ${sectionLocationValue(section)
-                    ? `<span>${esc(sectionLocationValue(section))}</span>`
-                    : ''}
-                </li>
-              `).join('')}
-            </ol>
-          `
-          : `
-            <div class="mc-knowledge-placeholder">
-              <strong>Document outline unavailable.</strong>
-              <span>
-                Future versions will expose indexed chapters and sections.
-              </span>
-            </div>
-          `}
-      </section>
-
-      <section class="mc-knowledge-detail-section">
-        <h4>Source information</h4>
-        <p>
-          ${esc(document.name)}
-          ${document.type ? ` · ${esc(document.type)}` : ''}
-          ${library ? ` · ${esc(library.name)}` : ''}
-        </p>
-      </section>
-    `;
+    <section class="mc-object-section" aria-labelledby="objectAvailabilityTitle">
+      <h4 id="objectAvailabilityTitle">Availability</h4>
+      <div class="mc-object-availability ${esc(status.className)}">
+        <strong>${esc(availability)}</strong>
+        <span>
+          ${document.error
+            ? esc(document.error)
+            : library
+              ? `Library is ${library.enabled ? 'enabled' : 'disabled'}.`
+              : 'No matching production library is available.'}
+        </span>
+      </div>
+    </section>
+    </div>
+  `;
 
   $('#backToCatalogCoverage').onclick = () => {
     selectedDoc = null;
     renderKnowledgeWorkspace();
   };
+
+  $$('[data-related-object]').forEach(button => {
+    button.onclick = () => {
+      selectedKnowledgeSection = 'all';
+      selectedDoc = button.dataset.relatedObject;
+      renderKnowledgeWorkspace();
+    };
+  });
 }
 
 function formatBytes(bytes = 0) {
