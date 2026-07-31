@@ -181,9 +181,11 @@ function sameDocumentContent(file, hash, document) {
 
 function usableIndexedDocument(document, indexedSectionCount) {
   const status = String(document.status || '').toLowerCase();
+  const lineageStatus = String(document.lineageStatus || '').toLowerCase();
 
   return (
     ['verified', 'complete', 'indexed', 'ready'].includes(status) &&
+    !['superseded', 'duplicate'].includes(lineageStatus) &&
     Number(document.sectionCount) > 0 &&
     Number(indexedSectionCount) > 0
   );
@@ -314,9 +316,9 @@ async function putMany(store, items) {
 async function commitKnowledgeImport(
   documents,
   sections,
-  replacementIds = []
+  lineageUpdates = []
 ) {
-  if (!documents.length && !sections.length && !replacementIds.length) {
+  if (!documents.length && !sections.length && !lineageUpdates.length) {
     return;
   }
 
@@ -329,18 +331,9 @@ async function commitKnowledgeImport(
     );
     const documentStore = transaction.objectStore('documents');
     const sectionStore = transaction.objectStore('sections');
-    const documentSectionIndex = sectionStore.index('documentId');
 
-    for (const replacementId of new Set(replacementIds.filter(Boolean))) {
-      const sectionKeys = documentSectionIndex.getAllKeys(replacementId);
-
-      sectionKeys.onsuccess = () => {
-        for (const key of sectionKeys.result || []) {
-          sectionStore.delete(key);
-        }
-      };
-
-      documentStore.delete(replacementId);
+    for (const document of lineageUpdates) {
+      documentStore.put(document);
     }
 
     for (const document of documents) {
@@ -724,6 +717,22 @@ export const engine = {
     return sections;
   },
 
+  async retrievableSections() {
+    const [sections, documents] = await Promise.all([
+      this.sections(),
+      this.documents()
+    ]);
+    const supersededDocumentIds = new Set(
+      documents
+        .filter(document => document.lineageStatus === 'superseded')
+        .map(document => document.id)
+    );
+
+    return sections.filter(section =>
+      !supersededDocumentIds.has(section.documentId)
+    );
+  },
+
   async ingest(
     files,
     onProgress,
@@ -893,24 +902,51 @@ export const engine = {
         });
       });
 
-      const replacementIds = action === 'replace'
-        ? successfulDocuments.map(document => {
-            const parsedIndex = parsed.documents.indexOf(document);
-            const descriptor = acceptedDescriptors[parsedIndex];
-            const replacementId =
-              options.duplicateDocumentId ||
-              descriptor?.duplicate?.id;
+      const importedAt = new Date().toISOString();
+      const lineageUpdates = [];
 
-            return existing.some(item => item.id === replacementId)
-              ? replacementId
-              : null;
-          }).filter(Boolean)
-        : [];
+      for (const document of successfulDocuments) {
+        const parsedIndex = parsed.documents.indexOf(document);
+        const descriptor = acceptedDescriptors[parsedIndex];
+        const duplicateId =
+          options.duplicateDocumentId ||
+          descriptor?.duplicate?.id;
+        const priorDocument = existing.find(item => item.id === duplicateId);
+
+        if (action === 'replace' && priorDocument) {
+          const lineageId = priorDocument.lineageId || priorDocument.id;
+          Object.assign(document, {
+            lineageId,
+            lineageStatus: 'current',
+            previousDocumentId: priorDocument.id,
+            importedAt
+          });
+          lineageUpdates.push({
+            ...priorDocument,
+            lineageId,
+            lineageStatus: 'superseded',
+            supersededByDocumentId: document.id
+          });
+        } else if (action === 'reimport' && priorDocument) {
+          Object.assign(document, {
+            lineageId: priorDocument.lineageId || priorDocument.id,
+            lineageStatus: 'duplicate',
+            duplicateOfDocumentId: priorDocument.id,
+            importedAt
+          });
+        } else {
+          Object.assign(document, {
+            lineageId: document.lineageId || document.id,
+            lineageStatus: document.lineageStatus || 'current',
+            importedAt: document.importedAt || importedAt
+          });
+        }
+      }
 
       await commitKnowledgeImport(
         successfulDocuments,
         registeredSections,
-        replacementIds
+        lineageUpdates
       );
       invalidateKnowledgeCache();
 
@@ -967,7 +1003,7 @@ export const engine = {
   },
 
   async search(query) {
-    const sections = await this.sections();
+    const sections = await this.retrievableSections();
 
     const hits = retrieve(
       query,
@@ -985,7 +1021,7 @@ export const engine = {
   },
 
   async extractRequirements(query = '', options = {}) {
-    const sections = await this.sections();
+    const sections = await this.retrievableSections();
     const cleanedQuery = String(query || '').trim();
     const sourceSections = cleanedQuery
       ? retrieve(cleanedQuery, sections, Math.min(50, Number(options.limit) || 50))
@@ -1008,7 +1044,7 @@ export const engine = {
   },
 
   async extractDefinitions(query = '', options = {}) {
-    const sections = await this.sections();
+    const sections = await this.retrievableSections();
     const cleanedQuery = String(query || '').trim();
     const sourceSections = cleanedQuery
       ? retrieve(cleanedQuery, sections, Math.min(50, Number(options.limit) || 50))
@@ -1033,7 +1069,7 @@ export const engine = {
       throw new Error('Enter a topic or question to compare.');
     }
 
-    const sections = await this.sections();
+    const sections = await this.retrievableSections();
     const hits = retrieve(
       cleanedQuery,
       sections,
@@ -1062,7 +1098,7 @@ export const engine = {
       throw new Error('Enter a topic or question to analyze.');
     }
 
-    const sections = await this.sections();
+    const sections = await this.retrievableSections();
     const hits = retrieve(
       cleanedQuery,
       sections,

@@ -238,6 +238,9 @@ test('successful imports atomically register one document and its sections', asy
   const sections = await engine.sections();
 
   assert.equal(result.documents[0].status, 'verified');
+  assert.equal(result.documents[0].lineageId, result.documents[0].id);
+  assert.equal(result.documents[0].lineageStatus, 'current');
+  assert.ok(result.documents[0].importedAt);
   assert.equal(documents.length, 1);
   assert.equal(sections.length, result.documents[0].sectionCount);
   assert.ok(sections.every(section =>
@@ -321,4 +324,91 @@ test('duplicate detection leaves library and section counts unchanged', async ()
   assert.equal(duplicate.skipped.length, 1);
   assert.equal((await engine.documents()).length, documentsBefore.length);
   assert.equal((await engine.sections()).length, sectionsBefore.length);
+});
+
+test('re-import records an explicit duplicate without replacing the current document', async () => {
+  const file = textFile('lineage-duplicate.txt');
+  const original = await engine.ingest([file], () => {}, 'general-library');
+  const duplicate = await engine.ingest(
+    [file],
+    () => {},
+    'general-library',
+    { duplicateAction: 'reimport' }
+  );
+  const originalDocument = original.documents[0];
+  const duplicateDocument = duplicate.documents[0];
+
+  assert.equal(duplicateDocument.lineageId, originalDocument.lineageId);
+  assert.equal(duplicateDocument.lineageStatus, 'duplicate');
+  assert.equal(duplicateDocument.duplicateOfDocumentId, originalDocument.id);
+  assert.equal(
+    (await engine.documents()).find(item => item.id === originalDocument.id).lineageStatus,
+    'current'
+  );
+});
+
+test('replace atomically preserves the superseded document and its sections', async () => {
+  const file = textFile('lineage-replace.txt');
+  const original = await engine.ingest([file], () => {}, 'general-library');
+  const originalDocument = original.documents[0];
+  const replaced = await engine.ingest(
+    [file],
+    () => {},
+    'general-library',
+    {
+      duplicateAction: 'replace',
+      duplicateDocumentId: originalDocument.id
+    }
+  );
+  const currentDocument = replaced.documents[0];
+  const documents = await engine.documents();
+  const storedOriginal = documents.find(item => item.id === originalDocument.id);
+  const storedCurrent = documents.find(item => item.id === currentDocument.id);
+  const sections = await engine.sections();
+
+  assert.equal(storedOriginal.lineageId, originalDocument.lineageId);
+  assert.equal(storedOriginal.lineageStatus, 'superseded');
+  assert.equal(storedOriginal.supersededByDocumentId, currentDocument.id);
+  assert.equal(storedCurrent.lineageId, originalDocument.lineageId);
+  assert.equal(storedCurrent.lineageStatus, 'current');
+  assert.equal(storedCurrent.previousDocumentId, originalDocument.id);
+  assert.equal(
+    sections.filter(section => section.documentId === originalDocument.id).length,
+    originalDocument.sectionCount
+  );
+  assert.equal(
+    sections.filter(section => section.documentId === currentDocument.id).length,
+    currentDocument.sectionCount
+  );
+  assert.ok((await engine.retrievableSections()).every(section =>
+    section.documentId !== originalDocument.id
+  ));
+});
+
+test('failed replacement leaves the existing lineage current and unchanged', async () => {
+  const file = textFile('lineage-rollback.txt');
+  const original = await engine.ingest([file], () => {}, 'general-library');
+  const originalDocument = original.documents[0];
+  database.failNextSectionWrite();
+
+  await assert.rejects(
+    engine.ingest(
+      [file],
+      () => {},
+      'general-library',
+      {
+        duplicateAction: 'replace',
+        duplicateDocumentId: originalDocument.id
+      }
+    ),
+    /Simulated section transaction failure/
+  );
+
+  const family = (await engine.documents()).filter(document =>
+    document.lineageId === originalDocument.lineageId
+  );
+  assert.equal(family.length, 1);
+  assert.equal(family[0].id, originalDocument.id);
+  assert.equal(family[0].lineageStatus, 'current');
+  assert.equal(family[0].supersededByDocumentId, undefined);
 });

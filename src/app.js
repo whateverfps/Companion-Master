@@ -22,6 +22,17 @@ import {
   sourceScrollOptions
 } from './source-navigation.js';
 import {
+  buildKnowledgeRelationships,
+  buildRelationshipGraph,
+  relationshipContext,
+  relationshipNavigationTarget
+} from './knowledge-relationships.js';
+import {
+  buildDocumentLineage,
+  lineageForDocument,
+  lineageNavigationTarget
+} from './document-lineage.js';
+import {
   firstText,
   sectionHeadingValue,
   sectionLocationValue,
@@ -81,6 +92,8 @@ let selectedEvidenceId = null;
 let sourceNavigationTarget = null;
 let answerNavigationTarget = null;
 let sourceNavigationNotice = '';
+let relationshipTarget = null;
+let lineageTarget = null;
 
 app.innerHTML = `
 <div class="shell">
@@ -99,6 +112,8 @@ app.innerHTML = `
       <button data-view="knowledge">Knowledge Workspace</button>
       <button data-view="sources">Source Inspector</button>
       <button data-view="evidence">Evidence Explorer</button>
+      <button data-view="relationships">Relationship Explorer</button>
+      <button data-view="versions">Version Explorer</button>
       <button data-view="evaluate">Knowledge Validation</button>
       <button data-view="settings">Settings</button>
       <button data-view="diagnostics">Diagnostics</button>
@@ -467,6 +482,51 @@ app.innerHTML = `
       </div>
     </section>
 
+    <section id="relationships" class="view">
+      <header id="relationshipHeader" class="mc-relationship-header"></header>
+      <div class="mc-relationship-workspace">
+        <section class="panel mc-relationship-context-panel" aria-labelledby="relationshipContextTitle">
+          <div class="mc-relationship-heading">
+            <span>EXACT PRODUCTION LINKS</span>
+            <h2 id="relationshipContextTitle">Relationship Context</h2>
+          </div>
+          <div id="relationshipContext"></div>
+        </section>
+        <section class="panel mc-relationship-graph-panel" aria-labelledby="relationshipGraphTitle">
+          <div class="mc-relationship-heading">
+            <span>DETERMINISTIC LAYOUT</span>
+            <h2 id="relationshipGraphTitle">Relationship Graph</h2>
+          </div>
+          <div id="relationshipGraph"></div>
+        </section>
+        <aside class="panel mc-relationship-detail-panel" aria-labelledby="relationshipDetailTitle">
+          <div class="mc-relationship-heading">
+            <span>LINKED KNOWLEDGE</span>
+            <h2 id="relationshipDetailTitle">Relationships</h2>
+          </div>
+          <div id="relationshipDetail"></div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="versions" class="view">
+      <header id="lineageHeader" class="mc-lineage-header"></header>
+      <div class="mc-lineage-workspace">
+        <section class="panel mc-lineage-current" aria-labelledby="lineageCurrentTitle">
+          <div class="mc-lineage-heading"><span>DOCUMENT FAMILY</span><h2 id="lineageCurrentTitle">Current Version</h2></div>
+          <div id="lineageCurrent"></div>
+        </section>
+        <section class="panel mc-lineage-history" aria-labelledby="lineageHistoryTitle">
+          <div class="mc-lineage-heading"><span>EXPLICIT HISTORY</span><h2 id="lineageHistoryTitle">Version Chain</h2></div>
+          <div id="lineageHistory"></div>
+        </section>
+        <aside class="panel mc-lineage-changes" aria-labelledby="lineageChangesTitle">
+          <div class="mc-lineage-heading"><span>FIELD COMPARISON</span><h2 id="lineageChangesTitle">Changes and Warnings</h2></div>
+          <div id="lineageChanges"></div>
+        </aside>
+      </div>
+    </section>
+
     <section id="evaluate" class="view">
       <header class="mc-validation-header">
         <div>
@@ -779,6 +839,14 @@ const titles = {
     'Evidence Explorer',
     'Inspect the retrieval results and citations behind the latest answer.'
   ],
+  relationships: [
+    'Relationship Explorer',
+    'Inspect explicit hierarchy, references, and document relationships.'
+  ],
+  versions: [
+    'Version Explorer',
+    'Inspect explicit document lineage, duplicates, and deterministic revision changes.'
+  ],
   evaluate: [
     'Knowledge Validation',
     'Validate knowledge-base readiness, metadata, indexing, and coverage.'
@@ -817,6 +885,14 @@ function show(name) {
 
   if (name === 'evidence') {
     renderEvidenceExplorer();
+  }
+
+  if (name === 'relationships') {
+    renderRelationshipExplorer();
+  }
+
+  if (name === 'versions') {
+    renderVersionExplorer();
   }
 
   if (name === 'evaluate') {
@@ -869,11 +945,15 @@ function showTransientNavigationNotice(message) {
 }
 
 function returnToEvidenceExplorer() {
+  const originatingMessageId = sourceNavigationTarget?.originatingMessageId ||
+    relationshipTarget?.originatingMessageId;
   if (
     activeRetrievalSession &&
-    sourceNavigationTarget?.originatingMessageId === activeRetrievalSession.messageId
+    originatingMessageId === activeRetrievalSession.messageId
   ) {
-    selectedEvidenceId = sourceNavigationTarget.evidenceId || selectedEvidenceId;
+    selectedEvidenceId = sourceNavigationTarget?.evidenceId ||
+      relationshipTarget?.evidenceId ||
+      selectedEvidenceId;
     show('evidence');
     return;
   }
@@ -882,6 +962,61 @@ function returnToEvidenceExplorer() {
   showTransientNavigationNotice(
     'The retrieval session is no longer available. Ask Chief a new question to inspect evidence.'
   );
+}
+
+function openRelationshipExplorerFromEvidence(evidence) {
+  if (!evidence?.documentId || !activeRetrievalSession) return;
+  relationshipTarget = {
+    ...relationshipNavigationTarget({
+      documentId: evidence.documentId,
+      sectionId: evidence.sectionId,
+      origin: 'evidence'
+    }),
+    projectId: activeRetrievalSession.project.id,
+    libraryId: evidence.libraryId || activeRetrievalSession.library.id,
+    evidenceId: evidence.id,
+    originatingMessageId: activeRetrievalSession.messageId
+  };
+  selectedDoc = evidence.documentId;
+  show('relationships');
+}
+
+function openRelationshipSource(destination) {
+  if (!relationshipTarget?.documentId) return;
+  sourceNavigationTarget = createSourceTarget({
+    projectId: relationshipTarget.projectId || state().activeProject,
+    libraryId: relationshipTarget.libraryId,
+    documentId: relationshipTarget.documentId,
+    sectionId: relationshipTarget.sectionId,
+    evidenceId: relationshipTarget.evidenceId,
+    originatingWorkspace: 'relationships',
+    originatingMessageId: relationshipTarget.originatingMessageId,
+    destination
+  });
+  selectedDoc = relationshipTarget.documentId;
+  if (destination === 'knowledge') selectedKnowledgeSection = 'all';
+  show(destination);
+}
+
+function returnToRelationshipExplorer() {
+  if (!relationshipTarget?.documentId) {
+    show('relationships');
+    return;
+  }
+  selectedDoc = relationshipTarget.documentId;
+  show('relationships');
+}
+
+function openVersionExplorer(documentId, originatingMessageId = '') {
+  const target = lineageNavigationTarget(documentId);
+  if (!target) return;
+  lineageTarget = {
+    ...target,
+    originatingMessageId,
+    originatingWorkspace: originatingMessageId ? 'chat' : view
+  };
+  selectedDoc = documentId;
+  show('versions');
 }
 
 function returnToOriginatingAnswer() {
@@ -1041,6 +1176,8 @@ $('#projectSelect').onchange = async () => {
   sourceNavigationTarget = null;
   answerNavigationTarget = null;
   sourceNavigationNotice = '';
+  relationshipTarget = null;
+  lineageTarget = null;
   await refresh();
 };
 
@@ -1317,8 +1454,42 @@ function renderAssistantToolbar(message, messageIndex) {
           <button type="button" data-view-evidence="${esc(message.id)}">
             View Evidence
           </button>
+          <button type="button" data-explore-relationships="${esc(message.id)}">
+            Explore Relationships
+          </button>
+          ${message.hits[0]?.documentId
+            ? `<button type="button" data-open-version-explorer="${esc(message.hits[0].documentId)}">Explore Versions</button>`
+            : ''}
         `
         : ''}
+    </div>
+  `;
+}
+
+function renderEvidenceVersionNotice(message, lineageModel) {
+  const hits = Array.isArray(message.hits) ? message.hits : [];
+  const previousEvidence = hits.map(hit => ({
+    hit,
+    lineage: lineageForDocument(lineageModel, hit.documentId)
+  })).filter(item =>
+    ['superseded', 'duplicate'].includes(item.lineage.record?.status)
+  );
+
+  if (!previousEvidence.length) return '';
+  const first = previousEvidence[0];
+  const currentId = first.lineage.current?.documentId || '';
+  return `
+    <div class="mc-lineage-evidence-warning" role="note">
+      <div>
+        <strong>Evidence from previous revision</strong>
+        <span>${fmt(previousEvidence.length)} retrieved source${previousEvidence.length === 1 ? '' : 's'} came from a superseded or duplicate record.</span>
+      </div>
+      <div>
+        <button type="button" data-open-version-explorer="${esc(first.hit.documentId)}">Review Version</button>
+        ${currentId
+          ? `<button type="button" class="subtle" data-open-current-version="${esc(currentId)}">Open Current Version</button>`
+          : ''}
+      </div>
     </div>
   `;
 }
@@ -1346,6 +1517,7 @@ function renderMessages(
   { revealLatest = true, smooth = false } = {}
 ) {
   const chat = state().chat;
+  const lineageModel = buildDocumentLineage({ documents, sections });
   const previousScrollTop = $('#messages').scrollTop;
 
   $('#messages').innerHTML = chat.length
@@ -1381,6 +1553,7 @@ function renderMessages(
               ${message.role === 'assistant'
                 ? `
                   ${renderAssistantCitations(message, messageIndex)}
+                  ${renderEvidenceVersionNotice(message, lineageModel)}
                   ${renderAssistantToolbar(message, messageIndex)}
                 `
                 : ''}
@@ -1529,6 +1702,28 @@ $('#messages').onclick = event => {
     selectedEvidenceId = activeRetrievalSession.evidence[0]?.id || null;
     show('evidence');
   }
+
+  const relationshipButton = event.target.closest('[data-explore-relationships]');
+
+  if (
+    relationshipButton &&
+    activeRetrievalSession?.messageId === relationshipButton.dataset.exploreRelationships
+  ) {
+    openRelationshipExplorerFromEvidence(activeRetrievalSession.evidence[0]);
+  }
+
+  const versionButton = event.target.closest('[data-open-version-explorer]');
+  if (versionButton) {
+    openVersionExplorer(versionButton.dataset.openVersionExplorer, activeRetrievalSession?.messageId || '');
+    return;
+  }
+
+  const currentVersionButton = event.target.closest('[data-open-current-version]');
+  if (currentVersionButton) {
+    selectedDoc = currentVersionButton.dataset.openCurrentVersion;
+    selectedKnowledgeSection = 'all';
+    show('knowledge');
+  }
 };
 
 $('#messages').addEventListener('toggle', event => {
@@ -1557,6 +1752,8 @@ $('#clearChat').onclick = () => {
   sourceNavigationTarget = null;
   answerNavigationTarget = null;
   sourceNavigationNotice = '';
+  relationshipTarget = null;
+  lineageTarget = null;
   setChiefState('idle');
   refresh();
 };
@@ -1612,7 +1809,7 @@ async function ask() {
     $('#prompt').value = '';
     resizeComposer();
 
-    renderMessages([], [], {
+    renderMessages(documents, sections, {
       revealLatest: revealResponse,
       smooth: revealResponse
     });
@@ -1937,6 +2134,9 @@ function renderEvidenceExplorer() {
           ${selectedActions.openSourceInspector
             ? '<button type="button" data-evidence-navigation="sources" class="subtle">Open in Source Inspector</button>'
             : ''}
+          ${selected?.documentId
+            ? '<button type="button" data-evidence-relationships class="subtle">Explore Relationships</button>'
+            : ''}
           ${session.messageId && state().chat.some(message => message.id === session.messageId)
             ? '<button type="button" data-evidence-back-answer class="subtle">Back to Answer</button>'
             : ''}
@@ -1976,6 +2176,383 @@ function renderEvidenceExplorer() {
     'click',
     returnToOriginatingAnswer
   );
+  $('[data-evidence-relationships]')?.addEventListener('click', () =>
+    openRelationshipExplorerFromEvidence(selected)
+  );
+}
+
+async function renderRelationshipExplorer() {
+  const documents = await engine.documents();
+  const sections = await engine.sections();
+  const model = buildKnowledgeRelationships({ documents, sections });
+  const requestedDocumentId = relationshipTarget?.documentId || selectedDoc;
+  const requestedDocument = requestedDocumentId
+    ? documents.find(item => item.id === requestedDocumentId) || null
+    : null;
+  const selectedDocument = requestedDocumentId
+    ? requestedDocument
+    : documents[0] || null;
+
+  if (!selectedDocument) {
+    if (!requestedDocumentId) relationshipTarget = null;
+    $('#relationshipHeader').innerHTML = `
+      <div><span>CONNECTED KNOWLEDGE</span><h2>No relationship context</h2></div>
+      <p>${requestedDocumentId ? 'The selected relationship document is no longer available.' : 'Add and index project documents to inspect explicit relationships.'}</p>
+    `;
+    $('#relationshipContext').innerHTML = `<div class="mc-relationship-empty">${requestedDocumentId ? 'The exact selected document could not be resolved.' : 'No documents are available.'}</div>`;
+    $('#relationshipGraph').innerHTML = '<div class="mc-relationship-empty">No graph is available.</div>';
+    $('#relationshipDetail').innerHTML = '<div class="mc-relationship-empty">No relationships are available.</div>';
+    return;
+  }
+
+  if (!relationshipTarget || relationshipTarget.documentId !== selectedDocument.id) {
+    relationshipTarget = {
+      ...relationshipNavigationTarget({ documentId: selectedDocument.id }),
+      projectId: state().activeProject,
+      libraryId: selectedDocument.libraryId,
+      originatingMessageId: activeRetrievalSession?.messageId || '',
+      evidenceId: selectedEvidenceId || ''
+    };
+  }
+
+  const context = relationshipContext(model, relationshipTarget);
+  if (relationshipTarget.sectionId && !context.section) {
+    relationshipTarget = { ...relationshipTarget, sectionId: '' };
+  }
+  const activeContext = relationshipContext(model, relationshipTarget);
+  const graph = buildRelationshipGraph(model, relationshipTarget);
+  const documentName = selectedDocument.title || selectedDocument.name;
+  const sectionName = activeContext.section
+    ? sectionHeadingValue(activeContext.section, sections.indexOf(activeContext.section))
+    : 'Document context';
+  const libraries = engine.libraries();
+  const library = libraries.find(item => item.id === selectedDocument.libraryId);
+  const documentById = id => documents.find(item => item.id === id);
+  const sectionById = id => sections.find(item => item.id === id);
+  const relatedDocumentId = (edge, currentId) => edge.from === currentId ? edge.to : edge.from;
+  const selectedDocumentId = selectedDocument.id;
+  const references = activeContext.section
+    ? activeContext.references
+    : model.explicitReferences.filter(edge => edge.sourceDocumentId === selectedDocumentId);
+  const referencedBy = activeContext.section
+    ? activeContext.referencedBy
+    : model.reverseReferences.filter(edge => edge.sourceDocumentId === selectedDocumentId);
+  const validation = model.validation;
+  const warningItems = [
+    ...validation.brokenReferences.map(item => `Broken exact reference ID from section ${item.sectionId}: ${item.referenceId}`),
+    ...validation.unresolvedReferences.map(item => `Unresolved section-number reference from ${item.sectionId}: ${item.referenceNumber}`),
+    ...validation.ambiguousReferences.map(item => `Ambiguous ${item.kind} reference from ${item.sectionId}: ${item.reference}`),
+    ...validation.orphanedHierarchy.map(item => `Orphaned parent link from ${item.sectionId}: ${item.parentId}`),
+    ...validation.duplicateReferences.map(item => `Duplicate reference entry on ${item.sectionId}: ${item.reference}`),
+    ...validation.duplicateHierarchyEdges.map(item => `Duplicate hierarchy edge: ${item.edge}`),
+    ...validation.circularParentChains.map(items => `Circular parent chain: ${items.join(' → ')}`),
+    ...validation.circularReferences.map(items => `Circular explicit references: ${items.join(' → ')}`)
+  ];
+  const relationList = (title, type, edges, labelFor) => `
+    <section class="mc-relationship-group">
+      <h3>${esc(title)} <span>${fmt(edges.length)}</span></h3>
+      ${edges.length
+        ? `<ul>${edges.map(edge => {
+            const item = labelFor(edge);
+            return `<li>
+              <button type="button" data-relationship-document="${esc(item.documentId || '')}" data-relationship-section="${esc(item.sectionId || '')}">
+                <strong>${esc(item.label)}</strong>
+                <small>${esc(type)}${item.detail ? ` · ${esc(item.detail)}` : ''}</small>
+              </button>
+            </li>`;
+          }).join('')}</ul>`
+        : '<p>No explicit relationships in this category.</p>'}
+    </section>
+  `;
+
+  $('#relationshipHeader').innerHTML = `
+    <div>
+      <span>CONNECTED KNOWLEDGE · READ ONLY</span>
+      <h2>${esc(documentName)}</h2>
+      <p>${esc(sectionName)} · ${library ? esc(library.name) : 'Library unavailable'}</p>
+    </div>
+    <nav class="mc-relationship-return" aria-label="Relationship navigation">
+      ${activeRetrievalSession && relationshipTarget.originatingMessageId === activeRetrievalSession.messageId
+        ? '<button type="button" data-relationship-return-evidence>Back to Evidence Explorer</button>'
+        : ''}
+      <button type="button" class="subtle" data-relationship-knowledge>Open Knowledge Object</button>
+      <button type="button" class="subtle" data-relationship-source>Open Source Inspector</button>
+    </nav>
+  `;
+
+  $('#relationshipContext').innerHTML = `
+    <dl class="mc-relationship-facts">
+      <div><dt>Selected document</dt><dd>${esc(documentName)}</dd></div>
+      <div><dt>Selected section</dt><dd>${esc(sectionName)}</dd></div>
+      <div><dt>Project</dt><dd>${esc(state().projects.find(item => item.id === state().activeProject)?.name || 'Unavailable')}</dd></div>
+      <div><dt>Library</dt><dd>${library ? esc(library.name) : 'Unavailable'}</dd></div>
+    </dl>
+    ${activeContext.section
+      ? `<div class="mc-relationship-selected-section">
+          <span>SELECTED SECTION</span>
+          <strong>${esc(sectionName)}</strong>
+          <small>${Array.isArray(activeContext.section.path) && activeContext.section.path.length ? esc(activeContext.section.path.join(' › ')) : 'Hierarchy path unavailable'}</small>
+        </div>`
+      : '<div class="mc-relationship-empty">Select a section relationship to center the explorer.</div>'}
+    ${warningItems.length
+      ? `<div class="mc-relationship-warnings"><strong>Validation warnings</strong><ul>${warningItems.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>`
+      : '<div class="mc-relationship-clear">No relationship-integrity warnings were detected.</div>'}
+  `;
+
+  const shownNodes = graph.nodes.slice(0, 28);
+  const shownIds = new Set(shownNodes.map(node => node.id));
+  const shownEdges = graph.edges.filter(edge => shownIds.has(edge.from) && shownIds.has(edge.to));
+  const nodePositions = new Map(shownNodes.map((node, index) => {
+    const column = node.type === 'Document' ? 0 : 1;
+    const peers = shownNodes.filter(item => item.type === node.type);
+    const peerIndex = peers.findIndex(item => item.id === node.id);
+    return [node.id, {
+      x: column ? 430 : 90,
+      y: 45 + peerIndex * Math.max(42, Math.min(72, 460 / Math.max(1, peers.length)))
+    }];
+  }));
+  const graphHeight = Math.max(230, ...[...nodePositions.values()].map(point => point.y + 45));
+  $('#relationshipGraph').innerHTML = graph.nodes.length
+    ? `
+      <p class="mc-relationship-graph-note">Position shows document and section type only. It does not represent semantic similarity.</p>
+      <svg viewBox="0 0 720 ${graphHeight}" role="img" aria-labelledby="relationshipGraphSvgTitle relationshipGraphSvgDesc">
+        <title id="relationshipGraphSvgTitle">Explicit relationship graph for ${esc(documentName)}</title>
+        <desc id="relationshipGraphSvgDesc">${esc(shownEdges.map(edge => `${edge.type}: ${edge.from} to ${edge.to}`).join('. '))}</desc>
+        ${shownEdges.map(edge => {
+          const from = nodePositions.get(edge.from);
+          const to = nodePositions.get(edge.to);
+          return `<line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" class="mc-relationship-edge ${esc(edge.type.toLowerCase().replace(/\s+/g, '-'))}"><title>${esc(edge.type)}</title></line>`;
+        }).join('')}
+        ${shownNodes.map(node => {
+          const point = nodePositions.get(node.id);
+          return `<g class="mc-relationship-node ${node.type.toLowerCase()}" transform="translate(${point.x} ${point.y})"><rect x="-72" y="-17" width="144" height="34" rx="7"></rect><text text-anchor="middle" y="3">${esc(node.label.slice(0, 24))}</text><title>${esc(node.type)}: ${esc(node.label)}</title></g>`;
+        }).join('')}
+      </svg>
+      ${graph.nodes.length > shownNodes.length ? `<p class="mc-relationship-graph-note">Showing ${fmt(shownNodes.length)} of ${fmt(graph.nodes.length)} nodes for readability.</p>` : ''}
+      <details class="mc-relationship-text-alternative"><summary>Relationship list</summary><ul>${graph.textAlternative.map(item => `<li>${esc(item)}</li>`).join('')}</ul></details>
+    `
+    : '<div class="mc-relationship-empty">No graph relationships are available for this document.</div>';
+
+  const parentEdges = activeContext.parent ? [{ item: activeContext.parent }] : [];
+  const childEdges = activeContext.children.map(item => ({ item }));
+  $('#relationshipDetail').innerHTML = [
+    relationList('Parent', 'Hierarchy', parentEdges, edge => ({
+      label: sectionHeadingValue(edge.item), documentId: edge.item.documentId, sectionId: edge.item.id
+    })),
+    relationList('Children', 'Hierarchy', childEdges, edge => ({
+      label: sectionHeadingValue(edge.item), documentId: edge.item.documentId, sectionId: edge.item.id
+    })),
+    relationList('Explicit references', 'Explicit reference', references, edge => {
+      const target = sectionById(edge.targetSectionId);
+      return { label: target ? sectionHeadingValue(target) : edge.targetSectionId, documentId: edge.targetDocumentId, sectionId: edge.targetSectionId, detail: edge.sourceKind };
+    }),
+    relationList('Referenced by', 'Reverse reference', referencedBy, edge => {
+      const target = sectionById(edge.targetSectionId);
+      return { label: target ? sectionHeadingValue(target) : edge.targetSectionId, documentId: edge.targetDocumentId, sectionId: edge.targetSectionId };
+    }),
+    relationList('Referenced documents', 'Explicit reference', activeContext.referencedDocuments, edge => {
+      const target = documentById(edge.to);
+      return { label: target?.title || target?.name || edge.to, documentId: edge.to, sectionId: edge.targetSectionId };
+    }),
+    relationList('Related documents', 'Explicit reference', activeContext.relatedDocuments, edge => {
+      const id = relatedDocumentId(edge, selectedDocumentId);
+      const target = documentById(id);
+      return { label: target?.title || target?.name || id, documentId: id };
+    }),
+    relationList('Same division', 'Same division', activeContext.sameDivision, edge => {
+      const id = relatedDocumentId(edge, selectedDocumentId);
+      const target = documentById(id);
+      return { label: target?.title || target?.name || id, documentId: id, detail: edge.divisions.join(', ') };
+    }),
+    relationList('Same library', 'Same library', activeContext.sameLibrary, edge => {
+      const id = relatedDocumentId(edge, selectedDocumentId);
+      const target = documentById(id);
+      return { label: target?.title || target?.name || id, documentId: id };
+    })
+  ].join('');
+
+  $$('[data-relationship-document]').forEach(button => {
+    button.onclick = () => {
+      const documentId = button.dataset.relationshipDocument;
+      if (!documents.some(item => item.id === documentId)) return;
+      relationshipTarget = {
+        ...relationshipTarget,
+        documentId,
+        sectionId: button.dataset.relationshipSection || '',
+        libraryId: documentById(documentId)?.libraryId || ''
+      };
+      selectedDoc = documentId;
+      renderRelationshipExplorer();
+    };
+  });
+  $('[data-relationship-return-evidence]')?.addEventListener('click', returnToEvidenceExplorer);
+  $('[data-relationship-knowledge]')?.addEventListener('click', () => openRelationshipSource('knowledge'));
+  $('[data-relationship-source]')?.addEventListener('click', () => openRelationshipSource('sources'));
+}
+
+async function renderVersionExplorer() {
+  const documents = await engine.documents();
+  const sections = await engine.sections();
+  const model = buildDocumentLineage({ documents, sections });
+  const requestedId = lineageTarget?.documentId || selectedDoc;
+  const selected = requestedId
+    ? documents.find(document => document.id === requestedId) || null
+    : documents[0] || null;
+
+  if (!selected) {
+    $('#lineageHeader').innerHTML = `
+      <div><span>DOCUMENT HISTORY · READ ONLY</span><h2>${requestedId ? 'Selected version unavailable' : 'No document versions available'}</h2></div>
+      <p>${requestedId ? 'The exact document record no longer exists.' : 'Add and index a document to begin recording explicit lineage.'}</p>
+    `;
+    $('#lineageCurrent').innerHTML = '<div class="mc-lineage-empty">Current-version status is unavailable.</div>';
+    $('#lineageHistory').innerHTML = '<div class="mc-lineage-empty">No explicit version chain is available.</div>';
+    $('#lineageChanges').innerHTML = '<div class="mc-lineage-empty">No versions are available to compare.</div>';
+    return;
+  }
+
+  if (!lineageTarget || lineageTarget.documentId !== selected.id) {
+    lineageTarget = {
+      ...lineageNavigationTarget(selected.id),
+      originatingMessageId: '',
+      originatingWorkspace: view
+    };
+  }
+  const selectedLineage = lineageForDocument(model, selected.id);
+  const chain = selectedLineage.chain;
+  const record = selectedLineage.record;
+  const currentRecord = selectedLineage.current;
+  const selectedName = selected.title || selected.name;
+  const currentDocument = currentRecord?.document || null;
+  const selectedComparison = chain?.comparisons.find(comparison =>
+    comparison.currentDocumentId === selected.id ||
+    comparison.previousDocumentId === selected.id
+  ) || null;
+  const exactDuplicateGroups = model.detectedDuplicates.filter(group =>
+    group.documentIds.includes(selected.id)
+  );
+  const relevantBroken = model.validation.brokenLineage.filter(item =>
+    item.documentId === selected.id || item.targetId === selected.id
+  );
+  const dateLabel = value => {
+    const date = value ? new Date(value) : null;
+    return date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : 'Unavailable';
+  };
+  const comparisonValue = value =>
+    value === null || value === undefined || value === ''
+      ? 'Unavailable'
+      : String(value);
+  const versionCard = (item, label) => {
+    const document = item.document;
+    return `
+      <button type="button" class="mc-lineage-version ${document.id === selected.id ? 'active' : ''}" data-lineage-document="${esc(document.id)}" ${document.id === selected.id ? 'aria-current="true"' : ''}>
+        <span>${esc(label)}</span>
+        <strong>${esc(document.title || document.name)}</strong>
+        <small>${esc(item.status)} · ${esc(dateLabel(document.importedAt || document.indexedAt))}</small>
+      </button>
+    `;
+  };
+
+  $('#lineageHeader').innerHTML = `
+    <div>
+      <span>DOCUMENT HISTORY · READ ONLY</span>
+      <h2>${esc(selectedName)}</h2>
+      <p>Lineage status: ${esc(record?.status || 'unknown')} · Document ID: ${esc(selected.id)}</p>
+    </div>
+    <nav class="mc-lineage-actions" aria-label="Version navigation">
+      <button type="button" data-lineage-knowledge>Open Knowledge Object</button>
+      <button type="button" class="subtle" data-lineage-source>Open Source Inspector</button>
+      ${lineageTarget.originatingMessageId && state().chat.some(message => message.id === lineageTarget.originatingMessageId)
+        ? '<button type="button" class="subtle" data-lineage-answer>Back to Answer</button>'
+        : ''}
+    </nav>
+  `;
+
+  $('#lineageCurrent').innerHTML = currentRecord
+    ? `
+      <article class="mc-lineage-current-card">
+        <span>CURRENT</span>
+        <h3>${esc(currentDocument.title || currentDocument.name)}</h3>
+        <dl>
+          <div><dt>Document ID</dt><dd>${esc(currentDocument.id)}</dd></div>
+          <div><dt>Lineage ID</dt><dd>${esc(currentRecord.lineageId)}</dd></div>
+          <div><dt>Imported</dt><dd>${esc(dateLabel(currentDocument.importedAt))}</dd></div>
+          <div><dt>Indexed</dt><dd>${esc(dateLabel(currentDocument.indexedAt))}</dd></div>
+          <div><dt>Sections</dt><dd>${fmt(currentDocument.sectionCount)}</dd></div>
+          <div><dt>Characters</dt><dd>${fmt(currentDocument.characterCount)}</dd></div>
+        </dl>
+        ${currentDocument.id !== selected.id ? `<button type="button" data-lineage-document="${esc(currentDocument.id)}">Select Current Version</button>` : ''}
+      </article>
+    `
+    : `
+      <div class="mc-lineage-unknown">
+        <strong>Current version unknown</strong>
+        <p>No explicit current lineage record is available. Mission Companion will not infer one from dates or filenames.</p>
+      </div>
+    `;
+
+  const previousRecords = chain?.previous || [];
+  const duplicateRecords = chain?.duplicates || [];
+  const unknownRecords = chain?.unknown || [];
+  $('#lineageHistory').innerHTML = `
+    <section class="mc-lineage-group">
+      <h3>Previous Versions <span>${fmt(previousRecords.length)}</span></h3>
+      ${previousRecords.length ? previousRecords.map(item => versionCard(item, 'SUPERSEDED')).join('') : '<p>No explicit previous versions.</p>'}
+    </section>
+    <section class="mc-lineage-group">
+      <h3>Duplicates <span>${fmt(duplicateRecords.length)}</span></h3>
+      ${duplicateRecords.length ? duplicateRecords.map(item => versionCard(item, 'DUPLICATE')).join('') : '<p>No explicitly linked duplicate imports.</p>'}
+      ${exactDuplicateGroups.length ? `<div class="mc-lineage-fingerprint"><strong>Exact stored fingerprint matches</strong><ul>${exactDuplicateGroups.map(group => `<li>${group.documentIds.map(esc).join(' · ')}</li>`).join('')}</ul></div>` : ''}
+    </section>
+    <section class="mc-lineage-group">
+      <h3>Unknown <span>${fmt(unknownRecords.length)}</span></h3>
+      ${unknownRecords.length ? unknownRecords.map(item => versionCard(item, 'UNKNOWN')).join('') : '<p>No unknown records in this explicit family.</p>'}
+    </section>
+  `;
+
+  $('#lineageChanges').innerHTML = `
+    <section class="mc-lineage-comparison">
+      <h3>Extraction Changes</h3>
+      ${selectedComparison
+        ? `<ul>${selectedComparison.changes.filter(item => item.category === 'Extraction').map(item => `<li class="${item.changed ? 'changed' : ''}"><strong>${esc(item.field)}</strong><span>${esc(comparisonValue(item.before))} → ${esc(comparisonValue(item.after))}</span></li>`).join('')}</ul>`
+        : '<p>No explicit adjacent version is available for comparison.</p>'}
+    </section>
+    <section class="mc-lineage-comparison">
+      <h3>Relationship Changes</h3>
+      ${selectedComparison
+        ? `<ul>${selectedComparison.changes.filter(item => item.category === 'Relationships').map(item => `<li class="${item.changed ? 'changed' : ''}"><strong>${esc(item.field)}</strong><span>${esc(comparisonValue(item.before))} → ${esc(comparisonValue(item.after))}</span></li>`).join('')}</ul>`
+        : '<p>No explicit adjacent version is available for comparison.</p>'}
+    </section>
+    <section class="mc-lineage-warnings">
+      <h3>Warnings</h3>
+      ${relevantBroken.length || model.validation.circularPreviousLinks.length || model.validation.ambiguousCurrentFamilies.some(item => item.lineageId === record?.lineageId)
+        ? `<ul>
+            ${relevantBroken.map(item => `<li>Broken ${esc(item.field)} link from ${esc(item.documentId)} to ${esc(item.targetId)}.</li>`).join('')}
+            ${model.validation.circularPreviousLinks.map(cycle => `<li>Circular previous-version chain: ${esc(cycle.join(' → '))}</li>`).join('')}
+            ${model.validation.ambiguousCurrentFamilies.filter(item => item.lineageId === record?.lineageId).map(item => `<li>Multiple records are explicitly marked current: ${esc(item.documentIds.join(', '))}. No current version was selected.</li>`).join('')}
+          </ul>`
+        : '<p>No deterministic lineage warnings were detected for this document.</p>'}
+    </section>
+  `;
+
+  $$('[data-lineage-document]').forEach(button => {
+    button.onclick = () => {
+      const documentId = button.dataset.lineageDocument;
+      if (!documents.some(document => document.id === documentId)) return;
+      lineageTarget = { ...lineageTarget, documentId };
+      selectedDoc = documentId;
+      renderVersionExplorer();
+    };
+  });
+  $('[data-lineage-knowledge]')?.addEventListener('click', () => {
+    selectedDoc = selected.id;
+    selectedKnowledgeSection = 'all';
+    show('knowledge');
+  });
+  $('[data-lineage-source]')?.addEventListener('click', () => {
+    selectedDoc = selected.id;
+    show('sources');
+  });
+  $('[data-lineage-answer]')?.addEventListener('click', returnToOriginatingAnswer);
 }
 
 $('#upload').onclick = () => $('#fileInput').click();
@@ -3877,6 +4454,32 @@ function renderDocumentMetadata(document, allSections = []) {
   const objectTargetSection = objectSourceResolution?.status === 'section'
     ? objectSourceResolution.section
     : null;
+  const objectRelationshipModel = buildKnowledgeRelationships({
+    documents: allDocuments,
+    sections: allSections
+  });
+  const objectRelationshipContext = relationshipContext(
+    objectRelationshipModel,
+    {
+      documentId: document.id,
+      sectionId: objectTargetSection?.id || ''
+    }
+  );
+  const objectLineageModel = buildDocumentLineage({
+    documents: allDocuments,
+    sections: allSections
+  });
+  const objectLineage = lineageForDocument(objectLineageModel, document.id);
+  const objectExplicitReferences = objectTargetSection
+    ? objectRelationshipContext.references.length
+    : objectRelationshipModel.explicitReferences.filter(edge =>
+        edge.sourceDocumentId === document.id
+      ).length;
+  const objectReverseReferences = objectTargetSection
+    ? objectRelationshipContext.referencedBy.length
+    : objectRelationshipModel.reverseReferences.filter(edge =>
+        edge.sourceDocumentId === document.id
+      ).length;
   const normalizedTags = new Set(
     allTags.map(tag => tag.toLowerCase())
   );
@@ -4005,6 +4608,9 @@ function renderDocumentMetadata(document, allSections = []) {
           <strong>Evidence source context</strong>
           <div>
             <button type="button" data-source-return-evidence>Back to Evidence Explorer</button>
+            ${sourceNavigationTarget.originatingWorkspace === 'relationships'
+              ? '<button type="button" data-source-return-relationships>Back to Relationship Explorer</button>'
+              : ''}
             ${sourceNavigationTarget.originatingMessageId && state().chat.some(message => message.id === sourceNavigationTarget.originatingMessageId)
               ? '<button type="button" class="subtle" data-source-return-answer>Back to Answer</button>'
               : ''}
@@ -4107,6 +4713,22 @@ function renderDocumentMetadata(document, allSections = []) {
       </dl>
     </section>
 
+    <section class="mc-object-section mc-lineage-object-summary" aria-labelledby="objectLineageTitle">
+      <div class="mc-lineage-object-heading">
+        <h4 id="objectLineageTitle">Version Information</h4>
+        <button type="button" class="subtle" data-object-lineage>Open Version Explorer</button>
+      </div>
+      <div class="mc-lineage-status ${esc(objectLineage.record?.status || 'unknown')}">
+        <strong>${esc((objectLineage.record?.status || 'unknown').toUpperCase())}</strong>
+        <span>${objectLineage.record?.lineageId ? `Lineage ${esc(objectLineage.record.lineageId)}` : 'No explicit lineage metadata'}</span>
+      </div>
+      <dl class="mc-object-facts mc-object-facts-compact">
+        <div><dt>Current document</dt><dd>${objectLineage.current?.documentId ? esc(objectLineage.current.documentId) : 'Unknown'}</dd></div>
+        <div><dt>Previous versions</dt><dd>${fmt(objectLineage.chain?.previous.length || 0)}</dd></div>
+        <div><dt>Duplicates</dt><dd>${fmt(objectLineage.chain?.duplicates.length || 0)}</dd></div>
+      </dl>
+    </section>
+
     <section class="mc-object-section" aria-labelledby="objectSummaryTitle">
       <h4 id="objectSummaryTitle">Content Summary</h4>
       ${summary
@@ -4158,7 +4780,7 @@ function renderDocumentMetadata(document, allSections = []) {
             No indexed sections are currently available.
           </div>
         `}
-      ${objectSourceResolution?.status === 'missing-section'
+      ${objectSourceResolution?.status === 'missing-section' && sourceNavigationTarget?.sectionId
         ? `
           <div class="mc-source-target-unavailable" role="status">
             <strong>Source section unavailable</strong>
@@ -4168,8 +4790,24 @@ function renderDocumentMetadata(document, allSections = []) {
         : ''}
     </section>
 
-    <section class="mc-object-section mc-object-section-wide" aria-labelledby="objectRelationshipsTitle">
+    <section class="mc-object-section mc-object-section-wide mc-relationship-object-summary" aria-labelledby="objectRelationshipsTitle">
       <h4 id="objectRelationshipsTitle">Relationships</h4>
+      <div class="mc-relationship-summary-grid">
+        <article><span>Parent</span><strong>${objectRelationshipContext.parent ? '1' : '0'}</strong></article>
+        <article><span>Children</span><strong>${fmt(objectRelationshipContext.children.length)}</strong></article>
+        <article><span>References</span><strong>${fmt(objectExplicitReferences)}</strong></article>
+        <article><span>Referenced by</span><strong>${fmt(objectReverseReferences)}</strong></article>
+        <article><span>Related documents</span><strong>${fmt(objectRelationshipContext.relatedDocuments.length)}</strong></article>
+        <article><span>Same division</span><strong>${fmt(objectRelationshipContext.sameDivision.length)}</strong></article>
+        <article><span>Same library</span><strong>${fmt(objectRelationshipContext.sameLibrary.length)}</strong></article>
+      </div>
+      <button type="button" class="subtle mc-relationship-open" data-object-relationships>
+        Open Relationship Explorer
+      </button>
+    </section>
+
+    <section class="mc-object-section mc-object-section-wide" aria-labelledby="objectMetadataRelationshipsTitle">
+      <h4 id="objectMetadataRelationshipsTitle">Existing Metadata Relationships</h4>
       ${relationships.length
         ? `
           <ul class="mc-object-relationships">
@@ -4243,6 +4881,10 @@ function renderDocumentMetadata(document, allSections = []) {
     'click',
     returnToOriginatingAnswer
   );
+  $('[data-source-return-relationships]')?.addEventListener(
+    'click',
+    returnToRelationshipExplorer
+  );
   $('[data-source-open-inspector]')?.addEventListener('click', () => {
     sourceNavigationTarget = sourceNavigationDestination(
       sourceNavigationTarget,
@@ -4250,6 +4892,22 @@ function renderDocumentMetadata(document, allSections = []) {
     );
     show('sources');
   });
+  $('[data-object-relationships]')?.addEventListener('click', () => {
+    relationshipTarget = {
+      ...relationshipNavigationTarget({
+        documentId: document.id,
+        sectionId: objectTargetSection?.id || ''
+      }),
+      projectId: state().activeProject,
+      libraryId: document.libraryId,
+      originatingMessageId: activeRetrievalSession?.messageId || '',
+      evidenceId: selectedEvidenceId || ''
+    };
+    show('relationships');
+  });
+  $('[data-object-lineage]')?.addEventListener('click', () =>
+    openVersionExplorer(document.id, activeRetrievalSession?.messageId || '')
+  );
 
   if (objectTargetSection) {
     revealNavigationTarget(
@@ -4404,6 +5062,23 @@ async function renderSources() {
         sections
       })
     : null;
+  const sourceRelationshipModel = buildKnowledgeRelationships({
+    documents,
+    sections
+  });
+  const sourceRelationshipContext = relationshipContext(
+    sourceRelationshipModel,
+    {
+      documentId: selected.id,
+      sectionId: sourceTargetResolution?.section?.id || ''
+    }
+  );
+  const sourceDocumentReferences = sourceRelationshipModel.explicitReferences.filter(edge =>
+    edge.sourceDocumentId === selected.id
+  ).length;
+  const sourceDocumentReferencedBy = sourceRelationshipModel.reverseReferences.filter(edge =>
+    edge.sourceDocumentId === selected.id
+  ).length;
 
   const sectionText = sectionTextValue;
   const sectionHeading = sectionHeadingValue;
@@ -4473,6 +5148,9 @@ async function renderSources() {
           <strong>Evidence source context</strong>
           <div>
             <button type="button" data-source-return-evidence>Back to Evidence Explorer</button>
+            ${sourceNavigationTarget.originatingWorkspace === 'relationships'
+              ? '<button type="button" data-source-return-relationships>Back to Relationship Explorer</button>'
+              : ''}
             ${sourceNavigationTarget.originatingMessageId && state().chat.some(message => message.id === sourceNavigationTarget.originatingMessageId)
               ? '<button type="button" class="subtle" data-source-return-answer>Back to Answer</button>'
               : ''}
@@ -4489,6 +5167,20 @@ async function renderSources() {
         · ${esc(selected.category || 'General')}
       </p>
     </div>
+
+    <section class="mc-relationship-source-summary" aria-labelledby="sourceRelationshipTitle">
+      <div>
+        <span>EXPLICIT RELATIONSHIPS</span>
+        <h3 id="sourceRelationshipTitle">Relationship Summary</h3>
+      </div>
+      <dl>
+        <div><dt>Parent</dt><dd>${sourceRelationshipContext.parent ? '1' : '0'}</dd></div>
+        <div><dt>Children</dt><dd>${fmt(sourceRelationshipContext.children.length)}</dd></div>
+        <div><dt>References</dt><dd>${fmt(sourceTargetResolution?.section ? sourceRelationshipContext.references.length : sourceDocumentReferences)}</dd></div>
+        <div><dt>Referenced by</dt><dd>${fmt(sourceTargetResolution?.section ? sourceRelationshipContext.referencedBy.length : sourceDocumentReferencedBy)}</dd></div>
+      </dl>
+      <button type="button" class="subtle" data-source-relationships>Open Relationship Explorer</button>
+    </section>
 
     <section class="mc-extraction-overview" aria-labelledby="extractionOverviewTitle">
       <div class="mc-source-health-summary">
@@ -4652,7 +5344,7 @@ async function renderSources() {
         `}
     </section>
 
-    ${sourceTargetResolution?.status === 'missing-section'
+    ${sourceTargetResolution?.status === 'missing-section' && sourceNavigationTarget?.sectionId
       ? `
         <div class="mc-source-target-unavailable" role="status">
           <strong>Source section unavailable</strong>
@@ -4720,6 +5412,10 @@ async function renderSources() {
     'click',
     returnToOriginatingAnswer
   );
+  $('[data-source-return-relationships]')?.addEventListener(
+    'click',
+    returnToRelationshipExplorer
+  );
   $('[data-source-open-object]')?.addEventListener('click', () => {
     sourceNavigationTarget = sourceNavigationDestination(
       sourceNavigationTarget,
@@ -4727,6 +5423,19 @@ async function renderSources() {
     );
     selectedKnowledgeSection = 'all';
     show('knowledge');
+  });
+  $('[data-source-relationships]')?.addEventListener('click', () => {
+    relationshipTarget = {
+      ...relationshipNavigationTarget({
+        documentId: selected.id,
+        sectionId: sourceTargetResolution?.section?.id || ''
+      }),
+      projectId: state().activeProject,
+      libraryId: selected.libraryId,
+      originatingMessageId: activeRetrievalSession?.messageId || '',
+      evidenceId: selectedEvidenceId || ''
+    };
+    show('relationships');
   });
 
   let activeSectionId = sourceTargetResolution?.section?.id || null;
@@ -5110,6 +5819,26 @@ async function renderEvals() {
     documents,
     sections
   );
+  const relationshipModel = buildKnowledgeRelationships({
+    documents,
+    sections
+  });
+  const relationshipValidation = relationshipModel.validation;
+  const lineageModel = buildDocumentLineage({ documents, sections });
+  const lineageValidation = lineageModel.validation;
+  const lineageIssueCount =
+    lineageValidation.brokenLineage.length +
+    lineageValidation.circularPreviousLinks.length +
+    lineageValidation.ambiguousCurrentFamilies.length;
+  const documentsWithoutRelationships = relationshipValidation.documentsWithoutRelationships.length;
+  const documentsWithRelationships = Math.max(
+    0,
+    documents.length - documentsWithoutRelationships
+  );
+  const brokenRelationshipReferences =
+    relationshipValidation.brokenReferences.length +
+    relationshipValidation.unresolvedReferences.length +
+    relationshipValidation.ambiguousReferences.length;
   const sessionEvidenceDocumentIds = new Set(
     (activeRetrievalSession?.evidence || [])
       .map(item => item.documentId)
@@ -5180,7 +5909,14 @@ async function renderEvals() {
     ['Extraction Warnings', extractionCoverage.documentsWithWarnings, 'Documents with objective warnings'],
     ['No Usable Text', extractionCoverage.documentsWithoutUsableText, 'Documents without searchable content'],
     ['Categories', catalog.entries.length, 'Represented knowledge categories'],
-    ['File Types', catalog.types.length, 'Represented file-type groups']
+    ['File Types', catalog.types.length, 'Represented file-type groups'],
+    ['Documents with Relationships', documentsWithRelationships, 'Explicit or exact shared-state links'],
+    ['Documents without Relationships', documentsWithoutRelationships, 'No derived relationship edges'],
+    ['Broken References', brokenRelationshipReferences, 'Broken, unresolved, or ambiguous explicit references'],
+    ['Duplicate Imports', lineageValidation.duplicateImports, 'Explicit duplicate lineage records'],
+    ['Superseded Documents', lineageValidation.supersededDocuments, 'Preserved previous versions'],
+    ['Broken Lineage', lineageIssueCount, 'Missing, circular, or ambiguous lineage'],
+    ['Unknown Versions', lineageValidation.unknownVersions, 'No explicit lineage metadata']
   ];
 
   if (activeRetrievalSession) {
@@ -5362,6 +6098,53 @@ async function renderEvals() {
     }
   ];
 
+  checks.push(
+    {
+      label: 'Explicit relationship references',
+      status: brokenRelationshipReferences ? 'WARNING' : sections.length ? 'PASS' : 'INFO',
+      detail: brokenRelationshipReferences
+        ? `${fmt(relationshipValidation.brokenReferences.length)} broken ID, ${fmt(relationshipValidation.unresolvedReferences.length)} unresolved number, and ${fmt(relationshipValidation.ambiguousReferences.length)} ambiguous reference condition(s) were detected.`
+        : sections.length
+          ? 'No broken, unresolved, or ambiguous explicit references were detected.'
+          : 'No sections are available for relationship validation.'
+    },
+    {
+      label: 'Hierarchy relationships',
+      status:
+        relationshipValidation.orphanedHierarchy.length ||
+        relationshipValidation.duplicateHierarchyEdges.length ||
+        relationshipValidation.circularParentChains.length
+          ? 'WARNING'
+          : sections.length ? 'PASS' : 'INFO',
+      detail: `${fmt(relationshipValidation.orphanedHierarchy.length)} orphaned parent link(s), ${fmt(relationshipValidation.duplicateHierarchyEdges.length)} duplicate edge(s), and ${fmt(relationshipValidation.circularParentChains.length)} circular parent chain(s).`
+    },
+    {
+      label: 'Circular explicit references',
+      status: relationshipValidation.circularReferences.length ? 'WARNING' : sections.length ? 'PASS' : 'INFO',
+      detail: relationshipValidation.circularReferences.length
+        ? `${fmt(relationshipValidation.circularReferences.length)} circular explicit reference path(s) were detected.`
+        : sections.length
+          ? 'No circular explicit reference paths were detected.'
+          : 'No explicit references are available to validate.'
+    }
+    ,{
+      label: 'Document lineage integrity',
+      status: lineageIssueCount
+        ? 'WARNING'
+        : documents.length ? 'PASS' : 'INFO',
+      detail: `${fmt(lineageValidation.brokenLineage.length)} broken link(s), ${fmt(lineageValidation.circularPreviousLinks.length)} circular chain(s), and ${fmt(lineageValidation.ambiguousCurrentFamilies.length)} family or families with multiple current records were detected.`
+    },
+    {
+      label: 'Known document versions',
+      status: lineageValidation.unknownVersions ? 'INFO' : documents.length ? 'PASS' : 'INFO',
+      detail: lineageValidation.unknownVersions
+        ? `${fmt(lineageValidation.unknownVersions)} existing document${lineageValidation.unknownVersions === 1 ? ' has' : 's have'} no explicit lineage metadata and remain unknown.`
+        : documents.length
+          ? 'All loaded documents expose explicit lineage metadata.'
+          : 'No documents are available for lineage validation.'
+    }
+  );
+
   if (activeRetrievalSession) {
     const evidenceClassification =
       activeRetrievalSession.coverageClassification;
@@ -5492,6 +6275,42 @@ async function renderEvals() {
       : []),
     ...((activeRetrievalSession?.citationVerification?.invalid?.length || 0)
       ? [`${fmt(activeRetrievalSession.citationVerification.invalid.length)} invalid citation reference${activeRetrievalSession.citationVerification.invalid.length === 1 ? ' was' : 's were'} detected in the latest answer.`]
+      : []),
+    ...(relationshipValidation.brokenReferences.length
+      ? [`${fmt(relationshipValidation.brokenReferences.length)} exact cross-reference ID${relationshipValidation.brokenReferences.length === 1 ? ' does' : 's do'} not resolve to a stored section.`]
+      : []),
+    ...(relationshipValidation.unresolvedReferences.length
+      ? [`${fmt(relationshipValidation.unresolvedReferences.length)} exact section-number reference${relationshipValidation.unresolvedReferences.length === 1 ? ' has' : 's have'} no stored match.`]
+      : []),
+    ...(relationshipValidation.ambiguousReferences.length
+      ? [`${fmt(relationshipValidation.ambiguousReferences.length)} explicit reference${relationshipValidation.ambiguousReferences.length === 1 ? ' has' : 's have'} multiple exact matches and was not resolved.`]
+      : []),
+    ...(relationshipValidation.orphanedHierarchy.length
+      ? [`${fmt(relationshipValidation.orphanedHierarchy.length)} section parent link${relationshipValidation.orphanedHierarchy.length === 1 ? ' points' : 's point'} to a missing section.`]
+      : []),
+    ...(relationshipValidation.duplicateReferences.length
+      ? [`${fmt(relationshipValidation.duplicateReferences.length)} duplicate explicit reference entr${relationshipValidation.duplicateReferences.length === 1 ? 'y was' : 'ies were'} detected.`]
+      : []),
+    ...(relationshipValidation.duplicateHierarchyEdges.length
+      ? [`${fmt(relationshipValidation.duplicateHierarchyEdges.length)} duplicate hierarchy edge${relationshipValidation.duplicateHierarchyEdges.length === 1 ? ' was' : 's were'} detected.`]
+      : []),
+    ...(relationshipValidation.circularParentChains.length
+      ? [`${fmt(relationshipValidation.circularParentChains.length)} circular parent chain${relationshipValidation.circularParentChains.length === 1 ? ' was' : 's were'} detected.`]
+      : []),
+    ...(relationshipValidation.circularReferences.length
+      ? [`${fmt(relationshipValidation.circularReferences.length)} circular explicit reference path${relationshipValidation.circularReferences.length === 1 ? ' was' : 's were'} detected.`]
+      : []),
+    ...(lineageValidation.brokenLineage.length
+      ? [`${fmt(lineageValidation.brokenLineage.length)} exact document lineage link${lineageValidation.brokenLineage.length === 1 ? ' points' : 's point'} to a missing record.`]
+      : []),
+    ...(lineageValidation.circularPreviousLinks.length
+      ? [`${fmt(lineageValidation.circularPreviousLinks.length)} circular previous-version chain${lineageValidation.circularPreviousLinks.length === 1 ? ' was' : 's were'} detected.`]
+      : []),
+    ...(lineageValidation.ambiguousCurrentFamilies.length
+      ? [`${fmt(lineageValidation.ambiguousCurrentFamilies.length)} lineage ${lineageValidation.ambiguousCurrentFamilies.length === 1 ? 'family contains' : 'families contain'} multiple explicit current records; no current version was selected.`]
+      : []),
+    ...(lineageValidation.unknownVersions
+      ? [`${fmt(lineageValidation.unknownVersions)} existing document${lineageValidation.unknownVersions === 1 ? ' has' : 's have'} unknown version status because explicit lineage metadata is unavailable.`]
       : [])
   ];
 
