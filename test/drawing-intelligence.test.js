@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  applyObservationVerification, buildDrawingAnalysis, classifyDiscipline, classifySheetTypes,
-  drawingSetIdFor, extractSheetNumberCandidates, extractTextObservations, parseExactDrawingReference, reconcileDrawingIndex, sheetIdFor, validSheetNumberCandidate
+  applyObservationVerification, buildDrawingAnalysis, classifyDiscipline, classifySheetTypes, drawingWarningPresentation,
+  drawingSetIdFor, extractSheetNumberCandidates, extractTextObservations, groupDrawingObservations, observationKindLabel, parseExactDrawingReference, primarySheetType, reanalyzeDrawingAnalysis, reconcileDrawingIndex, sheetIdFor, upgradeDrawingAnalysis, validSheetNumberCandidate
 } from '../src/drawing-intelligence.js';
 import { createDrawingTarget, drawingAnchorId, drawingReturnTarget, drawingScrollOptions, resolveDrawingTarget } from '../src/drawing-navigation.js';
 import { createSourceTarget, resolveSourceTarget } from '../src/source-navigation.js';
@@ -24,7 +24,63 @@ test('classifies disciplines and exact visible sheet types', () => {
   assert.equal(classifyDiscipline('M-101', '').discipline, 'Mechanical');
   assert.equal(classifyDiscipline('', 'Telecommunications Plan').discipline, 'Telecommunications');
   assert.deepEqual(classifySheetTypes('MECHANICAL DETAILS AND SCHEDULES'), ['Detail', 'Schedule']);
+  assert.deepEqual(classifySheetTypes('TELECOMMUNICATIONS RACK ELEVATIONS A'), ['Rack Elevation', 'Elevation']);
+  assert.equal(primarySheetType(['Rack Elevation', 'Elevation']), 'Rack Elevation');
   assert.deepEqual(classifySheetTypes('Unclassified content'), ['Unknown']);
+});
+
+test('analysis version 3 uses split-column index inventory to recover exact identities', () => {
+  const titleBlock = (number, title, extra = []) => [item('VETERANS CLINIC RENOVATION', .62, .79, .3), ...(number ? [item(number, .82, .91)] : []), item(title, .62, .86, .32), ...extra];
+  const indexItems = [item('DRAWING INDEX', .1, .08), item('61G-000', .1, .15), item('COVER SHEET', .28, .15), item('61G-001', .1, .19), item('DRAWING INDEX', .28, .19), item('61M-101', .1, .23), item('MECHANICAL PLAN - FIRST LEVEL - OVERALL', .28, .23, .45)];
+  const actual = [
+    { pageNumber: 1, width: 1000, height: 700, rotation: 0, textItems: [...titleBlock('', 'COVER SHEET'), item('FIRE PROTECTION REQUIREMENTS SHALL BE COORDINATED.', .2, .3, .5)] },
+    { pageNumber: 2, width: 1000, height: 700, rotation: 0, textItems: [...indexItems, ...titleBlock('61G-001', 'DRAWING INDEX')] },
+    { pageNumber: 3, width: 1000, height: 700, rotation: 0, textItems: titleBlock('61M-101', 'MECHANICAL PLAN - FIRST LEVEL - OVERALL') }
+  ];
+  const analysis = buildDrawingAnalysis({ documentId: 'building61', projectId: 'p1', pages: actual, analyzedAt: '2026-01-01' });
+  assert.equal(analysis.analysisVersion, 3);
+  assert.deepEqual(analysis.sheets.map(sheet => sheet.sheetNumber), ['61G-000', '61G-001', '61M-101']);
+  assert.equal(analysis.sheets[0].sheetTitle, 'COVER SHEET');
+  assert.equal(analysis.sheets[0].discipline, 'General');
+  assert.equal(analysis.sheets[0].primarySheetType, 'Cover');
+  assert.equal(analysis.sheets[1].primarySheetType, 'Drawing Index');
+  assert.equal(analysis.sheets[2].discipline, 'Mechanical');
+  assert.equal(analysis.sheets[0].sheetNumberResolutionMethod, 'index-inventory-order');
+  assert.ok(analysis.sheets.every(sheet => sheet.sheetTitle !== 'FIRE PROTECTION REQUIREMENTS SHALL BE COORDINATED.'));
+});
+
+test('narrative titles are rejected and conflicts remain reviewable', () => {
+  const analysis = buildDrawingAnalysis({ documentId: 'd2', projectId: 'p1', analyzedAt: 't', pages: [{ pageNumber: 1, width: 100, height: 100, rotation: 0, textItems: [item('M-101', .8, .9), item('CONTRACTOR SHALL PROVIDE ALL WORK IN ACCORDANCE WITH REQUIREMENTS.', .6, .86, .35)] }] });
+  assert.equal(analysis.sheets[0].sheetTitle, '');
+  assert.ok(analysis.sheets[0].rejectedSheetTitleCandidates.some(candidate => candidate.reason === 'narrative-sentence'));
+  const warnings = reconcileDrawingIndex([{ sheetNumber: 'M-101', sheetTitle: 'MECHANICAL PLAN' }], [{ sheetId: 's', sheetNumber: 'M-101', sheetTitle: 'MECHANICAL NOTES' }]);
+  assert.ok(warnings.some(warning => warning.type === 'title-mismatch'));
+});
+
+test('version upgrades preserve resolvable verification overlays and report unmapped overlays', () => {
+  const legacy = buildDrawingAnalysis({ documentId: 'd1', projectId: 'p1', pages, analyzedAt: '2026-01-01' });
+  legacy.analysisVersion = 2;
+  legacy.observations[0].verification = { status: 'Confirmed', correctedValue: '', verifiedAt: '2026-01-02' };
+  legacy.observations.push({ observationId: 'removed', pageNumber: 99, kind: 'room-number-text', originalValue: '999', verification: { status: 'Rejected', correctedValue: '', verifiedAt: '2026-01-02' } });
+  const upgraded = upgradeDrawingAnalysis(legacy);
+  assert.equal(upgraded.analysisVersion, 3);
+  assert.equal(upgraded.observations.find(item => item.observationId === legacy.observations[0].observationId).verification.status, 'Confirmed');
+  assert.equal(upgraded.unmappedVerificationOverlays[0].observationId, 'removed');
+  assert.equal(reanalyzeDrawingAnalysis(upgraded).analysisVersion, 3);
+});
+
+test('observation and warning presentation is field-readable and grouped', () => {
+  assert.equal(observationKindLabel('room-number-text'), 'Room number');
+  const grouped = groupDrawingObservations([
+    { observationId: 'a', kind: 'room-number-text', value: '137', verification: { status: 'Unreviewed' } },
+    { observationId: 'b', kind: 'room-number-text', value: '137', verification: { status: 'Confirmed' } },
+    { observationId: 'c', kind: 'equipment-tag-text', value: 'VAV-12', verification: { status: 'Unreviewed' } }
+  ]);
+  assert.equal(grouped.rooms[0].count, 2);
+  assert.equal(grouped.equipment.length, 1);
+  const warnings = drawingWarningPresentation([{ type: 'title-mismatch' }, { type: 'order-mismatch' }]);
+  assert.match(warnings.userFacing[0].message, /disagree/i);
+  assert.equal(warnings.technical.length, 1);
 });
 
 test('sheet identity accepts generalized drawing numbers and rejects metadata candidates', () => {

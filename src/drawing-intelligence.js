@@ -1,6 +1,6 @@
 import { normalizeRegion } from './pdf-source.js';
 
-export const DRAWING_ANALYSIS_VERSION = 2;
+export const DRAWING_ANALYSIS_VERSION = 3;
 export const VERIFICATION_STATES = Object.freeze(['Unreviewed', 'Confirmed', 'Corrected', 'Rejected', 'Uncertain']);
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const list = value => Array.isArray(value) ? value : [];
@@ -19,6 +19,8 @@ const SHEET_NUMBER = /\b(?:\d{1,4})?[A-Z]{1,3}[-.]?\d{3,4}[A-Z]?\b/gi;
 const REJECTED_NUMBER_CONTEXT = /\b(?:VA\s*FORM|FORM\s*(?:NO|NUMBER)|PROJECT\s*(?:NO|NUMBER)|PAGE|SHEET\s+OF|REV(?:ISION)?|DATE|ISSUED?|RELEASE|REVIT|AUTODESK|LICENSE|LICENCE|REGISTRATION|CERTIFICATE|CONSULTANT|PHASE|GRID|FILE\s*(?:NAME|PATH))\b/i;
 const REJECTED_TITLE_CONTEXT = /\b(?:VA\s*FORM|PROJECT\s*(?:NO|NUMBER)|ISSUED?\s+FOR|REV(?:ISION)?|REVISIONS|RELEASE|REVIT|AUTODESK|LICENSE|LICENCE|REGISTRATION|CERTIFICATE|CONSULTANT|DRAWN\s+BY|CHECKED\s+BY|DATE|PAGE\s+\d+|SHEET\s+OF|FILE\s*(?:NAME|PATH))\b/i;
 const TITLE_FIELD_ONLY = /^(?:SHEET\s*(?:NO|NUMBER|TITLE)|DRAWING\s*(?:NO|NUMBER|TITLE)|TITLE|PROJECT|LOCATION|BUILDING|DISCIPLINE|SCALE|DATE|REV(?:ISION)?)\s*:?-?$/i;
+const NUMBER_LIKE_TOKEN = /\b(?:\d{1,4})?[A-Z]{1,4}[-.]?\d{1,8}[A-Z]?\b/gi;
+const NARRATIVE_TITLE = /\b(?:SHALL|MUST|PROVIDE|INSTALL|CONTRACTOR|REQUIREMENTS?|COORDINATE|VERIFY|REFER TO|IN ACCORDANCE|WORK INCLUDES?)\b/i;
 const ROOM_NUMBER = /\b(?:ROOM\s*)?(\d{2,5}[A-Z]?)\b/i;
 const EQUIPMENT_TAG = /\b(?:AHU|RTU|VAV|FCU|CU|EF|SF|HP|P|PANEL|XFMR|UPS|RACK|PP|FACP|FAAP|TGB|TMGB|TS|CUH|UH)[- ]?\d{1,4}[A-Z]?\b/i;
 const CALLOUT = /\b(\d{1,3}[A-Z]?)\s*\/\s*([A-Z]{1,4}[-.]?\d{2,4}[A-Z]?)\b/i;
@@ -79,68 +81,112 @@ export function extractSheetNumberCandidates(items = [], { titleBlockOnly = fals
   return output.sort((a, b) => b.score - a.score || b.region.y - a.region.y || a.value.localeCompare(b.value));
 }
 
-function validTitleCandidate(candidate) {
-  const value = normalize(candidate?.text);
-  if (value.length < 5 || value.length > 140 || TITLE_FIELD_ONLY.test(value) || REJECTED_TITLE_CONTEXT.test(value)) return false;
-  if (/^(?:\d+|[A-Z]?\d{1,4}[-./]\d{1,4}|[A-Z]:\\|\/)/i.test(value)) return false;
-  const stripped = value.replace(new RegExp(SHEET_NUMBER.source, 'gi'), '').replace(/[^A-Z]+/gi, '');
-  return stripped.length >= 4;
+export function extractSheetNumberCandidateDiagnostics(items = [], { titleBlockOnly = false } = {}) {
+  const source = titleBlockOnly ? extractTitleBlockCandidates(items) : lines(items);
+  const accepted = extractSheetNumberCandidates(items, { titleBlockOnly });
+  const acceptedKeys = new Set(accepted.map(item => `${item.value}:${item.region.x}:${item.region.y}`));
+  const rejected = [];
+  for (const candidate of source) {
+    for (const match of candidate.text.matchAll(new RegExp(NUMBER_LIKE_TOKEN.source, 'gi'))) {
+      const value = match[0].toUpperCase();
+      const key = `${value}:${candidate.region.x}:${candidate.region.y}`;
+      if (acceptedKeys.has(key)) continue;
+      const reason = REJECTED_NUMBER_CONTEXT.test(candidate.text) ? 'metadata-context'
+        : /^R\d{1,2}$/i.test(value) ? 'revit-release'
+          : /^\d+$/.test(value) ? 'generic-number'
+            : 'unsupported-sheet-format';
+      rejected.push({ value, text: candidate.text, region: candidate.region, zone: candidate.zone || '', reason });
+    }
+  }
+  return { accepted, rejected: rejected.sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x || a.value.localeCompare(b.value)) };
 }
+
+function titleRejectionReason(candidate) {
+  const value = normalize(candidate?.text);
+  if (value.length < 5) return 'too-short';
+  if (value.length > 110 || value.split(/\s+/).length > 14) return 'narrative-length';
+  if (TITLE_FIELD_ONLY.test(value)) return 'field-label';
+  if (REJECTED_TITLE_CONTEXT.test(value)) return 'metadata-context';
+  if (NARRATIVE_TITLE.test(value) || /[.!?;:]$/.test(value)) return 'narrative-sentence';
+  if (/^(?:\d+|[A-Z]?\d{1,4}[-./]\d{1,4}|[A-Z]:\\|\/)/i.test(value)) return 'path-or-number';
+  const stripped = value.replace(new RegExp(SHEET_NUMBER.source, 'gi'), '').replace(/[^A-Z]+/gi, '');
+  return stripped.length >= 4 ? '' : 'insufficient-title-text';
+}
+
+function validTitleCandidate(candidate) { return !titleRejectionReason(candidate); }
 
 function cleanSheetTitle(value) {
   return normalize(value).replace(new RegExp(SHEET_NUMBER.source, 'gi'), ' ').replace(/^\s*(?:SHEET|DRAWING)\s+TITLE\s*[:.-]?\s*/i, '').replace(/\s+/g, ' ').trim();
 }
 
-export function classifyDiscipline(sheetNumber = '', title = '') {
+export function classifyDiscipline(sheetNumber = '', title = '', indexDiscipline = '') {
+  if (normalize(indexDiscipline) && normalize(indexDiscipline) !== 'Unknown') return { discipline: normalize(indexDiscipline), evidence: `Reconciled drawing-index discipline: ${normalize(indexDiscipline)}`, method: 'drawing-index' };
   const number = normalize(sheetNumber).toUpperCase();
   const heading = normalize(title).toUpperCase();
   const prefix = (number.match(/^(?:\d+)?([A-Z]{1,3})[-.]?\d/) || [])[1] || '';
   const rules = [
     ['Fire Protection', ['FP']], ['Plumbing', ['P']], ['Mechanical', ['M']], ['Electrical', ['E']],
     ['Telecommunications', ['T', 'TC']], ['Security', ['SEC']], ['Architectural', ['A']],
-    ['Interiors', ['I']], ['General', ['G']]
+    ['Interiors', ['I']], ['Hazardous Materials', ['H']], ['General', ['G']], ['Reference', ['R']]
   ];
-  for (const [discipline, prefixes] of rules) if (prefixes.includes(prefix)) return { discipline, evidence: `Sheet-number prefix ${prefix}` };
+  for (const [discipline, prefixes] of rules) if (prefixes.includes(prefix)) return { discipline, evidence: `Validated sheet-number prefix ${prefix}`, method: 'sheet-number-prefix' };
   const titleRules = [
     ['Fire Protection', /FIRE PROTECTION|SPRINKLER/], ['Plumbing', /PLUMBING/], ['Mechanical', /MECHANICAL|HVAC/],
     ['Electrical', /ELECTRICAL|LIGHTING|POWER/], ['Telecommunications', /TELECOMMUNICATIONS?|STRUCTURED CABLING/],
     ['Security', /SECURITY|ACCESS CONTROL/], ['Architectural', /ARCHITECTURAL/], ['Interiors', /INTERIOR/],
     ['General', /GENERAL|COVER SHEET/], ['Reference', /REFERENCE|EXISTING PHOTO/]
   ];
-  for (const [discipline, rule] of titleRules) if (rule.test(heading)) return { discipline, evidence: `Explicit sheet title: ${title}` };
-  return { discipline: 'Unknown', evidence: '' };
+  for (const [discipline, rule] of titleRules) if (rule.test(heading)) return { discipline, evidence: `Validated title-block title: ${title}`, method: 'title-block-title' };
+  return { discipline: 'Unknown', evidence: 'No exact drawing-index, sheet-number prefix, or validated title evidence.', method: 'unavailable' };
 }
 
 export function classifySheetTypes(title = '') {
   const value = normalize(title).toUpperCase();
   const rules = [
-    ['Cover', /COVER/], ['Index', /DRAWING INDEX|SHEET INDEX/], ['Notes', /\bNOTES?\b/],
+    ['Cover', /\bCOVER(?: SHEET)?\b/], ['Drawing Index', /DRAWING INDEX|SHEET INDEX/], ['Notes', /\bNOTES?\b/],
     ['Enlarged Plan', /ENLARGED.*PLAN/], ['Plan', /\bPLAN\b/], ['Detail', /\bDETAILS?\b/],
-    ['Schedule', /\bSCHEDULES?\b/], ['Riser', /\bRISER\b/], ['Diagram', /\bDIAGRAM|ONE[- ]LINE\b/],
-    ['Elevation', /\bELEVATIONS?\b/], ['Inventory', /\bINVENTORY\b/], ['Cut Sheet', /\bCUT SHEET\b/],
-    ['Reference', /\bREFERENCE|PHOTOS?\b/]
+    ['Schedule', /\bSCHEDULES?\b/], ['Controls', /\bCONTROLS?\b/], ['Riser', /\bRISER\b/], ['Diagram', /\bDIAGRAM|ONE[- ]LINE\b/],
+    ['Rack Elevation', /\bRACK\b.*\bELEVATIONS?\b/], ['Elevation', /\bELEVATIONS?\b/], ['Inventory', /\bINVENTORY\b/], ['Cut Sheet', /\bCUT SHEET\b/],
+    ['Photo Reference', /\bPHOTO(?:GRAPH)?S?\b.*\bREFERENCES?\b|\bREFERENCES?\b.*\bPHOTO(?:GRAPH)?S?\b/], ['Reference', /\bREFERENCE\b/]
   ];
   const types = rules.filter(([, rule]) => rule.test(value)).map(([type]) => type);
   return types.length ? [...new Set(types)] : ['Unknown'];
 }
 
-function selectSheetMetadata(items) {
+export function primarySheetType(types = []) {
+  const order = ['Cover', 'Drawing Index', 'Enlarged Plan', 'Plan', 'Schedule', 'Rack Elevation', 'Detail', 'Controls', 'Diagram', 'Riser', 'Inventory', 'Cut Sheet', 'Photo Reference', 'Notes', 'Elevation', 'Reference', 'Unknown'];
+  return order.find(type => list(types).includes(type)) || 'Unknown';
+}
+
+function selectSheetMetadata(items, { repeatedTitles = new Set() } = {}) {
   const candidates = extractTitleBlockCandidates(items);
-  const numberCandidates = extractSheetNumberCandidates(items, { titleBlockOnly: true });
+  const titleBlockDiagnostics = extractSheetNumberCandidateDiagnostics(items, { titleBlockOnly: true });
+  const positionedDiagnostics = extractSheetNumberCandidateDiagnostics(items);
+  const numberCandidates = titleBlockDiagnostics.accepted.length ? titleBlockDiagnostics.accepted : positionedDiagnostics.accepted;
   const uniqueNumbers = [...new Set(numberCandidates.map(item => item.value))];
   const sheetNumber = uniqueNumbers.length === 1 ? uniqueNumbers[0] : '';
-  const titles = candidates.filter(validTitleCandidate).filter(item => !numberCandidates.some(number => number.value === item.text.toUpperCase()));
-  const uniqueTitles = [...new Map(titles.map(item => [item.text.toUpperCase(), item])).values()];
-  const rankedTitles = uniqueTitles.sort((a, b) => {
-    const score = item => (/\b(?:PLAN|DETAIL|SCHEDULE|RISER|DIAGRAM|ELEVATION|INDEX|NOTES?|INVENTORY|CUT SHEET)\b/i.test(item.text) ? 30 : 0) + (item.zone === 'lower-right' ? 20 : 0);
-    return score(b) - score(a) || b.region.y - a.region.y || b.text.length - a.text.length;
-  });
-  const sheetTitle = cleanSheetTitle(rankedTitles[0]?.text || '');
+  const rejectedTitles = [];
+  const titles = [];
+  for (const candidate of candidates) {
+    const value = cleanSheetTitle(candidate.text);
+    const reason = titleRejectionReason({ ...candidate, text: value }) || (repeatedTitles.has(value.toUpperCase()) ? 'repeated-project-title' : '');
+    if (reason || numberCandidates.some(number => number.value === value.toUpperCase())) rejectedTitles.push({ value, region: candidate.region, zone: candidate.zone, reason: reason || 'sheet-number-only' });
+    else titles.push({ ...candidate, value });
+  }
+  const uniqueTitles = [...new Map(titles.map(item => [item.value.toUpperCase(), item])).values()];
+  const scoreTitle = item => (/\b(?:PLAN|DETAIL|SCHEDULE|RISER|DIAGRAM|ELEVATION|INDEX|NOTES?|INVENTORY|CUT SHEET|COVER|CONTROLS?)\b/i.test(item.value) ? 35 : 0) + (item.zone === 'lower-right' ? 25 : item.zone === 'lower-band' ? 15 : 5) + Math.max(0, 12 - item.value.split(/\s+/).length);
+  const rankedTitles = uniqueTitles.map(item => ({ ...item, score: scoreTitle(item) })).sort((a, b) => b.score - a.score || b.region.y - a.region.y || a.value.localeCompare(b.value));
+  const titleResolved = rankedTitles.length === 1 || (rankedTitles[0]?.score - rankedTitles[1]?.score >= 15);
+  const sheetTitle = titleResolved ? rankedTitles[0]?.value || '' : '';
   const titleBlockRegion = numberCandidates[0]?.region || titles[0]?.region || null;
   const candidateText = candidates.map(item => item.text).join(' | ');
   const issueDate = (candidateText.match(/\b(?:ISSUE DATE|DATE)\s*[:.-]?\s*(\d{1,2}[/. -]\d{1,2}[/. -]\d{2,4}|\d{4}-\d{2}-\d{2})\b/i) || [])[1] || '';
   const revision = (candidateText.match(/\b(?:REVISION|REV)\s*[:.#-]?\s*([A-Z0-9]{1,6})\b/i) || [])[1] || '';
-  return { sheetNumber, sheetTitle, titleBlockRegion, numberCandidates, titleCandidates: rankedTitles, issueDate, revision, conflicts: uniqueNumbers.length > 1 ? uniqueNumbers : [] };
+  return {
+    sheetNumber, sheetTitle, titleBlockRegion, numberCandidates, titleCandidates: rankedTitles, rejectedNumberCandidates: [...titleBlockDiagnostics.rejected, ...positionedDiagnostics.rejected], rejectedTitleCandidates: rejectedTitles,
+    sheetNumberMethod: sheetNumber ? (titleBlockDiagnostics.accepted.length ? 'title-block' : 'positioned-text') : 'unavailable', sheetTitleMethod: sheetTitle ? 'title-block' : 'unavailable',
+    issueDate, revision, conflicts: uniqueNumbers.length > 1 ? uniqueNumbers : [], titleConflicts: !titleResolved ? rankedTitles.map(item => item.value) : []
+  };
 }
 
 function observation({ documentId, sheetId, pageNumber, kind, value, region, confidence = .7, extractionMethod = 'positioned-pdf-text' }) {
@@ -186,15 +232,25 @@ export function applyObservationVerification(machineObservation, { status, corre
 export function extractDrawingIndexEntries(sheets = []) {
   const entries = [];
   for (const sheet of list(sheets).filter(item => lines(item.textItems).some(line => /\b(?:DRAWING|SHEET)\s+INDEX\b/i.test(line.text)))) {
+    let current = null;
     for (const line of lines(sheet.textItems)) {
       const match = line.text.match(/^((?:\d{1,4})?[A-Z]{1,3}[-.]?\d{3,4}[A-Z]?)\s+(.{3,})$/i);
-      if (!match) continue;
-      if (!validSheetNumberCandidate(match[1], '') || !validTitleCandidate({ text: match[2] })) continue;
-      const classified = classifyDiscipline(match[1], match[2]);
-      entries.push({ sheetNumber: match[1].toUpperCase(), sheetTitle: normalize(match[2]), discipline: classified.discipline, sourcePage: sheet.pageNumber, sourceRegion: line.region });
+      if (match && validSheetNumberCandidate(match[1], '')) {
+        const candidateTitle = cleanSheetTitle(match[2]);
+        if (!validTitleCandidate({ text: candidateTitle })) { current = null; continue; }
+        const classified = classifyDiscipline(match[1], candidateTitle);
+        current = { sheetNumber: match[1].toUpperCase(), sheetTitle: candidateTitle, discipline: classified.discipline, sourcePage: sheet.pageNumber, sourceRegion: line.region, inventoryOrder: entries.length, extractionMethod: 'positioned-index-row' };
+        entries.push(current);
+        continue;
+      }
+      if (current && line.region.y > current.sourceRegion.y && line.region.y - current.sourceRegion.y <= .045 && line.region.x >= current.sourceRegion.x + .04 && validTitleCandidate(line)) {
+        current.sheetTitle = normalize(`${current.sheetTitle} ${line.text}`);
+        current.sourceRegion = normalizeRegion({ x: current.sourceRegion.x, y: current.sourceRegion.y, width: Math.max(current.sourceRegion.width, line.region.x + line.region.width - current.sourceRegion.x), height: line.region.y + line.region.height - current.sourceRegion.y });
+        current.extractionMethod = 'positioned-index-row-multiline';
+      } else if (line.text && !/\b(?:DRAWING|SHEET)\s+INDEX\b/i.test(line.text)) current = null;
     }
   }
-  return entries.sort((a, b) => a.sheetNumber.localeCompare(b.sheetNumber) || a.sourcePage - b.sourcePage);
+  return entries.map((entry, index) => ({ ...entry, inventoryOrder: index }));
 }
 
 export function reconcileDrawingIndex(indexEntries = [], sheets = []) {
@@ -219,11 +275,49 @@ export function reconcileDrawingIndex(indexEntries = [], sheets = []) {
   return warnings.sort((a, b) => a.type.localeCompare(b.type) || text(a.sheetNumber).localeCompare(text(b.sheetNumber)));
 }
 
+function mapDrawingIndexToSheets(indexEntries, sheets) {
+  const uniqueEntries = list(indexEntries).filter((entry, index, source) => source.filter(item => item.sheetNumber === entry.sheetNumber).length === 1);
+  const result = new Map();
+  const byNumber = new Map(uniqueEntries.map(entry => [entry.sheetNumber, entry]));
+  for (const sheet of sheets) {
+    const numbers = [...new Set(list(sheet.sheetNumberCandidates).map(item => item.value))];
+    const matches = numbers.map(number => byNumber.get(number)).filter(Boolean);
+    if (numbers.length === 1 && matches.length === 1) result.set(sheet.sheetId, { entry: matches[0], method: 'index-title-block-reconciliation' });
+  }
+  const exactOrderSafe = uniqueEntries.length === sheets.length && sheets.every((sheet, index) => {
+    const candidates = [...new Set(list(sheet.sheetNumberCandidates).map(item => item.value))];
+    return !candidates.length || candidates.includes(uniqueEntries[index]?.sheetNumber);
+  });
+  if (exactOrderSafe) sheets.forEach((sheet, index) => { if (!result.has(sheet.sheetId)) result.set(sheet.sheetId, { entry: uniqueEntries[index], method: 'index-inventory-order' }); });
+  if (!exactOrderSafe) {
+    const indexPosition = new Map(uniqueEntries.map((entry, index) => [entry.sheetNumber, index]));
+    const anchors = sheets.flatMap((sheet, pageIndex) => {
+      const numbers = [...new Set(list(sheet.sheetNumberCandidates).map(item => item.value))].filter(number => indexPosition.has(number));
+      return numbers.length === 1 ? [{ pageIndex, index: indexPosition.get(numbers[0]) }] : [];
+    });
+    const offsets = [...new Set(anchors.map(anchor => anchor.pageIndex - anchor.index))];
+    if (anchors.length >= 2 && offsets.length === 1) {
+      const offset = offsets[0];
+      uniqueEntries.forEach((entry, index) => {
+        const sheet = sheets[index + offset];
+        if (sheet && !result.has(sheet.sheetId) && !sheet.sheetNumberCandidates.length) result.set(sheet.sheetId, { entry, method: 'index-anchored-order' });
+      });
+    }
+  }
+  return result;
+}
+
 export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyzedAt = '' } = {}) {
   if (!text(documentId) || !text(projectId)) throw new Error('Drawing analysis requires exact document and project identifiers.');
+  const titleFrequency = new Map();
+  for (const page of list(pages)) for (const candidate of extractTitleBlockCandidates(page.textItems)) {
+    const value = cleanSheetTitle(candidate.text).toUpperCase();
+    if (validTitleCandidate({ ...candidate, text: value })) titleFrequency.set(value, (titleFrequency.get(value) || 0) + 1);
+  }
+  const repeatedTitles = new Set([...titleFrequency].filter(([, count]) => count >= Math.max(3, Math.ceil(list(pages).length * .4))).map(([value]) => value));
   let sheets = list(pages).map(page => {
     const sheetId = sheetIdFor(documentId, page.pageNumber);
-    const metadata = selectSheetMetadata(page.textItems);
+    const metadata = selectSheetMetadata(page.textItems, { repeatedTitles });
     const discipline = classifyDiscipline(metadata.sheetNumber, metadata.sheetTitle);
     return {
       sheetId, documentId, pageNumber: Number(page.pageNumber), sheetNumber: metadata.sheetNumber,
@@ -234,9 +328,10 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
       confidence: metadata.sheetNumber ? (metadata.sheetTitle ? .9 : .75) : .35,
       extractionMethod: 'positioned-pdf-text', textItems: normalizeDrawingTextItems(page.textItems),
       sheetNumberCandidates: metadata.numberCandidates.map(item => ({ value: item.value, region: item.region, score: item.score, zone: item.zone })),
-      sheetTitleCandidates: metadata.titleCandidates.map(item => ({ value: item.text, region: item.region, zone: item.zone })),
+      rejectedSheetNumberCandidates: metadata.rejectedNumberCandidates, sheetNumberResolutionMethod: metadata.sheetNumberMethod,
+      sheetTitleCandidates: metadata.titleCandidates.map(item => ({ value: item.value, region: item.region, zone: item.zone, score: item.score })), rejectedSheetTitleCandidates: metadata.rejectedTitleCandidates, sheetTitleResolutionMethod: metadata.sheetTitleMethod,
       titleBlockSheetNumber: metadata.sheetNumber, titleBlockSheetTitle: metadata.sheetTitle,
-      warnings: metadata.conflicts.length ? [`Conflicting sheet-number candidates: ${metadata.conflicts.join(', ')}`] : []
+      warnings: [...(metadata.conflicts.length ? [`Conflicting sheet-number candidates: ${metadata.conflicts.join(', ')}`] : []), ...(metadata.titleConflicts.length ? [`Ambiguous sheet-title candidates: ${metadata.titleConflicts.join(' | ')}`] : [])]
     };
   }).sort((a, b) => a.pageNumber - b.pageNumber);
   const indexEntries = extractDrawingIndexEntries(sheets);
@@ -245,20 +340,32 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
     if (!indexByNumber.has(entry.sheetNumber)) indexByNumber.set(entry.sheetNumber, []);
     indexByNumber.get(entry.sheetNumber).push(entry);
   }
+  const indexMappings = mapDrawingIndexToSheets(indexEntries, sheets);
   sheets = sheets.map(sheet => {
     const candidateNumbers = [...new Set(sheet.sheetNumberCandidates.map(item => item.value))];
     const reconciled = candidateNumbers.flatMap(number => indexByNumber.get(number) || []);
     const uniqueReconciled = [...new Map(reconciled.map(entry => [entry.sheetNumber, entry])).values()];
-    const indexEntry = uniqueReconciled.length === 1 && (indexByNumber.get(uniqueReconciled[0].sheetNumber) || []).length === 1 ? uniqueReconciled[0] : null;
+    const mapped = indexMappings.get(sheet.sheetId);
+    const indexEntry = mapped?.entry || (uniqueReconciled.length === 1 && (indexByNumber.get(uniqueReconciled[0].sheetNumber) || []).length === 1 ? uniqueReconciled[0] : null);
     const sheetNumber = indexEntry?.sheetNumber || (candidateNumbers.length === 1 ? candidateNumbers[0] : '');
     const sheetTitle = indexEntry?.sheetTitle || sheet.titleBlockSheetTitle || '';
     const titleConflict = Boolean(indexEntry?.sheetTitle && sheet.titleBlockSheetTitle && normalize(indexEntry.sheetTitle).toLowerCase() !== normalize(sheet.titleBlockSheetTitle).toLowerCase());
-    const discipline = classifyDiscipline(sheetNumber, sheetTitle);
+    const discipline = classifyDiscipline(sheetNumber, sheetTitle, indexEntry?.discipline);
+    const sheetTypes = classifySheetTypes(sheetTitle);
     const addedWarnings = [
       ...(uniqueReconciled.length > 1 ? [`Ambiguous drawing-index mapping: ${uniqueReconciled.map(entry => entry.sheetNumber).join(', ')}`] : []),
       ...(titleConflict ? [`Drawing-index title "${indexEntry.sheetTitle}" conflicts with title-block title "${sheet.titleBlockSheetTitle}".`] : [])
     ];
-    return { ...sheet, sheetNumber, sheetTitle, discipline: discipline.discipline, disciplineEvidence: discipline.evidence, sheetTypes: classifySheetTypes(sheetTitle), indexEntry: indexEntry ? { ...indexEntry } : null, identityStatus: indexEntry && !titleConflict ? 'Verified' : addedWarnings.length || !sheetNumber ? 'Ambiguous' : 'Supported', analysisStatus: addedWarnings.length ? 'Completed with warnings' : sheet.analysisStatus, warnings: [...sheet.warnings, ...addedWarnings] };
+    const numberMethod = indexEntry ? mapped?.method || 'index-title-block-reconciliation' : sheet.sheetNumberResolutionMethod;
+    return {
+      ...sheet, sheetNumber, sheetTitle, discipline: discipline.discipline, disciplineEvidence: discipline.evidence, disciplineMethod: discipline.method,
+      sheetTypes, primarySheetType: primarySheetType(sheetTypes), indexEntry: indexEntry ? { ...indexEntry } : null,
+      titleConflict: titleConflict ? { indexTitle: indexEntry.sheetTitle, titleBlockTitle: sheet.titleBlockSheetTitle } : null,
+      sheetNumberResolutionMethod: numberMethod, sheetTitleResolutionMethod: indexEntry ? 'drawing-index' : sheet.sheetTitleResolutionMethod,
+      identityStatus: indexEntry && !titleConflict ? 'Verified' : addedWarnings.length || !sheetNumber ? 'Ambiguous' : 'Supported', analysisStatus: addedWarnings.length ? 'Completed with warnings' : sheet.analysisStatus,
+      confidence: indexEntry && !titleConflict ? .98 : sheetNumber && sheetTitle ? .85 : sheetNumber || sheetTitle ? .65 : .25,
+      warnings: [...sheet.warnings, ...addedWarnings]
+    };
   });
   const observations = sheets.flatMap(sheet => extractTextObservations({ documentId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, textItems: sheet.textItems }));
   const references = observations.filter(item => item.kind === 'callout-text').map(item => ({ referenceId: `reference-${hash(item.observationId)}`, observationId: item.observationId, sourceSheetId: item.sheetId, ...parseExactDrawingReference(item.value) }));
@@ -274,13 +381,59 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
   };
 }
 
-export function upgradeDrawingAnalysis(analysis = {}) {
-  if (Number(analysis.analysisVersion) >= DRAWING_ANALYSIS_VERSION) return structuredClone(analysis);
-  const verificationByObservation = new Map(list(analysis.observations).map(item => [item.observationId, item.verification]));
+export function reanalyzeDrawingAnalysis(analysis = {}) {
+  const reviewed = list(analysis.observations).filter(item => item.verification?.status && item.verification.status !== 'Unreviewed');
+  const verificationByObservation = new Map(reviewed.map(item => [item.observationId, item.verification]));
   const upgraded = buildDrawingAnalysis({
     documentId: analysis.documentId, projectId: analysis.projectId, analyzedAt: analysis.analyzedAt,
     pages: list(analysis.sheets).map(sheet => ({ pageNumber: sheet.pageNumber, width: sheet.pageWidth, height: sheet.pageHeight, rotation: sheet.rotation, textItems: sheet.textItems }))
   });
   upgraded.observations = upgraded.observations.map(item => verificationByObservation.has(item.observationId) ? { ...item, verification: structuredClone(verificationByObservation.get(item.observationId)) } : item);
+  const resolved = new Set(upgraded.observations.map(item => item.observationId));
+  upgraded.unmappedVerificationOverlays = reviewed.filter(item => !resolved.has(item.observationId)).map(item => ({ observationId: item.observationId, pageNumber: item.pageNumber, kind: item.kind, originalValue: item.originalValue, verification: structuredClone(item.verification) }));
+  if (upgraded.unmappedVerificationOverlays.length) {
+    upgraded.warnings.push({ type: 'verification-overlay-unmapped', count: upgraded.unmappedVerificationOverlays.length, message: `${upgraded.unmappedVerificationOverlays.length} reviewed observation overlay(s) could not be safely remapped.` });
+    upgraded.status = 'Completed with warnings';
+  }
   return upgraded;
+}
+
+export function upgradeDrawingAnalysis(analysis = {}) {
+  return Number(analysis.analysisVersion) >= DRAWING_ANALYSIS_VERSION ? structuredClone(analysis) : reanalyzeDrawingAnalysis(analysis);
+}
+
+export const observationKindLabel = kind => ({
+  'room-number-text': 'Room number', 'room-name-text': 'Room name', 'equipment-tag-text': 'Equipment tag', 'callout-text': 'Drawing reference', 'positioned-pdf-text': 'Drawing text'
+}[text(kind)] || 'Drawing text');
+
+export function groupDrawingObservations(observations = []) {
+  const groups = { rooms: [], equipment: [], references: [], schedulesAndDetails: [], notes: [], other: [] };
+  const roomMap = new Map();
+  for (const item of list(observations)) {
+    if (item.kind === 'room-number-text') {
+      if (!roomMap.has(item.value)) roomMap.set(item.value, []);
+      roomMap.get(item.value).push(item);
+    } else if (item.kind === 'equipment-tag-text') groups.equipment.push(item);
+    else if (item.kind === 'callout-text') groups.references.push(item);
+    else if (/schedule|detail/i.test(item.kind) || /schedule|detail/i.test(item.value)) groups.schedulesAndDetails.push(item);
+    else if (/note/i.test(item.kind)) groups.notes.push(item);
+    else groups.other.push(item);
+  }
+  groups.rooms = [...roomMap].map(([roomNumber, items]) => ({ roomNumber, count: items.length, observationIds: items.map(item => item.observationId).sort(), verificationStates: [...new Set(items.map(item => item.verification?.status || 'Unreviewed'))].sort() })).sort((a, b) => a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true }));
+  return groups;
+}
+
+export function drawingWarningPresentation(warnings = []) {
+  const actionableTypes = new Set(['title-mismatch', 'duplicate-sheet-number', 'expected-sheet-missing', 'verification-overlay-unmapped', 'sheet-warning']);
+  const mapWarning = warning => ({
+    ...warning,
+    message: warning.message || ({
+      'title-mismatch': 'Drawing index and title block disagree.',
+      'duplicate-sheet-number': 'A sheet number appears more than once.',
+      'expected-sheet-missing': 'A sheet listed in the drawing index could not be verified.',
+      'sheet-absent-from-index': 'A detected sheet is not listed in the drawing index.',
+      'order-mismatch': 'Drawing index order and PDF page order disagree.'
+    }[warning.type] || 'Some sheet metadata requires review.')
+  });
+  return { userFacing: list(warnings).filter(item => actionableTypes.has(item.type)).map(mapWarning), technical: list(warnings).filter(item => !actionableTypes.has(item.type)).map(mapWarning) };
 }

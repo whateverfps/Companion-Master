@@ -52,3 +52,19 @@ export function drawingMatchingSetTarget(sheetIds = [], currentSheetId = '', off
   const sheet = analysis?.sheets?.find(item => text(item.sheetId) === nextId);
   return sheet ? createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, sheetNumber: sheet.sheetNumber }) : null;
 }
+
+export function reconcileDrawingSelection(sheetIds = [], currentSheetId = '') {
+  const ordered = [...new Set((Array.isArray(sheetIds) ? sheetIds : []).map(text).filter(Boolean))];
+  if (!ordered.length) return { sheetId: '', index: -1, preserved: false };
+  const index = ordered.indexOf(text(currentSheetId));
+  return index >= 0 ? { sheetId: ordered[index], index, preserved: true } : { sheetId: ordered[0], index: 0, preserved: false };
+}
+
+export function drawingResultKeyTarget(key, { sheetIds = [], activeIndex = -1 } = {}) {
+  const count = Array.isArray(sheetIds) ? sheetIds.length : 0;
+  if (!count) return { index: -1, activate: false, clear: key === 'Escape' };
+  if (key === 'ArrowDown') return { index: Math.min(count - 1, activeIndex < 0 ? 0 : activeIndex + 1), activate: false, clear: false };
+  if (key === 'ArrowUp') return { index: Math.max(0, activeIndex < 0 ? count - 1 : activeIndex - 1), activate: false, clear: false };
+  if (key === 'Enter') return { index: activeIndex < 0 ? 0 : activeIndex, activate: true, clear: false };
+  return { index: activeIndex, activate: false, clear: key === 'Escape' };
+}

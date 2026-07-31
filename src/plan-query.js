@@ -86,22 +86,42 @@ function matchesConstraints(sheet, observations, constraints, freeQuery = '') {
   return true;
 }
 
-export function searchDrawingSheets({ query = '', discipline = 'all', analysis, sheets, observations } = {}) {
+function searchMatch(sheet, observations, needle) {
+  if (!needle) return { rank: 9, reason: '', observation: null };
+  const sheetNumber = normalized(sheet.sheetNumber);
+  if (sheetNumber === needle) return { rank: 0, reason: 'Matched exact sheet number', observation: null };
+  if (sheetNumber.startsWith(needle) || sheetNumber.includes(needle)) return { rank: 1, reason: 'Matched partial sheet number', observation: null };
+  if (normalized(sheet.sheetTitle).includes(needle)) return { rank: 2, reason: 'Matched sheet title', observation: null };
+  if (normalized(sheet.discipline).includes(needle)) return { rank: 3, reason: 'Matched discipline', observation: null };
+  if (list(sheet.sheetTypes).some(type => normalized(type).includes(needle))) return { rank: 4, reason: 'Matched sheet type', observation: null };
+  const observation = observations.find(item => normalized(item.value) === needle || normalized(item.value).includes(needle));
+  if (observation) return {
+    rank: observation.kind === 'room-number-text' || observation.kind === 'room-name-text' ? 5 : observation.kind === 'equipment-tag-text' ? 6 : observation.kind === 'callout-text' ? 7 : 8,
+    reason: observation.kind === 'room-number-text' || observation.kind === 'room-name-text' ? `Matched Room ${observation.value}` : observation.kind === 'equipment-tag-text' ? `Matched Equipment Tag ${observation.value}` : observation.kind === 'callout-text' ? `Matched Callout ${observation.value}` : 'Matched drawing observation',
+    observation
+  };
+  const textItem = list(sheet.textItems).find(item => normalized(item.text).includes(needle));
+  return textItem ? { rank: 8, reason: /schedule/i.test(textItem.text) ? 'Matched Schedule text' : /detail/i.test(textItem.text) ? 'Matched Detail text' : /note/i.test(textItem.text) ? 'Matched Notes' : 'Matched positioned drawing text', observation: null } : null;
+}
+
+export function searchDrawingSheets({ query = '', discipline = 'all', sheetType = 'all', analysis, sheets, observations } = {}) {
   const sourceSheets = list(sheets || analysis?.sheets);
   const sourceObservations = list(observations || analysis?.observations);
   const needle = normalized(query);
   const results = sourceSheets.flatMap(sheet => {
     if (discipline !== 'all' && sheet.discipline !== discipline) return [];
+    if (sheetType !== 'all' && !list(sheet.sheetTypes).includes(sheetType)) return [];
     const sheetObservations = sourceObservations.filter(item => item.sheetId === sheet.sheetId);
-    const haystack = searchableSheet(sheet, sheetObservations);
-    if (needle && !haystack.includes(needle)) return [];
-    const observation = needle ? sheetObservations.find(item => normalized(item.value) === needle || normalized(item.value).includes(needle)) : null;
-    const exactSheet = needle && normalized(sheet.sheetNumber) === needle;
-    const startsSheet = needle && normalized(sheet.sheetNumber).startsWith(needle);
-    const rank = exactSheet ? 0 : startsSheet ? 1 : normalized(sheet.sheetTitle).includes(needle) ? 2 : observation ? 3 : 4;
-    return [{ sheetId: sheet.sheetId, documentId: sheet.documentId, pageNumber: sheet.pageNumber, observationId: observation?.observationId || '', region: observation?.region || null, rank, sheet }];
+    const match = searchMatch(sheet, sheetObservations, needle);
+    if (!match) return [];
+    return [{ sheetId: sheet.sheetId, documentId: sheet.documentId, pageNumber: sheet.pageNumber, observationId: match.observation?.observationId || '', region: match.observation?.region || null, rank: match.rank, matchedReason: match.reason, primarySheetType: sheet.primarySheetType || list(sheet.sheetTypes)[0] || 'Unknown', sheet }];
   });
   return results.sort((a, b) => a.rank - b.rank || a.sheet.pageNumber - b.sheet.pageNumber || a.sheetId.localeCompare(b.sheetId));
+}
+
+export function drawingSearchSummary(query, count) {
+  const cleaned = text(query);
+  return cleaned ? `${count} result${count === 1 ? '' : 's'} for “${cleaned}”` : `${count} sheet${count === 1 ? '' : 's'} in this drawing set`;
 }
 
 export function buildPlanQuery({ query = '', projectId = '', analyses = [] } = {}) {

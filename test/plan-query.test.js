@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPlanQuery, normalizePlanQuery, planQueryConstraints, planQuerySectionScope, searchDrawingSheets } from '../src/plan-query.js';
+import { buildPlanQuery, drawingSearchSummary, normalizePlanQuery, planQueryConstraints, planQuerySectionScope, searchDrawingSheets } from '../src/plan-query.js';
+import { drawingResultKeyTarget, reconcileDrawingSelection } from '../src/drawing-navigation.js';
 
 const observation = (id, sheetId, kind, value) => ({ observationId: id, sheetId, kind, value, region: { x: .2, y: .2, width: .1, height: .02 } });
 const sheets = [
@@ -38,11 +39,24 @@ test('exact sheet, floor, room, equipment, schedule, detail, and rack queries re
 });
 
 test('search ranks exact and partial sheets and combines discipline with rooms and tags', () => {
-  assert.equal(searchDrawingSheets({ query: '61M-101', discipline: 'all', analysis })[0].sheetId, 'plan1');
+  const exact = searchDrawingSheets({ query: '61M-101', discipline: 'all', analysis })[0];
+  assert.equal(exact.sheetId, 'plan1');
+  assert.equal(exact.matchedReason, 'Matched exact sheet number');
   assert.deepEqual(searchDrawingSheets({ query: '61M', discipline: 'Mechanical', analysis }).map(item => item.sheetId), ['plan1', 'plan2', 'schedule', 'detail']);
-  assert.equal(searchDrawingSheets({ query: '137', discipline: 'Mechanical', analysis })[0].observationId, 'room137');
-  assert.equal(searchDrawingSheets({ query: 'VAV-12', discipline: 'all', analysis })[0].observationId, 'vav12');
+  assert.match(searchDrawingSheets({ query: '137', discipline: 'Mechanical', analysis })[0].matchedReason, /Room 137/);
+  assert.match(searchDrawingSheets({ query: 'VAV-12', discipline: 'all', analysis })[0].matchedReason, /Equipment Tag/);
+  assert.deepEqual(searchDrawingSheets({ query: '', discipline: 'Mechanical', sheetType: 'Schedule', analysis }).map(item => item.sheetId), ['schedule']);
   assert.deepEqual(searchDrawingSheets({ query: 'missing', discipline: 'all', analysis }), []);
+});
+
+test('search summaries and keyboard selection are deterministic and field-readable', () => {
+  assert.equal(drawingSearchSummary('', 70), '70 sheets in this drawing set');
+  assert.equal(drawingSearchSummary('mechanical', 8), '8 results for “mechanical”');
+  assert.deepEqual(reconcileDrawingSelection(['a', 'b'], 'b'), { sheetId: 'b', index: 1, preserved: true });
+  assert.deepEqual(reconcileDrawingSelection(['a', 'b'], 'missing'), { sheetId: 'a', index: 0, preserved: false });
+  assert.deepEqual(drawingResultKeyTarget('ArrowDown', { sheetIds: ['a', 'b'], activeIndex: 0 }), { index: 1, activate: false, clear: false });
+  assert.equal(drawingResultKeyTarget('Enter', { sheetIds: ['a'], activeIndex: 0 }).activate, true);
+  assert.equal(drawingResultKeyTarget('Escape', { sheetIds: ['a'], activeIndex: 0 }).clear, true);
 });
 
 test('section scope uses exact document pages without changing retrieval order or scoring', () => {
