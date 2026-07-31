@@ -712,11 +712,225 @@ function renderPromptSuggestions(documents, sections) {
   `;
 }
 
-function renderMessages(documents = [], sections = []) {
+function formatInlineMessage(value) {
+  return String(value || '')
+    .split(/(`[^`\n]+`)/g)
+    .map(part => {
+      if (part.startsWith('`') && part.endsWith('`')) {
+        return `<code>${esc(part.slice(1, -1))}</code>`;
+      }
+
+      return esc(part)
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\[S(\d+)\]/g, '<span class="mc-citation-ref">[S$1]</span>');
+    })
+    .join('');
+}
+
+function formatMessageContent(content) {
+  const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
+  const blocks = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+
+    if (line.trimStart().startsWith('```')) {
+      const language = line.trim().slice(3).trim();
+      const code = [];
+      index += 1;
+
+      while (index < lines.length && !lines[index].trimStart().startsWith('```')) {
+        code.push(lines[index]);
+        index += 1;
+      }
+
+      index += index < lines.length ? 1 : 0;
+      blocks.push(`
+        <pre class="mc-message-code"><code${language
+          ? ` data-language="${esc(language)}"`
+          : ''}>${esc(code.join('\n'))}</code></pre>
+      `);
+      continue;
+    }
+
+    if (
+      line.includes('|') &&
+      index + 1 < lines.length &&
+      /^\s*\|?\s*:?-{3,}/.test(lines[index + 1])
+    ) {
+      const tableLines = [line];
+      index += 2;
+
+      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+
+      const cells = tableLines.map(row =>
+        row.trim().replace(/^\||\|$/g, '').split('|').map(cell => cell.trim())
+      );
+
+      blocks.push(`
+        <div class="mc-message-table-wrap">
+          <table>
+            <thead>
+              <tr>${cells[0].map(cell => `<th>${formatInlineMessage(cell)}</th>`).join('')}</tr>
+            </thead>
+            <tbody>
+              ${cells.slice(1).map(row => `
+                <tr>${row.map(cell => `<td>${formatInlineMessage(cell)}</td>`).join('')}</tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `);
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      const quote = [];
+
+      while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+        quote.push(lines[index].replace(/^\s*>\s?/, ''));
+        index += 1;
+      }
+
+      blocks.push(`<blockquote>${formatInlineMessage(quote.join('\n')).replace(/\n/g, '<br>')}</blockquote>`);
+      continue;
+    }
+
+    if (/^\s*[-*]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const matcher = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*]\s+/;
+      const items = [];
+
+      while (index < lines.length && matcher.test(lines[index])) {
+        items.push(lines[index].replace(matcher, ''));
+        index += 1;
+      }
+
+      const tag = ordered ? 'ol' : 'ul';
+      blocks.push(`<${tag}>${items.map(item => `<li>${formatInlineMessage(item)}</li>`).join('')}</${tag}>`);
+      continue;
+    }
+
+    if (/^\s*#{1,4}\s+/.test(line)) {
+      const match = line.match(/^\s*(#{1,4})\s+(.+)$/);
+      const level = Math.min(match[1].length + 2, 6);
+      blocks.push(`<h${level}>${formatInlineMessage(match[2])}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    const paragraph = [line];
+    index += 1;
+
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !lines[index].trimStart().startsWith('```') &&
+      !/^\s*(>|[-*]\s+|\d+\.\s+|#{1,4}\s+)/.test(lines[index])
+    ) {
+      paragraph.push(lines[index]);
+      index += 1;
+    }
+
+    blocks.push(`<p>${formatInlineMessage(paragraph.join('\n')).replace(/\n/g, '<br>')}</p>`);
+  }
+
+  return blocks.join('');
+}
+
+function renderAssistantCitations(message, messageIndex) {
+  const hits = Array.isArray(message.hits) ? message.hits : [];
+
+  if (!hits.length) {
+    return '';
+  }
+
+  return `
+    <details class="mc-message-citations" id="mc-citations-${messageIndex}" open>
+      <summary>
+        <span>Evidence sources</span>
+        <span class="mc-message-source-count">${hits.length}</span>
+      </summary>
+      <div class="mc-message-citation-list">
+        ${hits.map(hit => `
+          <div>
+            <strong>[S${hit.sourceNumber}] ${esc(hit.heading)}</strong>
+            <span>${esc(hit.documentName)} · ${esc(hit.location)}</span>
+          </div>
+        `).join('')}
+      </div>
+    </details>
+  `;
+}
+
+function renderAssistantToolbar(message, messageIndex) {
+  const hasCitations = Array.isArray(message.hits) && message.hits.length > 0;
+  const canCopy = Boolean(navigator.clipboard?.writeText);
+
+  return `
+    <div class="mc-message-toolbar" role="toolbar" aria-label="Response actions">
+      <button
+        type="button"
+        data-copy-message="${esc(message.id)}"
+        ${canCopy ? '' : 'disabled'}
+      >
+        Copy
+      </button>
+      <button
+        type="button"
+        disabled
+        title="Regenerate is not available in the current conversation workflow"
+      >
+        Regenerate
+      </button>
+      <button
+        type="button"
+        data-collapse-citations="mc-citations-${messageIndex}"
+        aria-expanded="true"
+        ${hasCitations ? '' : 'disabled'}
+      >
+        Collapse citations
+      </button>
+    </div>
+  `;
+}
+
+function isMessagesNearBottom() {
+  const messages = $('#messages');
+  return messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
+}
+
+function revealLatestMessage(smooth = false) {
+  const messages = $('#messages');
+  const reduceMotion = window.matchMedia?.(
+    '(prefers-reduced-motion: reduce)'
+  )?.matches;
+
+  messages.scrollTo({
+    top: messages.scrollHeight,
+    behavior: smooth && !reduceMotion ? 'smooth' : 'auto'
+  });
+}
+
+function renderMessages(
+  documents = [],
+  sections = [],
+  { revealLatest = true, smooth = false } = {}
+) {
   const chat = state().chat;
+  const previousScrollTop = $('#messages').scrollTop;
 
   $('#messages').innerHTML = chat.length
-    ? chat.map(message => `
+    ? chat.map((message, messageIndex) => `
         <article class="message ${message.role}">
           ${message.role === 'user'
             ? '<div class="avatar">YOU</div>'
@@ -734,8 +948,18 @@ function renderMessages(documents = [], sections = []) {
               ${message.role === 'user' ? 'You' : 'Chief · Mission Companion'}
               ${message.mode ? ` · ${modeLabel(message.mode)}` : ''}
             </div>
-            <div class="message-text">
-              ${esc(message.content).replace(/\n/g, '<br>')}
+            <div class="message-text ${message.role === 'assistant' ? 'mc-message-card' : ''}">
+              <div class="mc-message-content">
+                ${message.role === 'assistant'
+                  ? formatMessageContent(message.content)
+                  : esc(message.content).replace(/\n/g, '<br>')}
+              </div>
+              ${message.role === 'assistant'
+                ? `
+                  ${renderAssistantCitations(message, messageIndex)}
+                  ${renderAssistantToolbar(message, messageIndex)}
+                `
+                : ''}
             </div>
           </div>
         </article>
@@ -750,12 +974,9 @@ function renderMessages(documents = [], sections = []) {
         </div>
         <div class="mc-chief-welcome-copy">
         <span>CHIEF · ENGINEERING ADVISOR</span>
-        <h3>Build an evidence-backed SME</h3>
+        <h3>Chief is ready.</h3>
         <p>
-          I’m ready to help. Add project documents and ask a question.
-          Offline Evidence mode
-          retrieves and presents cited source language without requiring an
-          API key. AI modes can provide additional synthesis when configured.
+          Ask a question about your project documents.
         </p>
         <ol class="mc-chief-onboarding" aria-label="Getting started">
           <li class="mc-chief-onboarding-step">
@@ -776,26 +997,123 @@ function renderMessages(documents = [], sections = []) {
       </div>
     `;
 
-  $('#messages').scrollTop = $('#messages').scrollHeight;
+  if (revealLatest) {
+    revealLatestMessage(smooth);
+  } else {
+    $('#messages').scrollTop = previousScrollTop;
+  }
+}
+
+function renderPreparingAnswer(revealLatest) {
+  $('#messages').insertAdjacentHTML('beforeend', `
+    <article
+      class="message assistant mc-message-pending"
+      data-pending-answer
+      aria-live="polite"
+    >
+      <div class="mc-chief-message-avatar">
+        <img
+          src="${chiefAssets.busy}"
+          alt=""
+          aria-hidden="true"
+        >
+      </div>
+      <div>
+        <div class="message-meta">Chief · Mission Companion</div>
+        <div class="message-text mc-message-card">
+          <div class="mc-message-preparing">
+            <span aria-hidden="true"></span>
+            <strong>Chief is preparing an answer…</strong>
+          </div>
+        </div>
+      </div>
+    </article>
+  `);
+
+  if (revealLatest) {
+    revealLatestMessage(true);
+  }
 }
 
 $('#messages').onclick = event => {
   const suggestion = event.target.closest('.mc-prompt-button');
 
-  if (!suggestion) {
+  if (suggestion) {
+    if (suggestion.dataset.promptView) {
+      show(suggestion.dataset.promptView);
+      return;
+    }
+
+    if (suggestion.dataset.promptQuestion) {
+      $('#prompt').value = suggestion.dataset.promptQuestion;
+      resizeComposer();
+      $('#prompt').focus();
+    }
+
     return;
   }
 
-  if (suggestion.dataset.promptView) {
-    show(suggestion.dataset.promptView);
+  const copyButton = event.target.closest('[data-copy-message]');
+
+  if (copyButton) {
+    const message = state().chat.find(item =>
+      item.id === copyButton.dataset.copyMessage
+    );
+
+    if (message) {
+      void copyText(message.content).then(copied => {
+        if (!copied) {
+          return;
+        }
+
+        copyButton.textContent = 'Copied';
+
+        setTimeout(() => {
+          if (copyButton.isConnected) {
+            copyButton.textContent = 'Copy';
+          }
+        }, 1400);
+      });
+    }
+
     return;
   }
 
-  if (suggestion.dataset.promptQuestion) {
-    $('#prompt').value = suggestion.dataset.promptQuestion;
-    $('#prompt').focus();
+  const collapseButton = event.target.closest('[data-collapse-citations]');
+
+  if (collapseButton) {
+    const citations = document.getElementById(
+      collapseButton.dataset.collapseCitations
+    );
+
+    if (citations) {
+      citations.open = !citations.open;
+      collapseButton.setAttribute('aria-expanded', String(citations.open));
+      collapseButton.textContent = citations.open
+        ? 'Collapse citations'
+        : 'Expand citations';
+    }
   }
 };
+
+$('#messages').addEventListener('toggle', event => {
+  const citations = event.target;
+
+  if (!citations.classList?.contains('mc-message-citations')) {
+    return;
+  }
+
+  const collapseButton = $$('[data-collapse-citations]').find(button =>
+    button.dataset.collapseCitations === citations.id
+  );
+
+  if (collapseButton) {
+    collapseButton.setAttribute('aria-expanded', String(citations.open));
+    collapseButton.textContent = citations.open
+      ? 'Collapse citations'
+      : 'Expand citations';
+  }
+}, true);
 
 $('#clearChat').onclick = () => {
   engine.clearChat();
@@ -811,9 +1129,12 @@ async function ask() {
   }
 
   busy = true;
+  const revealResponse = isMessagesNearBottom();
   setChiefState('busy');
   $('#send').disabled = true;
   $('#send').textContent = 'Analyzing…';
+  $('#prompt').disabled = true;
+  renderPreparingAnswer(revealResponse);
 
   try {
     const message = await engine.ask(
@@ -822,8 +1143,12 @@ async function ask() {
     );
 
     $('#prompt').value = '';
+    resizeComposer();
 
-    renderMessages();
+    renderMessages([], [], {
+      revealLatest: revealResponse,
+      smooth: revealResponse
+    });
 
     renderEvidence(
       message.hits,
@@ -835,6 +1160,7 @@ async function ask() {
     setChiefState('success');
   } catch (error) {
     setChiefState('error');
+    $('[data-pending-answer]')?.remove();
 
     captureError(error, {
       module: 'Conversation',
@@ -846,6 +1172,7 @@ async function ask() {
     busy = false;
     $('#send').disabled = false;
     $('#send').textContent = 'Analyze';
+    $('#prompt').disabled = false;
   }
 }
 
@@ -857,6 +1184,16 @@ $('#prompt').onkeydown = event => {
     ask();
   }
 };
+
+function resizeComposer() {
+  const prompt = $('#prompt');
+
+  prompt.style.height = 'auto';
+  prompt.style.height = `${Math.min(prompt.scrollHeight, 200)}px`;
+}
+
+$('#prompt').oninput = resizeComposer;
+resizeComposer();
 
 function renderEvidence(
   hits = [],
@@ -2298,10 +2635,12 @@ async function copyText(value) {
       throw new Error('Clipboard access is unavailable in this environment.');
     }
     await navigator.clipboard.writeText(textValue(value));
+    return true;
   } catch (error) {
     captureError(error, {
       action: 'clipboard-copy'
     });
+    return false;
   }
 }
 
