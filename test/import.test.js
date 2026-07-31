@@ -196,6 +196,9 @@ function createIndexedDB() {
     },
     failNextSectionWrite() {
       failNextSectionWrite = true;
+    },
+    storeNames() {
+      return [...stores.keys()].sort();
     }
   };
 }
@@ -231,6 +234,18 @@ const {
   DEMO_PROJECT_ID
 } = await import('../src/demo-project.js');
 const { retrieve } = await import('../src/retrieval.js');
+
+test('startup experience uses existing settings persistence without a schema change', async () => {
+  await engine.documents();
+  assert.equal(engine.state().settings.startupExperience, 'mission-control');
+  assert.deepEqual(database.storeNames(), ['documents', 'inspectionRecords', 'sections']);
+  engine.saveSettings({ startupExperience: 'professional-workspace' });
+  assert.equal(engine.state().settings.startupExperience, 'professional-workspace');
+  assert.equal(JSON.parse(globalThis.localStorage.getItem('mc-master-state-v2')).settings.startupExperience, 'professional-workspace');
+  engine.saveSettings({ startupExperience: 'unsupported' });
+  assert.equal(engine.state().settings.startupExperience, 'mission-control');
+  assert.deepEqual(database.storeNames(), ['documents', 'inspectionRecords', 'sections']);
+});
 
 test('successful imports atomically register one document and its sections', async () => {
   const stages = [];
@@ -471,6 +486,7 @@ test('deterministic import rejects collisions before duplicating fixture records
 });
 
 test('reset deletes only the deterministic demonstration project and restores canonical records', async () => {
+  engine.saveSettings({ startupExperience: 'professional-workspace' });
   const unrelated = engine.addProject('Unaffected import test project');
   const unrelatedId = unrelated.id;
   await engine.deleteProject(DEMO_PROJECT_ID);
@@ -478,6 +494,9 @@ test('reset deletes only the deterministic demonstration project and restores ca
   await engine.importProject(createDemonstrationProjectFixture(), { preserveIdentifiers: true });
   assert.ok(engine.state().projects.some(project => project.id === DEMO_PROJECT_ID));
   assert.ok(engine.state().projects.some(project => project.id === unrelatedId));
+  assert.equal(engine.state().settings.startupExperience, 'professional-workspace');
+  assert.equal((await engine.inspectionRecords({ includeArchived: true })).length, 5);
+  engine.saveSettings({ startupExperience: 'mission-control' });
 });
 
 test('ordinary project imports retain identifier remapping and imported naming behavior', async () => {

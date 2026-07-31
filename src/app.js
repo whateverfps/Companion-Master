@@ -82,6 +82,12 @@ import {
   validateDemonstrationProject
 } from './demo-project.js';
 import {
+  buildMissionControlModel,
+  normalizeStartupExperience,
+  resolvePreviousProject,
+  separateMissionControlProjects
+} from './mission-control.js';
+import {
   firstText,
   sectionHeadingValue,
   sectionLocationValue,
@@ -131,6 +137,10 @@ const chiefStateCopy = {
 };
 
 let view = 'chat';
+let experience = 'mission-control';
+let lastProfessionalView = '';
+let missionControlView = 'home';
+let previousUserProjectId = null;
 let selectedDoc = null;
 let selectedKnowledgeSection = 'all';
 let knowledgeCatalogContext = null;
@@ -156,14 +166,34 @@ let selectedInspectionId = null;
 let modalCloseGuard = null;
 
 app.innerHTML = `
-<a class="mc-skip-link" href="#workspaceMain">Skip to workspace</a>
-<div class="shell">
+<a id="skipLink" class="mc-skip-link" href="#missionControlMain">Skip to workspace</a>
+<section id="missionControlShell" class="mc-control-shell" aria-labelledby="missionControlTitle">
+  <header class="mc-control-global-header">
+    <div class="mc-control-identity">
+      <span class="mc-control-mark" aria-hidden="true">M</span>
+      <div><strong>MISSION COMPANION</strong><span>Mission Control</span></div>
+    </div>
+    <button id="openProfessionalWorkspace" class="mc-control-experience-switch">Open Professional Workspace</button>
+  </header>
+  <nav class="mc-control-nav" aria-label="Mission Control navigation">
+    <button data-control-home aria-current="page">Home</button>
+    <button data-control-projects>My Projects</button>
+    <button data-control-destination="inspections">Inspections</button>
+    <button data-control-destination="knowledge">Project Library</button>
+    <button data-control-destination="chat">Ask Companion</button>
+    <button data-control-destination="settings">Settings</button>
+  </nav>
+  <main id="missionControlMain" tabindex="-1">
+    <div id="missionControlContent" aria-live="polite"></div>
+  </main>
+</section>
+<div id="professionalWorkspaceShell" class="shell" hidden>
   <aside class="rail">
     <div class="brand">
       <div class="mark">M</div>
       <div>
-        <strong>Mission Companion</strong>
-        <span>Engineering Knowledge System</span>
+        <strong>MISSION COMPANION</strong>
+        <span>Professional Workspace</span>
       </div>
     </div>
 
@@ -204,11 +234,12 @@ app.innerHTML = `
     <header class="topbar">
       <div>
         <div class="eyebrow">MISSION COMPANION</div>
-        <h1 id="pageTitle">Command Desk</h1>
+        <h1 id="pageTitle" tabindex="-1">Command Desk</h1>
         <p id="pageSub">Ask project-specific questions and receive source-grounded answers.</p>
       </div>
 
       <div class="mode-wrap">
+        <button id="returnMissionControl" class="subtle mc-control-return">Return to Mission Control</button>
         <label>ANSWER MODE</label>
         <select id="mode">
           <option value="offline">Offline evidence</option>
@@ -761,10 +792,20 @@ app.innerHTML = `
         </div>
 
         <div class="settings-tabs">
+          <button data-settings-tab="experience">Experience</button>
           <button class="active" data-settings-tab="ai">AI</button>
           <button data-settings-tab="knowledge">Knowledge</button>
           <button data-settings-tab="developer">Developer</button>
           <button data-settings-tab="about">About</button>
+        </div>
+
+        <div class="settings-pane" data-settings-pane="experience">
+          <fieldset class="mc-control-startup-setting">
+            <legend>Startup Experience</legend>
+            <label><input type="radio" name="startupExperience" value="mission-control"> Mission Control</label>
+            <label><input type="radio" name="startupExperience" value="professional-workspace"> Professional Workspace</label>
+            <p>You can switch experiences at any time without resetting your current project or work.</p>
+          </fieldset>
         </div>
 
         <div class="settings-pane active" data-settings-pane="ai">
@@ -1002,12 +1043,13 @@ const titles = {
 
 function show(name) {
   view = name;
+  if (experience === 'professional-workspace') lastProfessionalView = name;
 
   $$('.view').forEach(element => {
     element.classList.toggle('active', element.id === name);
   });
 
-  $$('nav button').forEach(button => {
+  $$('.rail nav button[data-view]').forEach(button => {
     const active = button.dataset.view === name;
     button.classList.toggle('active', active);
     if (active) button.setAttribute('aria-current', 'page');
@@ -1079,7 +1121,7 @@ function show(name) {
   }
 }
 
-$$('nav button').forEach(button => {
+$$('.rail nav button[data-view]').forEach(button => {
   button.onclick = () => {
     if (button.dataset.view === 'engineering' && activeContextActivation) {
       void openEngineeringWorkspace({ source: CONTEXT_ACTIVATION_SOURCES.engineeringWorkspace });
@@ -1091,12 +1133,211 @@ $$('nav button').forEach(button => {
 });
 
 registerModule('Navigation', 'ready', {
-  summary: `${$$('nav button').length} views registered`
+  summary: `${$$('.rail nav button[data-view]').length} views registered`
 });
 
 function state() {
   return engine.state();
 }
+
+async function switchExperience(nextExperience, { destination = '', focus = true, force = false } = {}) {
+  const next = normalizeStartupExperience(nextExperience);
+  if (!force && !$('#modal').hidden) {
+    alert('Finish or cancel the open form before switching experiences.');
+    return false;
+  }
+  experience = next;
+  const missionControl = next === 'mission-control';
+  $('#missionControlShell').hidden = !missionControl;
+  $('#professionalWorkspaceShell').hidden = missionControl;
+  $('#skipLink').href = missionControl ? '#missionControlMain' : '#workspaceMain';
+  if (missionControl) {
+    await renderMissionControl();
+    if (focus) $('#missionControlTitle')?.focus();
+  } else {
+    lastProfessionalView = destination || view;
+    if (destination) show(destination);
+    if (focus) $('#pageTitle')?.focus();
+  }
+  return true;
+}
+
+async function openProfessionalDestination(target = {}) {
+  if (target.inspectionId) selectedInspectionId = target.inspectionId;
+  if (target.documentId) selectedDoc = target.documentId;
+  const destination = target.view || 'project';
+  await switchExperience('professional-workspace', { destination });
+}
+
+function missionControlActionLabel(priority) {
+  return priority.kind === 'in-progress' ? 'Continue inspection'
+    : priority.kind === 'recent-revision' ? 'Review revision'
+      : priority.kind === 'informational' ? 'Review document'
+        : 'Review inspection';
+}
+
+function missionControlEmpty(title, detail, action = '') {
+  return `<div class="mc-control-empty"><strong>${esc(title)}</strong><p>${esc(detail)}</p>${action}</div>`;
+}
+
+function renderMyProjects() {
+  const currentState = state();
+  const { userProjects, demonstrationProject } = separateMissionControlProjects(currentState.projects, DEMO_PROJECT_ID);
+  $('#missionControlContent').innerHTML = `
+    <section class="mc-control-projects" aria-labelledby="missionControlTitle">
+      <header class="mc-control-projects-header"><div><span>MISSION COMPANION</span><h1 id="missionControlTitle" tabindex="-1">My Projects</h1><p>Open existing work, create a project, or import a project package.</p></div><div><button data-control-action="create-project">Create New Project</button><button class="subtle" data-control-action="import-project">Import Project</button></div></header>
+      <section class="mc-control-project-group" aria-labelledby="mcUserProjectsTitle"><header><span>YOUR WORK</span><h2 id="mcUserProjectsTitle">User Projects</h2></header>
+        ${userProjects.length ? `<div class="mc-control-project-list">${userProjects.map(project => `<article class="mc-control-project-tile ${project.id === currentState.activeProject ? 'active' : ''}"><div><span>${project.id === currentState.activeProject ? 'CURRENT PROJECT' : 'PROJECT'}</span><h3>${esc(project.name)}</h3><p>${esc(project.description || 'Project details are available after opening.')}</p></div><button data-control-project-id="${esc(project.id)}">${project.id === currentState.activeProject ? 'Open Project' : 'Open'}</button></article>`).join('')}</div>` : missionControlEmpty('No user projects yet', 'Create a project or import an existing Mission Companion project package.', '<button data-control-action="create-project">Create your first project</button>')}
+      </section>
+      <section class="mc-control-project-group mc-control-built-in" aria-labelledby="mcBuiltInTitle"><header><span>BUILT-IN DEMONSTRATION</span><h2 id="mcBuiltInTitle">Explore Mission Companion</h2></header>
+        ${demonstrationProject ? `<article class="mc-control-project-tile"><div><span>FICTIONAL SAMPLE DATA</span><h3>${esc(demonstrationProject.name)}</h3><p>Explore connected inspections, evidence, revisions, and project knowledge using the built-in sample project.</p></div><button data-control-action="load-demo">${currentState.activeProject === DEMO_PROJECT_ID ? 'Return to Demonstration Project' : 'Explore Demonstration Project'}</button></article>` : `<article class="mc-control-project-tile"><div><span>BUILT-IN PROJECT</span><h3>Mission Companion Demonstration Project</h3><p>Load the offline fictional sample when you want a guided product example.</p></div><button data-control-action="load-demo">Explore Demonstration Project</button></article>`}
+      </section>
+    </section>`;
+}
+
+async function renderMissionControl(prefetchedDocuments = null, prefetchedSections = null) {
+  if (missionControlView === 'projects') {
+    renderMyProjects();
+    return;
+  }
+  const currentState = state();
+  const project = currentState.projects.find(item => item.id === currentState.activeProject) || null;
+  const [documents, sections, inspections] = await Promise.all([
+    prefetchedDocuments || engine.documents(),
+    prefetchedSections || engine.sections(),
+    project ? engine.inspectionRecords({ includeArchived: true }) : Promise.resolve([])
+  ]);
+  const workflow = getWorkflowSession()?.workflow || null;
+  const context = getInspectionSession()?.context || null;
+  const model = buildMissionControlModel({
+    now: new Date(), project, documents, sections, inspections,
+    isDemonstration: project?.id === DEMO_PROJECT_ID,
+    continuation: {
+      selectedInspectionId,
+      activeWorkflowType: workflow?.workflowType || '',
+      hasEngineeringContext: Boolean(context),
+      selectedDocumentId: selectedDoc || '',
+      hasConversation: currentState.chat.length > 0,
+      currentWorkspace: lastProfessionalView
+    }
+  });
+  const primary = model.recommendations[0] || null;
+  const quickActions = [
+    { label: 'Create Inspection', action: 'create-inspection', show: Boolean(project) },
+    { label: 'Open Inspection Records', target: { view: 'inspections' }, show: Boolean(project) },
+    { label: 'Browse Drawings', action: 'browse-drawings', show: model.summary.drawings > 0 },
+    { label: 'Browse Specifications', action: 'browse-specifications', show: model.summary.specifications > 0 },
+    { label: 'Review RFIs', action: 'browse-rfis', show: model.summary.rfis > 0 },
+    { label: 'Review Submittals', action: 'browse-submittals', show: model.summary.submittals > 0 },
+    { label: 'Browse Project Library', target: { view: 'knowledge' }, show: Boolean(project) },
+    { label: 'Open Demonstration Guide', action: 'demo-guide', show: model.project?.isDemonstration },
+    { label: 'Ask Companion', target: { view: 'chat' }, show: true }
+  ].filter(item => item.show);
+  const prompts = model.project?.isDemonstration
+    ? DEMO_QUESTIONS.slice(0, 4)
+    : documents.length
+      ? ['Summarize the key requirements in this project', 'Which project sources need review?', 'Show the strongest evidence for a project question']
+      : [];
+  $('#missionControlContent').innerHTML = `
+    <section class="mc-control-home" aria-labelledby="missionControlTitle">
+      <header class="mc-control-welcome">
+        <div><span>${model.project ? esc(model.dateLabel) : 'MISSION COMPANION'}</span><h1 id="missionControlTitle" tabindex="-1">${esc(model.project ? model.greeting : 'Welcome')}</h1><p>${model.project ? `Here is what Companion can verify for ${esc(model.project.name)}.` : 'What would you like to do?'}</p></div>
+        ${model.project?.isDemonstration ? '<span class="mc-control-demo-badge">Demonstration Project · Fictional Sample Data</span>' : ''}
+      </header>
+      ${model.project?.isDemonstration ? `<aside class="mc-control-demo-banner" aria-labelledby="mcDemoBannerTitle"><div><span>BUILT-IN DEMONSTRATION</span><h2 id="mcDemoBannerTitle">Demonstration Project</h2><p>You are exploring the built-in sample project.</p></div><div><button data-control-action="return-projects">Return to My Projects</button><button class="subtle" data-control-action="reset-demo">Reset Demonstration Project</button></div></aside>` : ''}
+      ${model.project ? `
+        <section class="mc-control-project" aria-labelledby="mcControlProjectTitle">
+          <div><span>CURRENT PROJECT</span><h2 id="mcControlProjectTitle">${esc(model.project.name)}</h2><p>${esc(model.project.description || 'Project information and work are ready to review.')}</p></div>
+          <dl><div><dt>Documents</dt><dd>${fmt(model.summary.documents)}</dd></div><div><dt>Indexed sections</dt><dd>${fmt(model.summary.sections)}</dd></div><div><dt>Inspections</dt><dd>${fmt(model.summary.inspections)}</dd></div></dl>
+        </section>` : `
+        <section class="mc-control-project mc-control-project-empty" aria-labelledby="mcControlProjectTitle">
+          <div><span>GET STARTED</span><h2 id="mcControlProjectTitle">No project open</h2><p>Open or create your project. The built-in demonstration is available separately if you are new to Mission Companion.</p></div>
+          <div class="mc-control-empty-actions"><button data-control-action="my-projects">Open My Project</button><button data-control-action="create-project">Create New Project</button><span>New to Mission Companion?</span><button data-control-action="load-demo">Explore Demonstration Project</button></div>
+        </section>`}
+      ${primary ? `
+        <section class="mc-control-primary" aria-labelledby="mcControlPrimaryTitle">
+          <div><span>RECOMMENDED NEXT</span><h2 id="mcControlPrimaryTitle">${esc(primary.label)}</h2><p>${esc(primary.reason)}</p></div>
+          <button data-control-target='${esc(JSON.stringify(primary.target))}'>${esc(missionControlActionLabel(primary))}</button>
+        </section>` : `<section class="mc-control-primary mc-control-primary-clear" aria-labelledby="mcControlPrimaryTitle"><div><span>RECOMMENDED NEXT</span><h2 id="mcControlPrimaryTitle">You're caught up</h2><p>Companion did not find an explicit operational item requiring attention. You can continue current work or ask a project question.</p></div><button data-control-target='${esc(JSON.stringify({ view: 'chat' }))}'>Ask Companion</button></section>`}
+      <div class="mc-control-grid">
+        <section class="mc-control-card mc-control-priorities" aria-labelledby="mcControlPrioritiesTitle">
+          <header><span>TODAY'S PRIORITIES</span><h2 id="mcControlPrioritiesTitle">What needs attention</h2></header>
+          ${model.priorities.length ? `<ol>${model.priorities.slice(0, 5).map(item => `<li><button data-control-target='${esc(JSON.stringify(item.target))}'><span class="mc-control-status-symbol" aria-hidden="true">${item.rank <= 2 ? '!' : '→'}</span><span><strong>${esc(item.title)}</strong><small>${esc(item.reason)}</small></span></button></li>`).join('')}</ol>` : missionControlEmpty('No priorities requiring attention', model.empty.priorities)}
+        </section>
+        <section class="mc-control-card mc-control-health" aria-labelledby="mcControlHealthTitle">
+          <header><span>PROJECT HEALTH</span><h2 id="mcControlHealthTitle">Current picture</h2></header>
+          <div class="mc-control-health-state ${esc(model.health.tone)}"><span aria-hidden="true">${model.health.tone === 'attention' ? '!' : model.health.tone === 'active' ? '✓' : '•'}</span><div><strong>${esc(model.health.label)}</strong><p>${esc(model.health.explanation)}</p></div></div>
+          ${model.project?.isDemonstration ? '<small>Health reflects explicit sample records, not a substantive project review.</small>' : '<small>Health reflects tracked operational facts only.</small>'}
+        </section>
+        <section class="mc-control-card mc-control-continue" aria-labelledby="mcControlContinueTitle">
+          <header><span>CONTINUE WORKING</span><h2 id="mcControlContinueTitle">Pick up where you left off</h2></header>
+          ${model.continuation.length ? `<div class="mc-control-action-list">${model.continuation.map(item => `<button data-control-target='${esc(JSON.stringify(item.target))}'><strong>${esc(item.label)}</strong><span>${esc(item.reason)}</span></button>`).join('')}</div>` : missionControlEmpty('No current work', model.empty.continuation)}
+        </section>
+        <section class="mc-control-card mc-control-activity" aria-labelledby="mcControlActivityTitle">
+          <header><span>RECENT ACTIVITY</span><h2 id="mcControlActivityTitle">What changed</h2></header>
+          ${model.recentActivity.length ? `<ol>${model.recentActivity.slice(0, 5).map(item => `<li><button data-control-target='${esc(JSON.stringify(item.target))}'><strong>${esc(item.title)}</strong><span>${esc(item.detail || 'Recorded project activity')}</span><time datetime="${esc(item.occurredAt)}">${esc(new Date(item.occurredAt).toLocaleDateString())}</time></button></li>`).join('')}</ol>` : missionControlEmpty('No recent activity', model.empty.activity)}
+        </section>
+      </div>
+      <section class="mc-control-quick" aria-labelledby="mcControlQuickTitle"><header><span>QUICK ACTIONS</span><h2 id="mcControlQuickTitle">Get something done</h2></header><div>${quickActions.map(item => `<button ${item.action ? `data-control-action="${item.action}"` : `data-control-target='${esc(JSON.stringify(item.target))}'`}>${esc(item.label)}</button>`).join('')}</div></section>
+      <section class="mc-control-ask" aria-labelledby="mcControlAskTitle"><div><span>ASK COMPANION</span><h2 id="mcControlAskTitle">Start with a project question</h2><p>Companion will use the same evidence-first conversation available in Professional Workspace.</p></div>${prompts.length ? `<div class="mc-control-prompts">${prompts.map(prompt => `<button data-control-prompt="${esc(prompt)}">${esc(prompt)}</button>`).join('')}</div>` : `<button data-control-target='${esc(JSON.stringify({ view: 'chat' }))}'>Open Ask Companion</button>`}</section>
+    </section>`;
+}
+
+$('#openProfessionalWorkspace').onclick = () => switchExperience('professional-workspace', { destination: view });
+$('#returnMissionControl').onclick = () => switchExperience('mission-control');
+$$('[data-control-destination]').forEach(button => button.onclick = () => openProfessionalDestination({ view: button.dataset.controlDestination }));
+function showMissionControlView(name = 'home') {
+  missionControlView = name === 'projects' ? 'projects' : 'home';
+  $('[data-control-home]').toggleAttribute('aria-current', missionControlView === 'home');
+  $('[data-control-projects]').toggleAttribute('aria-current', missionControlView === 'projects');
+  return renderMissionControl().then(() => $('#missionControlTitle')?.focus());
+}
+$('[data-control-home]').onclick = () => showMissionControlView('home');
+$('[data-control-projects]').onclick = () => showMissionControlView('projects');
+$('#missionControlContent').onclick = async event => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  if (button.dataset.controlTarget) return openProfessionalDestination(JSON.parse(button.dataset.controlTarget));
+  if (button.dataset.controlDestination) return openProfessionalDestination({ view: button.dataset.controlDestination });
+  if (button.dataset.controlProjectId) {
+    await selectProjectThroughProductionPath(button.dataset.controlProjectId);
+    missionControlView = 'home';
+    await switchExperience('mission-control');
+    return;
+  }
+  if (button.dataset.controlPrompt) {
+    await openProfessionalDestination({ view: 'chat' });
+    $('#prompt').value = button.dataset.controlPrompt;
+    resizeComposer();
+    $('#prompt').focus();
+    return;
+  }
+  const action = button.dataset.controlAction;
+  if (action === 'create-inspection') {
+    await openProfessionalDestination({ view: 'inspections' });
+    await openInspectionForm();
+  } else if (action === 'demo-guide') {
+    demoGuideDismissed = false;
+    renderDemonstrationControls();
+  } else if (action === 'load-demo') {
+    $('#loadDemoProject').click();
+  } else if (action === 'create-project') {
+    $('#newProject').click();
+  } else if (action === 'my-projects') {
+    await showMissionControlView('projects');
+  } else if (action === 'import-project') {
+    $('#importProject').click();
+  } else if (action === 'return-projects') {
+    await returnFromDemonstrationProject();
+  } else if (action === 'reset-demo') {
+    $('#resetDemoProject').click();
+  } else if (action?.startsWith('browse-')) {
+    await openProfessionalDestination({ view: 'knowledge' });
+    const query = ({ 'browse-drawings': 'Drawings', 'browse-specifications': 'Specifications', 'browse-rfis': 'RFIs', 'browse-submittals': 'Submittals' })[action];
+    $('#documentFilter').value = query;
+    renderKnowledgeWorkspace();
+  }
+};
 
 const activationTimestamp = () => new Date().toISOString();
 
@@ -1583,16 +1824,19 @@ async function refresh() {
       ? 'Configured'
       : 'Not configured';
 
-  $('#projectSelect').innerHTML = currentState.projects
-    .map(project => `
+  const projectGroups = separateMissionControlProjects(currentState.projects, DEMO_PROJECT_ID);
+  const projectOptions = projects => projects.map(project => `
       <option
         value="${project.id}"
         ${project.id === currentState.activeProject ? 'selected' : ''}
       >
         ${esc(project.name)}
       </option>
-    `)
-    .join('');
+    `).join('');
+  $('#projectSelect').innerHTML = `
+    <optgroup label="My Projects">${projectOptions(projectGroups.userProjects)}</optgroup>
+    ${projectGroups.demonstrationProject ? `<optgroup label="Built-in Demonstration">${projectOptions([projectGroups.demonstrationProject])}</optgroup>` : ''}
+  `;
 
   const documents = await engine.documents();
   const sections = await engine.sections();
@@ -1604,6 +1848,7 @@ async function refresh() {
   renderProjectWorkspace(documents, sections);
   await renderKnowledgeWorkspace(documents);
   renderDemonstrationControls();
+  if (experience === 'mission-control') await renderMissionControl(documents, sections);
 }
 
 function renderDemonstrationControls() {
@@ -1630,16 +1875,22 @@ function renderDemonstrationControls() {
       <button data-demo-view="workflow">Open the synchronized workflow</button>
     </div>`;
   $('[data-demo-dismiss]').onclick = () => { demoGuideDismissed = true; renderDemonstrationControls(); };
-  $$('[data-demo-question]').forEach(button => button.onclick = () => {
-    show('chat');
+  $$('[data-demo-question]').forEach(button => button.onclick = async () => {
+    await switchExperience('professional-workspace', { destination: 'chat' });
     $('#prompt').value = DEMO_QUESTIONS[Number(button.dataset.demoQuestion)];
     resizeComposer();
     $('#prompt').focus();
   });
-  $$('[data-demo-view]').forEach(button => button.onclick = () => show(button.dataset.demoView));
+  $$('[data-demo-view]').forEach(button => button.onclick = () => switchExperience('professional-workspace', { destination: button.dataset.demoView }));
 }
 
 async function selectProjectThroughProductionPath(projectId) {
+  const currentProjectId = state().activeProject;
+  if (projectId === DEMO_PROJECT_ID && currentProjectId && currentProjectId !== DEMO_PROJECT_ID) {
+    previousUserProjectId = currentProjectId;
+  } else if (projectId !== DEMO_PROJECT_ID) {
+    previousUserProjectId = projectId;
+  }
   engine.setProject(projectId);
   selectedDoc = null;
   selectedKnowledgeSection = 'all';
@@ -1656,6 +1907,40 @@ async function selectProjectThroughProductionPath(projectId) {
   await refresh();
 }
 
+function clearDemonstrationTransientState() {
+  activeRetrievalSession = null;
+  selectedEvidenceId = null;
+  selectedInspectionId = null;
+  selectedDoc = null;
+  selectedKnowledgeSection = 'all';
+  knowledgeCatalogContext = null;
+  sourceNavigationTarget = null;
+  answerNavigationTarget = null;
+  sourceNavigationNotice = '';
+  relationshipTarget = null;
+  lineageTarget = null;
+  revisionTarget = null;
+  revisionFilter = 'all';
+  selectedRevisionMatch = 0;
+  engineeringTarget = null;
+  workflowTarget = null;
+  clearActiveContext(CONTEXT_ACTIVATION_SOURCES.projectSwitch, DEMO_PROJECT_ID);
+}
+
+async function returnFromDemonstrationProject() {
+  clearDemonstrationTransientState();
+  demoGuideDismissed = true;
+  const previous = resolvePreviousProject(previousUserProjectId, state().projects, DEMO_PROJECT_ID);
+  if (previous) {
+    await selectProjectThroughProductionPath(previous.id);
+    missionControlView = 'home';
+  } else {
+    missionControlView = 'projects';
+    await refresh();
+  }
+  await switchExperience('mission-control');
+}
+
 async function openDemonstrationProject({ reset = false } = {}) {
   const existing = state().projects.some(project => project.id === DEMO_PROJECT_ID);
   if (reset && existing) await engine.deleteProject(DEMO_PROJECT_ID);
@@ -1666,6 +1951,7 @@ async function openDemonstrationProject({ reset = false } = {}) {
     await engine.importProject(fixture, { preserveIdentifiers: true });
   }
   await selectProjectThroughProductionPath(DEMO_PROJECT_ID);
+  missionControlView = 'home';
   selectedDoc = DEMO_INITIAL_DOCUMENT_ID;
   demoGuideDismissed = false;
   const demoDocument = (await engine.documents()).find(document => document.id === DEMO_INITIAL_DOCUMENT_ID);
@@ -1677,7 +1963,7 @@ async function openDemonstrationProject({ reset = false } = {}) {
     source: CONTEXT_ACTIVATION_SOURCES.knowledgeCatalog
   });
   await refresh();
-  show('engineering');
+  await switchExperience('mission-control');
   renderDemonstrationControls();
 }
 
@@ -1722,7 +2008,9 @@ $('#newProject').onclick = () => openModal(
       const name = $('#projectName').value.trim();
 
       if (name) {
-        engine.addProject(name);
+        const project = engine.addProject(name);
+        previousUserProjectId = project.id;
+        missionControlView = 'home';
         closeModal();
         refresh();
       }
@@ -7829,6 +8117,10 @@ function loadSettings() {
   $('#apiKey').value = settings.openaiKey;
   $('#timeout').value = settings.timeout / 1000;
   $('#topK').value = settings.topK;
+  const startupExperience = normalizeStartupExperience(settings.startupExperience);
+  $$('input[name="startupExperience"]').forEach(input => {
+    input.checked = input.value === startupExperience;
+  });
 }
 
 $('#saveSettings').onclick = () => {
@@ -7837,7 +8129,8 @@ $('#saveSettings').onclick = () => {
     openaiModel: $('#model').value.trim(),
     openaiKey: $('#apiKey').value.trim(),
     timeout: Number($('#timeout').value) * 1000,
-    topK: Number($('#topK').value)
+    topK: Number($('#topK').value),
+    startupExperience: $('input[name="startupExperience"]:checked')?.value || 'mission-control'
   });
 
   alert('Settings saved in this browser.');
@@ -7862,9 +8155,12 @@ $('#importProject').onchange = async () => {
       return;
     }
 
-    await engine.importProject(
+    const importedProject = await engine.importProject(
       JSON.parse(await file.text())
     );
+
+    if (importedProject.id !== DEMO_PROJECT_ID) previousUserProjectId = importedProject.id;
+    missionControlView = 'home';
 
     await refresh();
     alert('Project imported.');
@@ -8165,6 +8461,9 @@ function verifyStartup() {
 loadSettings();
 
 refresh()
+  .then(() => {
+    return switchExperience(state().settings.startupExperience, { force: true, focus: false });
+  })
   .then(() => {
     verifyStartup();
 

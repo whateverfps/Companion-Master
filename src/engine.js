@@ -24,6 +24,8 @@ const STATE_KEY = 'mc-master-state-v2';
 const DOC_DB = 'mc-master-documents-v2';
 const DOC_DB_VERSION = 4;
 const APP_VERSION = '2.8.1';
+const STARTUP_EXPERIENCES = new Set(['mission-control', 'professional-workspace']);
+const normalizeStartupExperience = value => STARTUP_EXPERIENCES.has(value) ? value : 'mission-control';
 
 const defaults = {
   settings: {
@@ -32,7 +34,8 @@ const defaults = {
     openaiKey: '',
     timeout: 180000,
     mode: 'offline',
-    topK: 10
+    topK: 10,
+    startupExperience: 'mission-control'
   },
   projects: [
     {
@@ -87,6 +90,10 @@ function loadState() {
         ...(stored.settings || {})
       }
     };
+
+    loaded.settings.startupExperience = normalizeStartupExperience(
+      loaded.settings.startupExperience
+    );
 
     loaded.projects = Array.isArray(loaded.projects)
       ? loaded.projects
@@ -481,15 +488,21 @@ export const engine = {
   },
 
   saveSettings(patch) {
+    const normalizedPatch = {
+      ...patch,
+      ...(Object.hasOwn(patch, 'startupExperience')
+        ? { startupExperience: normalizeStartupExperience(patch.startupExperience) }
+        : {})
+    };
     state.settings = {
       ...state.settings,
-      ...patch
+      ...normalizedPatch
     };
 
     save();
 
     logger.info('Settings updated', {
-      keys: Object.keys(patch).filter(key => key !== 'openaiKey')
+      keys: Object.keys(normalizedPatch).filter(key => key !== 'openaiKey')
     });
   },
 
