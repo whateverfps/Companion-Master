@@ -613,7 +613,7 @@ async function refresh() {
   $('#kDocs').textContent = fmt(documents.length);
   $('#kSections').textContent = fmt(sections.length);
 
-  renderMessages();
+  renderMessages(documents, sections);
   await renderKnowledgeWorkspace(documents);
 }
 
@@ -653,7 +653,63 @@ $('#newProject').onclick = () => openModal(
   }
 );
 
-function renderMessages() {
+function promptSuggestions(documents = [], sections = []) {
+  const indexingIncomplete = documents.some(document =>
+    document.status !== 'verified' ||
+    Number(document.sectionCount || 0) <= 0
+  );
+
+  if (!documents.length) {
+    return [
+      { label: 'Add project documents', view: 'knowledge' },
+      { label: 'Open the Knowledge Base', view: 'knowledge' },
+      { label: 'Configure this project', view: 'settings' }
+    ];
+  }
+
+  if (!sections.length || indexingIncomplete) {
+    return [
+      { label: 'Inspect document extraction', view: 'sources' },
+      { label: 'Review the Knowledge Base', view: 'knowledge' },
+      { label: 'Check diagnostics', view: 'diagnostics' }
+    ];
+  }
+
+  return [
+    { label: 'Summarize the key requirements in this project' },
+    { label: 'Identify open risks or conflicts in the indexed documents' },
+    { label: 'Compare related requirements across sources' },
+    { label: 'Show the strongest evidence for a project question' }
+  ];
+}
+
+function renderPromptSuggestions(documents, sections) {
+  const suggestions = promptSuggestions(documents, sections);
+  const heading = suggestions.every(suggestion => !suggestion.view)
+    ? 'Ask a source-grounded question'
+    : 'Recommended next steps';
+
+  return `
+    <div class="mc-prompt-suggestions">
+      <p class="mc-prompt-heading">${heading}</p>
+      <div class="mc-prompt-list">
+        ${suggestions.map(suggestion => `
+          <button
+            type="button"
+            class="mc-prompt-button"
+            ${suggestion.view
+              ? `data-prompt-view="${suggestion.view}"`
+              : `data-prompt-question="${esc(suggestion.label)}"`}
+          >
+            ${esc(suggestion.label)}
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderMessages(documents = [], sections = []) {
   const chat = state().chat;
 
   $('#messages').innerHTML = chat.length
@@ -698,12 +754,31 @@ function renderMessages() {
           retrieves and presents cited source language without requiring an
           API key. AI modes can provide additional synthesis when configured.
         </p>
+        ${renderPromptSuggestions(documents, sections)}
         </div>
       </div>
     `;
 
   $('#messages').scrollTop = $('#messages').scrollHeight;
 }
+
+$('#messages').onclick = event => {
+  const suggestion = event.target.closest('.mc-prompt-button');
+
+  if (!suggestion) {
+    return;
+  }
+
+  if (suggestion.dataset.promptView) {
+    show(suggestion.dataset.promptView);
+    return;
+  }
+
+  if (suggestion.dataset.promptQuestion) {
+    $('#prompt').value = suggestion.dataset.promptQuestion;
+    $('#prompt').focus();
+  }
+};
 
 $('#clearChat').onclick = () => {
   engine.clearChat();
