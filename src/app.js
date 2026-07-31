@@ -51,6 +51,8 @@ const chiefStateCopy = {
 
 let view = 'chat';
 let selectedDoc = null;
+let selectedKnowledgeSection = 'all';
+let knowledgeCatalogContext = null;
 let busy = false;
 let importQueue = [];
 
@@ -269,14 +271,42 @@ app.innerHTML = `
         <p>Browse libraries, inspect documents, and review indexed structure.</p>
       </header>
 
+      <div
+        id="knowledgeCatalogSummary"
+        class="mc-library-summary"
+        aria-label="Knowledge catalog summary"
+      ></div>
+
       <div class="knowledge-grid">
         <aside class="panel library-panel">
           <div class="panel-head">
             <div>
               <span>KNOWLEDGE ORGANIZATION</span>
-              <h2>Knowledge Library</h2>
+              <h2>Knowledge Catalog</h2>
             </div>
             <button id="newLibrary" class="subtle">＋ New</button>
+          </div>
+
+          <nav
+            id="knowledgeCatalog"
+            class="mc-library-catalog"
+            aria-label="Knowledge catalog sections"
+          ></nav>
+
+          <section
+            class="mc-library-types"
+            aria-labelledby="knowledgeTypesTitle"
+          >
+            <div class="mc-library-subhead">
+              <span>LIBRARY COVERAGE</span>
+              <h3 id="knowledgeTypesTitle">Knowledge Types</h3>
+            </div>
+            <div id="knowledgeTypeCoverage"></div>
+          </section>
+
+          <div class="mc-library-subhead mc-library-subhead-libraries">
+            <span>UPLOAD DESTINATIONS</span>
+            <h3>Libraries</h3>
           </div>
           <div id="libraries" class="library-list"></div>
         </aside>
@@ -284,8 +314,9 @@ app.innerHTML = `
         <section class="panel knowledge-main">
           <div class="panel-head">
             <div>
-              <span id="activeLibraryTitle">KNOWLEDGE LIBRARY</span>
-              <h2>Document Browser</h2>
+              <span id="activeLibraryTitle">ACTIVE UPLOAD LIBRARY</span>
+              <h2 id="knowledgeBrowserTitle">All Knowledge</h2>
+              <small id="knowledgeBrowserCount"></small>
             </div>
             <div>
               <input
@@ -322,12 +353,13 @@ app.innerHTML = `
                 placeholder="Search documents and metadata…"
               >
             </label>
-            <select
-              id="categoryFilter"
-              aria-label="Filter documents by category"
+            <button
+              id="clearKnowledgeFilters"
+              type="button"
+              class="subtle"
             >
-              <option value="">All categories</option>
-            </select>
+              All Knowledge
+            </button>
           </div>
 
           <div
@@ -340,7 +372,7 @@ app.innerHTML = `
         <aside class="panel metadata-panel">
           <div class="panel-head">
             <div>
-              <span>DOCUMENT CONTROL</span>
+              <span id="documentDetailsEyebrow">CATALOG COVERAGE</span>
               <h2 id="documentDetailsTitle">Document Details</h2>
             </div>
           </div>
@@ -734,6 +766,8 @@ $('#mode').onchange = () => {
 $('#projectSelect').onchange = async () => {
   engine.setProject($('#projectSelect').value);
   selectedDoc = null;
+  selectedKnowledgeSection = 'all';
+  knowledgeCatalogContext = null;
   await refresh();
 };
 
@@ -1493,7 +1527,11 @@ $('#fileInput').onchange = async () => {
 };
 
 $('#documentFilter').oninput = () => renderKnowledgeWorkspace();
-$('#categoryFilter').onchange = () => renderKnowledgeWorkspace();
+$('#clearKnowledgeFilters').onclick = () => {
+  selectedKnowledgeSection = 'all';
+  selectedDoc = null;
+  renderKnowledgeWorkspace();
+};
 
 $('#newLibrary').onclick = () => openModal(
   `
@@ -1671,11 +1709,218 @@ function renderImportQueue() {
   });
 }
 
+function knowledgeTypeGroup(document) {
+  const extension = safeText(document.extension).toLowerCase();
+  const type = safeText(document.type).toLowerCase();
+
+  if (extension === 'pdf' || type.includes('pdf')) {
+    return 'PDF';
+  }
+
+  if (
+    ['doc', 'docx', 'odt', 'rtf'].includes(extension) ||
+    type.includes('word') ||
+    type.includes('document')
+  ) {
+    return 'Word';
+  }
+
+  if (
+    ['xls', 'xlsx', 'csv', 'ods'].includes(extension) ||
+    type.includes('sheet') ||
+    type.includes('excel') ||
+    type.includes('csv')
+  ) {
+    return 'Excel';
+  }
+
+  if (
+    ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'tif', 'tiff', 'bmp'].includes(extension) ||
+    type.startsWith('image/')
+  ) {
+    return 'Images';
+  }
+
+  if (
+    ['html', 'htm', 'xml'].includes(extension) ||
+    type.includes('html') ||
+    type.includes('xml')
+  ) {
+    return 'Web/HTML';
+  }
+
+  if (
+    ['txt', 'md', 'log', 'json'].includes(extension) ||
+    type.startsWith('text/') ||
+    type.includes('json')
+  ) {
+    return 'Text';
+  }
+
+  return 'Other';
+}
+
+function fallbackCatalogSection(document) {
+  return {
+    PDF: 'PDF Documents',
+    Word: 'Word Documents',
+    Excel: 'Spreadsheets',
+    Images: 'Photos and Media',
+    Text: 'Text Documents',
+    'Web/HTML': 'Web Documents',
+    Other: 'Uncategorized'
+  }[knowledgeTypeGroup(document)];
+}
+
+function documentCatalogSection(document) {
+  const metadataCategory = preferredText(
+    document.metadata?.category,
+    document.metadata?.documentCategory,
+    document.metadata?.knowledgeSection
+  ).trim();
+  const documentCategory = safeText(document.category).trim();
+
+  if (metadataCategory) {
+    return metadataCategory;
+  }
+
+  if (documentCategory) {
+    return documentCategory;
+  }
+
+  const tags = [
+    ...(Array.isArray(document.tags) ? document.tags : []),
+    ...(Array.isArray(document.metadata?.tags)
+      ? document.metadata.tags
+      : [])
+  ]
+    .map(tag => safeText(tag).trim())
+    .filter(Boolean);
+
+  if (tags.length) {
+    return tags[0];
+  }
+
+  return fallbackCatalogSection(document);
+}
+
+function knowledgeCatalogData(documents, sections, libraries) {
+  const sectionCounts = new Map();
+
+  sections.forEach(section => {
+    sectionCounts.set(
+      section.documentId,
+      (sectionCounts.get(section.documentId) || 0) + 1
+    );
+  });
+
+  const buildEntry = (name, matchingDocuments) => {
+    const indexed = matchingDocuments.filter(document =>
+      documentStatus(document).className === 'indexed'
+    );
+    const pending = matchingDocuments.filter(document =>
+      documentStatus(document).className === 'pending'
+    );
+    const unavailable = matchingDocuments.filter(document =>
+      documentStatus(document).className === 'unavailable'
+    );
+    const unknown = matchingDocuments.filter(document =>
+      documentStatus(document).className === 'unknown'
+    );
+    const exposedSections = matchingDocuments.reduce(
+      (total, document) =>
+        total + Number(sectionCounts.get(document.id) || 0),
+      0
+    );
+    const indexedWithoutSections = indexed.filter(document =>
+      Number(sectionCounts.get(document.id) || 0) <= 0
+    );
+
+    let attention = '';
+
+    if (!matchingDocuments.length) {
+      attention = 'No content loaded';
+    } else if (unavailable.length) {
+      attention = 'Document unavailable';
+    } else if (pending.length || indexedWithoutSections.length) {
+      attention = 'Indexing incomplete';
+    } else if (unknown.length || name === 'Uncategorized') {
+      attention = 'Metadata incomplete';
+    }
+
+    return {
+      attention,
+      documents: matchingDocuments,
+      exposedSections,
+      indexed,
+      indexedWithoutSections,
+      libraries: libraries.filter(library =>
+        matchingDocuments.some(document =>
+          document.libraryId === library.id
+        )
+      ),
+      name,
+      pending,
+      unavailable,
+      unknown
+    };
+  };
+
+  const grouped = new Map();
+
+  documents.forEach(document => {
+    const name = documentCatalogSection(document);
+
+    if (!grouped.has(name)) {
+      grouped.set(name, []);
+    }
+
+    grouped.get(name).push(document);
+  });
+
+  const entries = [...grouped.entries()]
+    .map(([name, matchingDocuments]) =>
+      buildEntry(name, matchingDocuments)
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const all = buildEntry('All Knowledge', documents);
+  const types = ['PDF', 'Word', 'Excel', 'Images', 'Text', 'Web/HTML', 'Other']
+    .map(name => {
+      const matchingDocuments = documents.filter(document =>
+        knowledgeTypeGroup(document) === name
+      );
+
+      return {
+        documents: matchingDocuments,
+        indexed: matchingDocuments.filter(document =>
+          documentStatus(document).className === 'indexed'
+        ).length,
+        name,
+        percentage: documents.length
+          ? Math.round((matchingDocuments.length / documents.length) * 100)
+          : 0
+      };
+    })
+    .filter(type => type.documents.length > 0);
+
+  return {
+    all,
+    entries,
+    sectionCounts,
+    types
+  };
+}
+
 async function renderKnowledgeWorkspace(prefetched = null) {
   const currentState = state();
   const libraries = engine.libraries();
   const allDocuments = prefetched || await engine.documents();
   const allSections = await engine.sections();
+  const catalog = knowledgeCatalogData(
+    allDocuments,
+    allSections,
+    libraries
+  );
 
   const activeLibrary =
     libraries.find(library => library.id === currentState.activeLibrary) ||
@@ -1687,6 +1932,117 @@ async function renderKnowledgeWorkspace(prefetched = null) {
   ) {
     engine.setLibrary(activeLibrary.id);
   }
+
+  if (
+    selectedKnowledgeSection !== 'all' &&
+    !catalog.entries.some(entry =>
+      entry.name === selectedKnowledgeSection
+    )
+  ) {
+    selectedKnowledgeSection = 'all';
+    selectedDoc = null;
+  }
+
+  const selectedEntry = selectedKnowledgeSection === 'all'
+    ? catalog.all
+    : catalog.entries.find(entry =>
+        entry.name === selectedKnowledgeSection
+      ) || catalog.all;
+
+  knowledgeCatalogContext = {
+    catalog,
+    libraries,
+    selectedEntry
+  };
+
+  const summaryItems = [
+    ['Total documents', allDocuments.length],
+    ['Categories represented', catalog.entries.length],
+    ['Indexed documents', catalog.all.indexed.length],
+    ['Indexed sections', allSections.length],
+    ['File types represented', catalog.types.length],
+    ['Libraries enabled', libraries.filter(library => library.enabled).length]
+  ];
+
+  $('#knowledgeCatalogSummary').innerHTML = summaryItems.map(item => `
+    <article>
+      <span>${esc(item[0])}</span>
+      <strong>${fmt(item[1])}</strong>
+    </article>
+  `).join('');
+
+  const catalogEntries = [catalog.all, ...catalog.entries];
+
+  $('#knowledgeCatalog').innerHTML = catalogEntries.length
+    ? `
+      <ul>
+        ${catalogEntries.map((entry, index) => {
+          const selected = index === 0
+            ? selectedKnowledgeSection === 'all'
+            : entry.name === selectedKnowledgeSection;
+
+          return `
+            <li>
+              <button
+                type="button"
+                class="mc-library-section ${selected ? 'active' : ''}"
+                data-catalog-section="${index === 0 ? 'all' : esc(entry.name)}"
+                aria-pressed="${selected}"
+              >
+                <span class="mc-library-section-heading">
+                  <strong>${esc(entry.name)}</strong>
+                  <span>${fmt(entry.documents.length)}</span>
+                </span>
+                <span class="mc-library-section-counts">
+                  ${fmt(entry.indexed.length)} indexed
+                  · ${fmt(entry.pending.length)} pending
+                  · ${fmt(entry.unavailable.length)} unavailable
+                </span>
+                <span class="mc-library-section-sections">
+                  ${fmt(entry.exposedSections)} sections
+                </span>
+                ${entry.attention
+                  ? `
+                    <span class="mc-library-attention">
+                      ${esc(entry.attention)}
+                    </span>
+                  `
+                  : ''}
+              </button>
+            </li>
+          `;
+        }).join('')}
+      </ul>
+    `
+    : `
+      <div class="mc-library-empty">
+        <strong>No knowledge loaded</strong>
+        <span>Add documents to begin building the catalog.</span>
+      </div>
+    `;
+
+  $('#knowledgeTypeCoverage').innerHTML = catalog.types.length
+    ? `
+      <ul>
+        ${catalog.types.map(type => `
+          <li>
+            <span class="mc-library-type-name">${esc(type.name)}</span>
+            <strong>${fmt(type.documents.length)}</strong>
+            <span>${fmt(type.percentage)}%</span>
+            <small>${fmt(type.indexed)} indexed</small>
+          </li>
+        `).join('')}
+      </ul>
+      <p>
+        Distribution reflects file types, not project completion or content
+        quality.
+      </p>
+    `
+    : `
+      <div class="mc-library-empty">
+        No file-type coverage is available.
+      </div>
+    `;
 
   $('#libraries').innerHTML = libraries.length
     ? libraries.map(library => {
@@ -1740,40 +2096,15 @@ async function renderKnowledgeWorkspace(prefetched = null) {
     : '<div class="empty">No libraries.</div>';
 
   $('#activeLibraryTitle').textContent =
-    activeLibrary?.name ||
-    'Knowledge Library';
+    activeLibrary
+      ? `ACTIVE UPLOAD LIBRARY · ${activeLibrary.name}`
+      : 'ACTIVE UPLOAD LIBRARY UNAVAILABLE';
 
-  let documents = activeLibrary
-    ? allDocuments.filter(document =>
-        document.libraryId === activeLibrary.id
-      )
-    : [];
-
-  const categoryFilter = $('#categoryFilter');
-  const selectedCategory = categoryFilter.value;
-  const categories = [...new Set(
-    documents
-      .map(document => safeText(document.category).trim())
-      .filter(Boolean)
-  )].sort((a, b) => a.localeCompare(b));
-
-  categoryFilter.innerHTML = `
-    <option value="">All categories</option>
-    ${categories.map(category => `
-      <option
-        value="${esc(category)}"
-        ${category === selectedCategory ? 'selected' : ''}
-      >
-        ${esc(category)}
-      </option>
-    `).join('')}
-  `;
+  let documents = [...selectedEntry.documents];
 
   const query = $('#documentFilter').value
     .trim()
     .toLowerCase();
-
-  const category = categoryFilter.value;
 
   if (query) {
     documents = documents.filter(document =>
@@ -1795,14 +2126,35 @@ async function renderKnowledgeWorkspace(prefetched = null) {
     );
   }
 
-  if (category) {
-    documents = documents.filter(document =>
-      document.category === category
-    );
+  if (
+    selectedDoc &&
+    !documents.some(document => document.id === selectedDoc)
+  ) {
+    selectedDoc = null;
   }
 
-  renderDocuments(documents, allSections);
+  $('#knowledgeBrowserTitle').textContent = selectedEntry.name;
+  $('#knowledgeBrowserCount').textContent = query
+    ? `${fmt(documents.length)} of ${fmt(selectedEntry.documents.length)} matching documents`
+    : `${fmt(selectedEntry.documents.length)} document${selectedEntry.documents.length === 1 ? '' : 's'}`;
+  $('#clearKnowledgeFilters').disabled =
+    selectedKnowledgeSection === 'all';
+
+  renderDocuments(
+    documents,
+    allSections,
+    libraries,
+    selectedEntry
+  );
   renderImportQueue();
+
+  $$('[data-catalog-section]').forEach(button => {
+    button.onclick = () => {
+      selectedKnowledgeSection = button.dataset.catalogSection;
+      selectedDoc = null;
+      renderKnowledgeWorkspace();
+    };
+  });
 
   $$('[data-library-select]').forEach(button => {
     button.onclick = async () => {
@@ -2497,12 +2849,26 @@ async function renderProjectWorkspace(
   });
 }
 
-function renderDocuments(documents, allSections = []) {
+function renderDocuments(
+  documents,
+  allSections = [],
+  libraries = [],
+  selectedEntry = null
+) {
+  const query = $('#documentFilter').value.trim();
+
   $('#documents').innerHTML = documents.length
     ? documents.map(document => {
         const status = documentStatus(document);
         const pageCount = documentPageCount(document);
         const modifiedAt = documentModifiedAt(document);
+        const catalogSection = documentCatalogSection(document);
+        const library = libraries.find(item =>
+          item.id === document.libraryId
+        );
+        const extractedSections = allSections.filter(section =>
+          section.documentId === document.id
+        ).length;
 
         return `
         <article
@@ -2532,10 +2898,14 @@ function renderDocuments(documents, allSections = []) {
               </span>
               <span class="mc-knowledge-document-chips">
                 <span>${esc(documentType(document))}</span>
+                <span>${esc(catalogSection)}</span>
+                ${library
+                  ? `<span>${esc(library.name)}</span>`
+                  : ''}
                 ${pageCount
                   ? `<span>${fmt(pageCount)} page${pageCount === 1 ? '' : 's'}</span>`
                   : ''}
-                <span>${fmt(document.sectionCount)} sections</span>
+                <span>${fmt(extractedSections)} sections</span>
                 ${Number(document.size) > 0
                   ? `<span>${formatBytes(document.size)}</span>`
                   : ''}
@@ -2571,8 +2941,23 @@ function renderDocuments(documents, allSections = []) {
       `;
       }).join('')
     : `
-      <div class="empty">
-        No documents in this library match the current filter.
+      <div class="mc-library-browser-empty">
+        <strong>
+          ${query
+            ? 'No matching documents'
+            : selectedEntry?.name === 'Uncategorized'
+              ? 'No uncategorized documents'
+              : selectedEntry?.name === 'All Knowledge'
+                ? 'No documents loaded'
+                : 'This catalog section is empty'}
+        </strong>
+        <span>
+          ${query
+            ? 'No documents in the selected section match the local search.'
+            : selectedEntry?.name === 'All Knowledge'
+              ? 'Use Add documents to begin building project knowledge.'
+              : 'Choose All Knowledge or another catalog section.'}
+        </span>
       </div>
     `;
 
@@ -2587,7 +2972,12 @@ function renderDocuments(documents, allSections = []) {
         allSections
       );
 
-      renderDocuments(documents, allSections);
+      renderDocuments(
+        documents,
+        allSections,
+        libraries,
+        selectedEntry
+      );
     };
   });
 
@@ -2626,38 +3016,196 @@ function renderDocuments(documents, allSections = []) {
   );
 }
 
-function renderDocumentMetadata(document, allSections = []) {
-  const sections = document
-    ? allSections.filter(section => section.documentId === document.id)
-    : [];
-  const status = document ? documentStatus(document) : null;
-  const pageCount = document ? documentPageCount(document) : null;
-  const modifiedAt = document ? documentModifiedAt(document) : '';
-  const summary = document
-    ? preferredText(
-        document.summary,
-        document.metadata?.summary,
-        document.description,
-        document.metadata?.description
-      )
-    : '';
-  const tags = document
-    ? Array.isArray(document.tags)
-      ? document.tags
-      : Array.isArray(document.metadata?.tags)
-        ? document.metadata.tags
-        : []
-    : [];
-  const library = document
-    ? engine.libraries().find(item => item.id === document.libraryId)
-    : null;
+function renderCatalogCoverage() {
+  const context = knowledgeCatalogContext;
 
-  $('#documentMetadata').innerHTML = document
-    ? `
+  $('#documentDetailsEyebrow').textContent = 'CATALOG COVERAGE';
+  $('#documentDetailsTitle').textContent = 'Section Coverage';
+
+  if (!context?.selectedEntry) {
+    $('#documentMetadata').innerHTML = `
+      <div class="mc-library-browser-empty">
+        <strong>Catalog coverage unavailable</strong>
+        <span>No current catalog section is available.</span>
+      </div>
+    `;
+    return;
+  }
+
+  const entry = context.selectedEntry;
+  const typeRows = ['PDF', 'Word', 'Excel', 'Images', 'Text', 'Web/HTML', 'Other']
+    .map(name => ({
+      count: entry.documents.filter(document =>
+        knowledgeTypeGroup(document) === name
+      ).length,
+      name
+    }))
+    .filter(type => type.count > 0);
+  const missingCategory = entry.documents.filter(document =>
+    !safeText(document.category).trim() &&
+    !preferredText(
+      document.metadata?.category,
+      document.metadata?.documentCategory,
+      document.metadata?.knowledgeSection
+    ).trim() &&
+    !(Array.isArray(document.tags) && document.tags.length) &&
+    !(Array.isArray(document.metadata?.tags) && document.metadata.tags.length)
+  ).length;
+  const enabledEmptyLibraries = context.libraries.filter(library =>
+    library.enabled &&
+    !context.catalog.all.documents.some(document =>
+      document.libraryId === library.id
+    )
+  );
+  const disabledWithDocuments = context.libraries.filter(library =>
+    !library.enabled &&
+    entry.documents.some(document =>
+      document.libraryId === library.id
+    )
+  );
+  const attention = [
+    entry.pending.length
+      ? `${entry.pending.length} pending document${entry.pending.length === 1 ? '' : 's'}`
+      : '',
+    entry.unavailable.length
+      ? `${entry.unavailable.length} unavailable document${entry.unavailable.length === 1 ? '' : 's'}`
+      : '',
+    entry.unknown.length
+      ? `${entry.unknown.length} unrecognized document status${entry.unknown.length === 1 ? '' : 'es'}`
+      : '',
+    entry.indexedWithoutSections.length
+      ? `${entry.indexedWithoutSections.length} indexed document${entry.indexedWithoutSections.length === 1 ? '' : 's'} with zero exposed sections`
+      : '',
+    entry.documents.length && entry.exposedSections === 0
+      ? 'No indexed sections are exposed for this catalog section'
+      : '',
+    missingCategory
+      ? `${missingCategory} document${missingCategory === 1 ? '' : 's'} without category metadata`
+      : '',
+    ...enabledEmptyLibraries.map(library =>
+      `${library.name} is enabled with no documents`
+    ),
+    ...disabledWithDocuments.map(library =>
+      `${library.name} is disabled and contributes documents`
+    )
+  ].filter(Boolean);
+
+  $('#documentMetadata').innerHTML = `
+    <header class="mc-library-coverage-header">
+      <span>SELECTED CATALOG SECTION</span>
+      <h3>${esc(entry.name)}</h3>
+      <p>
+        ${fmt(entry.documents.length)} document${entry.documents.length === 1 ? '' : 's'}
+        across ${fmt(entry.libraries.length)} contributing
+        ${entry.libraries.length === 1 ? 'library' : 'libraries'}.
+      </p>
+    </header>
+
+    <section class="mc-library-coverage-metrics">
+      <article><span>Documents</span><strong>${fmt(entry.documents.length)}</strong></article>
+      <article><span>Indexed</span><strong>${fmt(entry.indexed.length)}</strong></article>
+      <article><span>Pending</span><strong>${fmt(entry.pending.length)}</strong></article>
+      <article><span>Unavailable</span><strong>${fmt(entry.unavailable.length)}</strong></article>
+      <article><span>Sections</span><strong>${fmt(entry.exposedSections)}</strong></article>
+    </section>
+
+    <section class="mc-library-coverage-section">
+      <h4>File-type breakdown</h4>
+      ${typeRows.length
+        ? `
+          <ul class="mc-library-coverage-types">
+            ${typeRows.map(type => `
+              <li>
+                <span>${esc(type.name)}</span>
+                <strong>${fmt(type.count)}</strong>
+              </li>
+            `).join('')}
+          </ul>
+        `
+        : `
+          <div class="mc-library-empty">
+            File-type coverage unavailable.
+          </div>
+        `}
+    </section>
+
+    <section class="mc-library-coverage-section">
+      <h4>Contributing libraries</h4>
+      ${entry.libraries.length
+        ? `
+          <ul class="mc-library-contributors">
+            ${entry.libraries.map(library => `
+              <li>
+                <span>${esc(library.name)}</span>
+                <strong>${library.enabled ? 'Enabled' : 'Disabled'}</strong>
+              </li>
+            `).join('')}
+          </ul>
+        `
+        : `
+          <div class="mc-library-empty">No contributing libraries.</div>
+        `}
+    </section>
+
+    <section class="mc-library-coverage-section">
+      <h4>Attention</h4>
+      ${attention.length
+        ? `
+          <ul class="mc-library-coverage-attention">
+            ${attention.map(item => `<li>${esc(item)}</li>`).join('')}
+          </ul>
+        `
+        : `
+          <p class="mc-library-clear">
+            No immediate catalog-tracking items were detected.
+          </p>
+        `}
+    </section>
+  `;
+}
+
+function renderDocumentMetadata(document, allSections = []) {
+  if (!document) {
+    renderCatalogCoverage();
+    return;
+  }
+
+  const sections = document
+    .filter(section => section.documentId === document.id);
+  const status = documentStatus(document);
+  const pageCount = documentPageCount(document);
+  const modifiedAt = documentModifiedAt(document);
+  const summary = preferredText(
+    document.summary,
+    document.metadata?.summary,
+    document.description,
+    document.metadata?.description
+  );
+  const tags = Array.isArray(document.tags)
+    ? document.tags
+    : Array.isArray(document.metadata?.tags)
+      ? document.metadata.tags
+      : [];
+  const library = engine.libraries().find(
+    item => item.id === document.libraryId
+  );
+
+  $('#documentDetailsEyebrow').textContent = 'DOCUMENT CONTROL';
+  $('#documentDetailsTitle').textContent = 'Document Details';
+  $('#documentMetadata').innerHTML = `
       <header class="mc-knowledge-detail-header">
-        <span class="mc-knowledge-status ${status.className}">
-          ${esc(status.label)}
-        </span>
+        <div class="mc-library-detail-actions">
+          <span class="mc-knowledge-status ${status.className}">
+            ${esc(status.label)}
+          </span>
+          <button
+            type="button"
+            id="backToCatalogCoverage"
+            class="subtle"
+          >
+            Back to section
+          </button>
+        </div>
         <h3>${esc(document.title || document.name)}</h3>
         <p>${esc(document.name)}</p>
       </header>
@@ -2756,12 +3304,12 @@ function renderDocumentMetadata(document, allSections = []) {
           ${library ? ` · ${esc(library.name)}` : ''}
         </p>
       </section>
-    `
-    : `
-      <div class="empty">
-        Select a document to review its metadata and indexed structure.
-      </div>
     `;
+
+  $('#backToCatalogCoverage').onclick = () => {
+    selectedDoc = null;
+    renderKnowledgeWorkspace();
+  };
 }
 
 function formatBytes(bytes = 0) {
