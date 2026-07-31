@@ -1,4 +1,5 @@
 import { textValue } from './data-model.js';
+import { normalizeRegion } from './pdf-source.js';
 
 const safeId = value => textValue(value).trim();
 
@@ -26,7 +27,12 @@ export function createSourceTarget({
   evidenceIndex,
   originatingWorkspace = 'evidence',
   originatingMessageId,
-  destination
+  destination,
+  pageNumber,
+  sheetId,
+  sheetNumber,
+  region,
+  observationId
 } = {}) {
   const targetDocumentId = safeId(documentId);
   const targetSectionId = safeId(sectionId);
@@ -44,7 +50,12 @@ export function createSourceTarget({
       : null,
     originatingWorkspace: safeId(originatingWorkspace),
     originatingMessageId: safeId(originatingMessageId),
-    destination: safeId(destination)
+    destination: safeId(destination),
+    pageNumber: Number.isInteger(Number(pageNumber)) && Number(pageNumber) > 0 ? Number(pageNumber) : null,
+    sheetId: safeId(sheetId),
+    sheetNumber: safeId(sheetNumber),
+    region: region ? normalizeRegion(region) : null,
+    observationId: safeId(observationId)
   };
 }
 
@@ -52,7 +63,9 @@ export function resolveSourceTarget(target, {
   projects = [],
   libraries = [],
   documents = [],
-  sections = []
+  sections = [],
+  analyses = [],
+  sourceFiles = []
 } = {}) {
   if (!target?.documentId) {
     return { status: 'none', target: null, document: null, section: null };
@@ -82,14 +95,29 @@ export function resolveSourceTarget(target, {
         safeId(item?.documentId) === target.documentId
       ) || null
     : null;
+  const sourceFile = sourceFiles.find(item => safeId(item?.documentId) === target.documentId) || null;
+  const analysis = analyses.find(item => safeId(item?.documentId) === target.documentId) || null;
+  const sheet = target.sheetId
+    ? analysis?.sheets?.find(item => safeId(item?.sheetId) === target.sheetId) || null
+    : target.pageNumber
+      ? analysis?.sheets?.find(item => Number(item?.pageNumber) === target.pageNumber) || null
+      : null;
+  const observation = target.observationId
+    ? analysis?.observations?.find(item => safeId(item?.observationId) === target.observationId && (!sheet || item.sheetId === sheet.sheetId)) || null
+    : null;
+
+  let status = section ? 'section' : 'missing-section';
+  if (target.sheetId || target.pageNumber) {
+    status = !sourceFile ? 'missing-source' : !sheet ? 'missing-page' : target.observationId && !observation ? 'missing-observation' : observation || target.region ? 'drawing-region' : 'drawing-sheet';
+  }
 
   return {
-    status: section ? 'section' : 'missing-section',
+    status,
     target,
     document,
     section,
     project,
-    library,
+    library, sourceFile, analysis, sheet, observation,
     validProjectId: project ? target.projectId : '',
     validLibraryId: library ? target.libraryId : ''
   };
@@ -99,10 +127,12 @@ export function sourceNavigationActions(value = {}) {
   const documentId = safeId(value.documentId);
   const sectionId = safeId(value.sectionId);
 
-  return {
+  const result = {
     viewInDocument: Boolean(documentId && sectionId),
     openSourceInspector: Boolean(documentId && sectionId)
   };
+  if (documentId && (safeId(value.sheetId) || Number(value.pageNumber) > 0)) result.openDrawing = true;
+  return result;
 }
 
 export function sourceNavigationDestination(target, destination) {

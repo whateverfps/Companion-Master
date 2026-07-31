@@ -19,6 +19,7 @@ export const CONTEXT_ACTIVATION_SOURCES = Object.freeze({
   knowledgeCatalog: 'Knowledge Catalog document',
   engineeringWorkspace: 'Engineering Workspace launch',
   inspectionRecord: 'Inspection Record',
+  constructionWorkPackage: 'Construction Work Package',
   knowledgeObjectClose: 'Knowledge Object close',
   newConversation: 'New conversation',
   projectRemoval: 'Project removal'

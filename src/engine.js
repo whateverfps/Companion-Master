@@ -1,6 +1,15 @@
-import { parseFiles } from './parsers.js';
+import { parseFiles, parsePdfFile } from './parsers.js';
 import { arrayValue } from './data-model.js';
 import { createIdentifier } from './identifiers.js';
+import {
+  defaultConversationTitle,
+  migrateLegacyChat,
+  normalizeAttachmentDocumentIds,
+  normalizeConversation,
+  renameConversation as renameConversationRecord,
+  selectActiveConversation,
+  sortConversations
+} from './conversations.js';
 import {
   nextInspectionNumber,
   normalizeInspectionRecord,
@@ -19,11 +28,15 @@ import {
   moduleStatus
 } from './diagnostics.js';
 import { analyzeCorpus } from './core/reasoning.js';
+import { createPdfSourceRecord, inspectStorageCapacity } from './pdf-source.js';
+import { buildDrawingAnalysis } from './drawing-intelligence.js';
 
 const STATE_KEY = 'mc-master-state-v2';
 const DOC_DB = 'mc-master-documents-v2';
-const DOC_DB_VERSION = 4;
+const DOC_DB_VERSION = 5;
 const APP_VERSION = '2.8.1';
+const STARTUP_EXPERIENCES = new Set(['mission-control', 'professional-workspace']);
+const normalizeStartupExperience = value => STARTUP_EXPERIENCES.has(value) ? value : 'mission-control';
 
 const defaults = {
   settings: {
@@ -32,7 +45,8 @@ const defaults = {
     openaiKey: '',
     timeout: 180000,
     mode: 'offline',
-    topK: 10
+    topK: 10,
+    startupExperience: 'mission-control'
   },
   projects: [
     {
@@ -53,6 +67,8 @@ const defaults = {
   ],
   activeLibrary: 'general-library',
   chat: [],
+  conversations: [],
+  activeConversationId: '',
   evaluations: []
 };
 
@@ -88,6 +104,10 @@ function loadState() {
       }
     };
 
+    loaded.settings.startupExperience = normalizeStartupExperience(
+      loaded.settings.startupExperience
+    );
+
     loaded.projects = Array.isArray(loaded.projects)
       ? loaded.projects
       : structuredClone(defaults.projects);
@@ -96,9 +116,16 @@ function loadState() {
       ? loaded.libraries
       : structuredClone(defaults.libraries);
 
-    loaded.chat = Array.isArray(loaded.chat)
-      ? loaded.chat
-      : [];
+    loaded.chat = Array.isArray(loaded.chat) ? loaded.chat : [];
+    const migrated = migrateLegacyChat({
+      chat: loaded.chat,
+      conversations: loaded.conversations,
+      activeConversationId: loaded.activeConversationId,
+      projectId: loaded.activeProject
+    });
+    loaded.conversations = migrated.conversations;
+    loaded.activeConversationId = migrated.activeConversationId;
+    loaded.chat = selectActiveConversation(loaded.conversations, loaded.activeConversationId)?.messages || [];
 
     loaded.evaluations = Array.isArray(loaded.evaluations)
       ? loaded.evaluations
@@ -145,7 +172,9 @@ function loadState() {
 }
 
 function save() {
-  localStorage.setItem(STATE_KEY, JSON.stringify(state));
+  const { chat: compatibilityChat, ...persistedState } = state;
+  void compatibilityChat;
+  localStorage.setItem(STATE_KEY, JSON.stringify(persistedState));
 }
 
 async function contentHash(file) {
@@ -239,6 +268,20 @@ function openDB() {
       if (!inspectionRecords.indexNames.contains('projectId')) inspectionRecords.createIndex('projectId', 'projectId');
       if (!inspectionRecords.indexNames.contains('inspectionNumber')) inspectionRecords.createIndex('inspectionNumber', 'inspectionNumber');
       if (!inspectionRecords.indexNames.contains('status')) inspectionRecords.createIndex('status', 'status');
+
+      let sourceFiles;
+      if (!db.objectStoreNames.contains('sourceFiles')) sourceFiles = db.createObjectStore('sourceFiles', { keyPath: 'documentId' });
+      else sourceFiles = request.transaction.objectStore('sourceFiles');
+      if (!sourceFiles.indexNames.contains('projectId')) sourceFiles.createIndex('projectId', 'projectId');
+      if (!sourceFiles.indexNames.contains('contentHash')) sourceFiles.createIndex('contentHash', 'contentHash');
+
+      let drawingAnalyses;
+      if (!db.objectStoreNames.contains('drawingAnalyses')) drawingAnalyses = db.createObjectStore('drawingAnalyses', { keyPath: 'drawingSetId' });
+      else drawingAnalyses = request.transaction.objectStore('drawingAnalyses');
+      if (!drawingAnalyses.indexNames.contains('projectId')) drawingAnalyses.createIndex('projectId', 'projectId');
+      if (!drawingAnalyses.indexNames.contains('documentId')) drawingAnalyses.createIndex('documentId', 'documentId');
+      if (!drawingAnalyses.indexNames.contains('analysisVersion')) drawingAnalyses.createIndex('analysisVersion', 'analysisVersion');
+      if (!drawingAnalyses.indexNames.contains('status')) drawingAnalyses.createIndex('status', 'status');
     };
 
     request.onsuccess = () => resolve(request.result);
@@ -297,6 +340,15 @@ async function all(store, index = null, key = null) {
   });
 }
 
+async function one(store, key) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(store, 'readonly').objectStore(store).get(key);
+    request.onsuccess = () => { db.close(); resolve(request.result || null); };
+    request.onerror = () => { db.close(); reject(request.error); };
+  });
+}
+
 async function putMany(store, items) {
   if (!Array.isArray(items) || items.length === 0) {
     return;
@@ -332,9 +384,11 @@ async function putMany(store, items) {
 async function commitKnowledgeImport(
   documents,
   sections,
-  lineageUpdates = []
+  lineageUpdates = [],
+  sourceFiles = [],
+  drawingAnalyses = []
 ) {
-  if (!documents.length && !sections.length && !lineageUpdates.length) {
+  if (!documents.length && !sections.length && !lineageUpdates.length && !sourceFiles.length && !drawingAnalyses.length) {
     return;
   }
 
@@ -342,11 +396,13 @@ async function commitKnowledgeImport(
 
   return new Promise((resolve, reject) => {
     const transaction = db.transaction(
-      ['documents', 'sections'],
+      ['documents', 'sections', 'sourceFiles', 'drawingAnalyses'],
       'readwrite'
     );
     const documentStore = transaction.objectStore('documents');
     const sectionStore = transaction.objectStore('sections');
+    const sourceFileStore = transaction.objectStore('sourceFiles');
+    const drawingAnalysisStore = transaction.objectStore('drawingAnalyses');
 
     for (const document of lineageUpdates) {
       documentStore.put(document);
@@ -359,6 +415,8 @@ async function commitKnowledgeImport(
     for (const section of sections) {
       sectionStore.put(section);
     }
+    for (const sourceFile of sourceFiles) sourceFileStore.put(sourceFile);
+    for (const analysis of drawingAnalyses) drawingAnalysisStore.put(analysis);
 
     transaction.oncomplete = () => {
       db.close();
@@ -391,7 +449,7 @@ async function delByIndex(store, index, key) {
     const objectStore = transaction.objectStore(store);
 
     for (const row of rows) {
-      objectStore.delete(row.id || row.inspectionId);
+      objectStore.delete(row.id || row.inspectionId || row.documentId || row.drawingSetId);
     }
 
     transaction.oncomplete = () => {
@@ -408,7 +466,80 @@ async function delByIndex(store, index, key) {
 
 export const engine = {
   state() {
-    return structuredClone(state);
+    const active = selectActiveConversation(state.conversations, state.activeConversationId);
+    return structuredClone({ ...state, chat: active?.messages || [] });
+  },
+
+  conversations() {
+    return structuredClone(sortConversations(state.conversations));
+  },
+
+  activeConversation() {
+    return structuredClone(selectActiveConversation(state.conversations, state.activeConversationId));
+  },
+
+  createConversation({ projectId = '', title = '', now = new Date().toISOString() } = {}) {
+    const conversation = normalizeConversation({
+      conversationId: createIdentifier(),
+      title,
+      projectId: projectId && state.projects.some(project => project.id === projectId) ? projectId : '',
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      attachmentDocumentIds: []
+    }, { now });
+    state.conversations.push(conversation);
+    state.activeConversationId = conversation.conversationId;
+    state.chat = conversation.messages;
+    save();
+    return structuredClone(conversation);
+  },
+
+  activateConversation(conversationId) {
+    const conversation = state.conversations.find(item => item.conversationId === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    state.activeConversationId = conversationId;
+    state.chat = conversation.messages;
+    save();
+    return structuredClone(conversation);
+  },
+
+  renameConversation(conversationId, title) {
+    const index = state.conversations.findIndex(item => item.conversationId === conversationId);
+    if (index < 0) throw new Error('Conversation not found.');
+    state.conversations[index] = renameConversationRecord(state.conversations[index], title, new Date().toISOString());
+    save();
+    return structuredClone(state.conversations[index]);
+  },
+
+  appendConversationMessage(message, conversationId = state.activeConversationId) {
+    const conversation = state.conversations.find(item => item.conversationId === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    const normalized = { ...structuredClone(message), id: message?.id || createIdentifier(), createdAt: message?.createdAt || new Date().toISOString() };
+    conversation.messages.push(normalized);
+    conversation.updatedAt = normalized.createdAt;
+    if (conversation.title === 'New conversation') conversation.title = defaultConversationTitle(conversation.messages);
+    if (conversationId === state.activeConversationId) state.chat = conversation.messages;
+    save();
+    return structuredClone(normalized);
+  },
+
+  addConversationAttachment(documentId, conversationId = state.activeConversationId) {
+    const conversation = state.conversations.find(item => item.conversationId === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    conversation.attachmentDocumentIds = normalizeAttachmentDocumentIds([...conversation.attachmentDocumentIds, documentId]);
+    conversation.updatedAt = new Date().toISOString();
+    save();
+    return structuredClone(conversation);
+  },
+
+  removeConversationAttachment(documentId, conversationId = state.activeConversationId) {
+    const conversation = state.conversations.find(item => item.conversationId === conversationId);
+    if (!conversation) throw new Error('Conversation not found.');
+    conversation.attachmentDocumentIds = conversation.attachmentDocumentIds.filter(id => id !== documentId);
+    conversation.updatedAt = new Date().toISOString();
+    save();
+    return structuredClone(conversation);
   },
 
   async healthCheck() {
@@ -481,15 +612,21 @@ export const engine = {
   },
 
   saveSettings(patch) {
+    const normalizedPatch = {
+      ...patch,
+      ...(Object.hasOwn(patch, 'startupExperience')
+        ? { startupExperience: normalizeStartupExperience(patch.startupExperience) }
+        : {})
+    };
     state.settings = {
       ...state.settings,
-      ...patch
+      ...normalizedPatch
     };
 
     save();
 
     logger.info('Settings updated', {
-      keys: Object.keys(patch).filter(key => key !== 'openaiKey')
+      keys: Object.keys(normalizedPatch).filter(key => key !== 'openaiKey')
     });
   },
 
@@ -564,6 +701,8 @@ export const engine = {
 
     await delByIndex('sections', 'projectId', id);
     await delByIndex('inspectionRecords', 'projectId', id);
+    await delByIndex('sourceFiles', 'projectId', id);
+    await delByIndex('drawingAnalyses', 'projectId', id);
 
     const documents = await all('documents', 'projectId', id);
 
@@ -715,6 +854,57 @@ export const engine = {
     return libraryId
       ? documentCache.documents.filter(document => document.libraryId === libraryId)
       : documentCache.documents;
+  },
+
+  async sourceFile(documentId) {
+    const record = await one('sourceFiles', documentId);
+    if (record?.projectId !== state.activeProject) return null;
+    return record ? structuredClone(record) : null;
+  },
+
+  async drawingAnalysis(documentId) {
+    const records = await all('drawingAnalyses', 'documentId', documentId);
+    const record = records.find(item => item.projectId === state.activeProject);
+    return record ? structuredClone(record) : null;
+  },
+
+  async drawingAnalyses() {
+    return structuredClone(await all('drawingAnalyses', 'projectId', state.activeProject));
+  },
+
+  async saveDrawingAnalysis(analysis) {
+    if (!analysis?.drawingSetId || analysis.projectId !== state.activeProject) throw new Error('Drawing analysis does not belong to the active project.');
+    const document = (await this.documents()).find(item => item.id === analysis.documentId);
+    if (!document) throw new Error('Drawing analysis document is unavailable.');
+    await tx('drawingAnalyses', 'readwrite', store => store.put(structuredClone(analysis)));
+    return structuredClone(analysis);
+  },
+
+  async reattachPdfSource(documentId, file) {
+    const document = (await this.documents()).find(item => item.id === documentId);
+    if (!document) throw new Error('Document not found.');
+    if (!(file instanceof Blob) || (file.type && file.type !== 'application/pdf')) throw new Error('Select the original PDF file.');
+    if (!document.contentHash) throw new Error('The stored document has no authoritative content hash, so the original PDF cannot be validated deterministically. Reimport it as a new document.');
+    const hash = await contentHash(file);
+    if (document.contentHash && (!hash || hash !== document.contentHash)) throw new Error('The selected PDF does not match the stored document hash.');
+    const capacity = await inspectStorageCapacity(file.size);
+    if (capacity.sufficient === false) throw new Error(`Not enough browser storage is available for this ${file.size}-byte PDF.`);
+    const parsed = await parsePdfFile(file);
+    const sourceBlob = file.type === 'application/pdf' ? file : new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
+    const sourceRecord = createPdfSourceRecord({ documentId, projectId: state.activeProject, sourceBlob, contentHash: hash || document.contentHash || '', storedAt: new Date().toISOString() });
+    const analysis = buildDrawingAnalysis({ documentId, projectId: state.activeProject, pages: parsed.pages, analyzedAt: new Date().toISOString() });
+    const db = await openDB();
+    await new Promise((resolve, reject) => {
+      const transaction = db.transaction(['documents', 'sourceFiles', 'drawingAnalyses'], 'readwrite');
+      transaction.objectStore('documents').put({ ...document, pageCount: parsed.pageCount, sourceAvailability: 'available', drawingAnalysisStatus: analysis.status });
+      transaction.objectStore('sourceFiles').put(sourceRecord);
+      transaction.objectStore('drawingAnalyses').put(analysis);
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => { db.close(); reject(transaction.error); };
+      transaction.onabort = () => { db.close(); reject(transaction.error || new Error('PDF reattachment transaction aborted.')); };
+    });
+    invalidateKnowledgeCache();
+    return { documentId, drawingSetId: analysis.drawingSetId, pageCount: parsed.pageCount };
   },
 
   async inspectionRecords({ includeArchived = false } = {}) {
@@ -918,6 +1108,14 @@ export const engine = {
           contentHash: acceptedDescriptors[index]?.contentHash || null
         }))
       };
+      const sourceFiles = (parsed.sourceFiles || []).map(sourceFile => {
+        const descriptorIndex = parsed.documents.findIndex(document => document.id === sourceFile.documentId);
+        return { ...sourceFile, contentHash: acceptedDescriptors[descriptorIndex]?.contentHash || '' };
+      });
+      for (const sourceFile of sourceFiles) {
+        const capacity = await inspectStorageCapacity(sourceFile.byteLength);
+        if (capacity.sufficient === false) throw new Error(`Not enough browser storage is available to preserve ${sourceFile.byteLength} PDF bytes. Import was not registered.`);
+      }
       const successfulDocuments = parsed.documents.filter(document =>
         document.status === 'verified'
       );
@@ -957,6 +1155,16 @@ export const engine = {
             `Document verification failed for ${document.name}: expected ${document.sectionCount} section(s), found ${detectedSections}.`
           );
         }
+      }
+
+      const successfulSourceFiles = sourceFiles.filter(sourceFile => successfulIds.has(sourceFile.documentId));
+      const successfulDrawingAnalyses = (parsed.drawingAnalyses || []).filter(analysis => successfulIds.has(analysis.documentId));
+      for (const document of successfulDocuments.filter(item => item.extension === 'pdf')) {
+        const source = successfulSourceFiles.find(item => item.documentId === document.id);
+        const analysis = successfulDrawingAnalyses.find(item => item.documentId === document.id);
+        if (!source || !analysis) throw new Error(`Authoritative PDF source registration was unavailable for ${document.name}. Import was not registered.`);
+        document.sourceAvailability = 'available';
+        document.drawingAnalysisStatus = analysis.status;
       }
 
       successfulDocuments.forEach((document, index) => {
@@ -1012,7 +1220,9 @@ export const engine = {
       await commitKnowledgeImport(
         successfulDocuments,
         registeredSections,
-        lineageUpdates
+        lineageUpdates,
+        successfulSourceFiles,
+        successfulDrawingAnalyses
       );
       invalidateKnowledgeCache();
 
@@ -1055,6 +1265,8 @@ export const engine = {
       'documentId',
       id
     );
+    await tx('sourceFiles', 'readwrite', store => store.delete(id));
+    await delByIndex('drawingAnalyses', 'documentId', id);
     invalidateKnowledgeCache();
 
     await tx(
@@ -1068,8 +1280,20 @@ export const engine = {
     });
   },
 
-  async search(query) {
-    const sections = await this.retrievableSections();
+  async search(query, options = {}) {
+    const allSections = await this.retrievableSections();
+    const scopeIds = normalizeAttachmentDocumentIds(options.documentIds);
+    const sectionIds = normalizeAttachmentDocumentIds(options.sectionIds);
+    const pageNumbers = [...new Set((Array.isArray(options.pageNumbers) ? options.pageNumbers : []).map(Number).filter(value => Number.isInteger(value) && value > 0))];
+    let sections = scopeIds.length
+      ? allSections.filter(section => scopeIds.includes(section.documentId))
+      : allSections;
+    if (sectionIds.length) sections = sections.filter(section => sectionIds.includes(section.id));
+    if (pageNumbers.length) sections = sections.filter(section => {
+      const start = Number(section.pageStart || section.metadata?.pageRange?.start || 0);
+      const end = Number(section.pageEnd || section.metadata?.pageRange?.end || start);
+      return pageNumbers.some(page => start <= page && end >= page);
+    });
 
     const hits = retrieve(
       query,
@@ -1198,7 +1422,7 @@ export const engine = {
     });
   },
 
-  async ask(prompt, mode = state.settings.mode) {
+  async ask(prompt, mode = state.settings.mode, options = {}) {
     const cleanedPrompt = String(prompt || '').trim();
 
     if (!cleanedPrompt) {
@@ -1210,7 +1434,14 @@ export const engine = {
       promptLength: cleanedPrompt.length
     });
 
-    const hits = await this.search(cleanedPrompt);
+    const documentIds = normalizeAttachmentDocumentIds(options.documentIds);
+    const sectionIds = normalizeAttachmentDocumentIds(options.sectionIds);
+    const pageNumbers = [...new Set((Array.isArray(options.pageNumbers) ? options.pageNumbers : []).map(Number).filter(value => Number.isInteger(value) && value > 0))];
+    const sheetIds = normalizeAttachmentDocumentIds(options.sheetIds);
+    const hits = await this.search(cleanedPrompt, { documentIds, sectionIds, pageNumbers });
+    if ((documentIds.length || sectionIds.length || pageNumbers.length) && !hits.length && !options.drawingContext) {
+      throw new Error(pageNumbers.length || sectionIds.length ? 'The exact drawing scope has no usable indexed section evidence. The drawing viewer remains available.' : 'The selected attachments do not contain usable indexed sections for this question.');
+    }
 
     let answer;
 
@@ -1303,18 +1534,30 @@ export const engine = {
       retrievalMeta: hits.meta || {},
       citationVerification,
       createdAt: new Date().toISOString(),
-      mode
+      mode,
+      drawingContext: options.drawingContext ? {
+        projectId: String(options.drawingContext.projectId || ''), documentId: String(options.drawingContext.documentId || ''),
+        drawingSetId: String(options.drawingContext.drawingSetId || ''), sheetId: String(options.drawingContext.sheetId || ''),
+        pageNumber: Number(options.drawingContext.pageNumber) || null, sheetNumber: String(options.drawingContext.sheetNumber || ''),
+        observationId: String(options.drawingContext.observationId || ''), region: options.drawingContext.region ? structuredClone(options.drawingContext.region) : null
+      } : null,
+      workPackageReferences: options.workPackageReferences ? {
+        matchingSheetIds: normalizeAttachmentDocumentIds(options.workPackageReferences.matchingSheetIds),
+        matchingObservationIds: normalizeAttachmentDocumentIds(options.workPackageReferences.matchingObservationIds),
+        documentIds, sectionIds, pageNumbers, sheetIds
+      } : null
     };
 
-    state.chat.push({
+    if (!selectActiveConversation(state.conversations, state.activeConversationId)) {
+      this.createConversation({ projectId: state.activeProject });
+    }
+    this.appendConversationMessage({
       id: createIdentifier(),
       role: 'user',
       content: cleanedPrompt,
       createdAt: new Date().toISOString()
     });
-
-    state.chat.push(message);
-    save();
+    this.appendConversationMessage(message);
 
     logger.info('Analysis completed', {
       mode,
@@ -1328,7 +1571,13 @@ export const engine = {
   },
 
   clearChat() {
-    state.chat = [];
+    const active = state.conversations.find(item => item.conversationId === state.activeConversationId);
+    if (active) {
+      active.messages = [];
+      active.title = 'New conversation';
+      active.updatedAt = new Date().toISOString();
+      state.chat = active.messages;
+    }
     save();
   },
 
@@ -1386,6 +1635,8 @@ export const engine = {
       documents: await this.documents(),
       sections: await this.sections(),
       inspectionRecords: await this.inspectionRecords({ includeArchived: true }),
+      drawingAnalyses: await this.drawingAnalyses(),
+      sourceFilesIncluded: false,
       evaluations: structuredClone(state.evaluations)
     };
   },
@@ -1522,13 +1773,15 @@ export const engine = {
         newId
       );
 
+      const pdf = String(document.extension || '').toLowerCase() === 'pdf' || String(document.type || '').toLowerCase().includes('pdf');
       return {
         ...document,
         id: newId,
         projectId: importedProject.id,
         libraryId:
           libraryIdMap.get(document.libraryId) ||
-          fallbackLibraryId
+          fallbackLibraryId,
+        ...(pdf ? { sourceAvailability: 'reattachment-required' } : {})
       };
     });
 
@@ -1580,6 +1833,15 @@ export const engine = {
             return mappedEarlier && mappedLater ? `${mappedEarlier}->${mappedLater}` : '';
           }).filter(Boolean)
     }));
+    const importedDrawingAnalyses = (Array.isArray(data.drawingAnalyses) ? data.drawingAnalyses : []).flatMap(sourceAnalysis => {
+      const mappedDocumentId = documentIdMap.get(sourceAnalysis.documentId);
+      if (!mappedDocumentId) return [];
+      const pages = (sourceAnalysis.sheets || []).map(sheet => ({
+        pageNumber: sheet.pageNumber, width: sheet.pageWidth, height: sheet.pageHeight,
+        rotation: sheet.rotation, textItems: sheet.textItems || []
+      }));
+      return [buildDrawingAnalysis({ documentId: mappedDocumentId, projectId: importedProject.id, pages, analyzedAt: sourceAnalysis.analyzedAt || new Date().toISOString() })];
+    });
     for (const record of importedInspectionRecords) {
       const validation = validateInspectionRecord(record, { projectIds: [importedProject.id], existingRecords: [...existingInspectionRecords, ...importedInspectionRecords], currentInspectionId: record.inspectionId });
       if (!validation.valid) throw new Error(`Invalid imported Inspection Record: ${validation.errors.join(' ')}`);
@@ -1592,6 +1854,7 @@ export const engine = {
       importedSections
     );
     await putMany('inspectionRecords', importedInspectionRecords);
+    await putMany('drawingAnalyses', importedDrawingAnalyses);
     invalidateKnowledgeCache();
 
     state.evaluations.push(

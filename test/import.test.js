@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 function createLocalStorage() {
   const values = new Map();
@@ -60,7 +61,7 @@ function createIndexedDB() {
           const records = ensureStore(operation.store).records;
 
           if (operation.type === 'put') {
-            records.set(operation.value.id || operation.value.inspectionId, structuredClone(operation.value));
+            records.set(operation.value.id || operation.value.inspectionId || operation.value.documentId || operation.value.drawingSetId, structuredClone(operation.value));
           } else {
             records.delete(operation.key);
           }
@@ -101,7 +102,7 @@ function createIndexedDB() {
         const request = {};
         setTimeout(() => {
               request.result = matchingRecords(storeName, indexName, key)
-                .map(record => record.id || record.inspectionId);
+                .map(record => record.id || record.inspectionId || record.documentId || record.drawingSetId);
           request.onsuccess?.();
         }, 0);
         return request;
@@ -132,6 +133,9 @@ function createIndexedDB() {
       getAll() {
         return requestResult([...store.records.values()]);
       },
+      get(key) {
+        return requestResult(store.records.get(key) || null);
+      },
       index(indexName) {
         const api = indexApi(name, indexName, operations);
 
@@ -141,12 +145,12 @@ function createIndexedDB() {
             const request = {};
             setTimeout(() => {
               request.result = matchingRecords(name, indexName, key)
-                .map(record => record.id || record.inspectionId);
+                .map(record => record.id || record.inspectionId || record.documentId || record.drawingSetId);
               request.onsuccess?.();
 
               for (const record of matchingRecords(name, indexName, key)) {
                 operations.push({
-                  key: record.id || record.inspectionId,
+                  key: record.id || record.inspectionId || record.documentId || record.drawingSetId,
                   store: name,
                   type: 'delete'
                 });
@@ -196,6 +200,9 @@ function createIndexedDB() {
     },
     failNextSectionWrite() {
       failNextSectionWrite = true;
+    },
+    storeNames() {
+      return [...stores.keys()].sort();
     }
   };
 }
@@ -231,6 +238,19 @@ const {
   DEMO_PROJECT_ID
 } = await import('../src/demo-project.js');
 const { retrieve } = await import('../src/retrieval.js');
+
+test('schema version 5 preserves existing settings and all prior stores', async () => {
+  await engine.documents();
+  assert.match(readFileSync(new URL('../src/engine.js', import.meta.url), 'utf8'), /const DOC_DB_VERSION = 5;/);
+  assert.equal(engine.state().settings.startupExperience, 'mission-control');
+  assert.deepEqual(database.storeNames(), ['documents', 'drawingAnalyses', 'inspectionRecords', 'sections', 'sourceFiles']);
+  engine.saveSettings({ startupExperience: 'professional-workspace' });
+  assert.equal(engine.state().settings.startupExperience, 'professional-workspace');
+  assert.equal(JSON.parse(globalThis.localStorage.getItem('mc-master-state-v2')).settings.startupExperience, 'professional-workspace');
+  engine.saveSettings({ startupExperience: 'unsupported' });
+  assert.equal(engine.state().settings.startupExperience, 'mission-control');
+  assert.deepEqual(database.storeNames(), ['documents', 'drawingAnalyses', 'inspectionRecords', 'sections', 'sourceFiles']);
+});
 
 test('successful imports atomically register one document and its sections', async () => {
   const stages = [];
@@ -471,6 +491,9 @@ test('deterministic import rejects collisions before duplicating fixture records
 });
 
 test('reset deletes only the deterministic demonstration project and restores canonical records', async () => {
+  engine.saveSettings({ startupExperience: 'professional-workspace' });
+  const retainedConversation = engine.createConversation({ projectId: DEMO_PROJECT_ID });
+  engine.appendConversationMessage({ role: 'user', content: 'Retain this demonstration conversation.' }, retainedConversation.conversationId);
   const unrelated = engine.addProject('Unaffected import test project');
   const unrelatedId = unrelated.id;
   await engine.deleteProject(DEMO_PROJECT_ID);
@@ -478,6 +501,10 @@ test('reset deletes only the deterministic demonstration project and restores ca
   await engine.importProject(createDemonstrationProjectFixture(), { preserveIdentifiers: true });
   assert.ok(engine.state().projects.some(project => project.id === DEMO_PROJECT_ID));
   assert.ok(engine.state().projects.some(project => project.id === unrelatedId));
+  assert.equal(engine.state().settings.startupExperience, 'professional-workspace');
+  assert.ok(engine.conversations().some(item => item.conversationId === retainedConversation.conversationId));
+  assert.equal((await engine.inspectionRecords({ includeArchived: true })).length, 5);
+  engine.saveSettings({ startupExperience: 'mission-control' });
 });
 
 test('ordinary project imports retain identifier remapping and imported naming behavior', async () => {
@@ -497,6 +524,26 @@ test('ordinary project imports retain identifier remapping and imported naming b
   assert.notEqual(importedInspection.inspectionId, ordinary.inspectionRecords[0].inspectionId);
   assert.deepEqual(importedInspection.sourceDocumentIds, [(await engine.documents())[0].id]);
   assert.deepEqual(importedInspection.sourceSectionIds, [(await engine.sections())[0].id]);
+});
+
+test('drawing metadata imports without source bytes and requires exact PDF reattachment', async () => {
+  const drawingPackage = {
+    manifest: { project: { id: 'drawing-package-project', name: 'Drawing Package' } },
+    libraries: [{ id: 'drawing-library', projectId: 'drawing-package-project', name: 'Drawings', enabled: true }],
+    documents: [{ id: 'drawing-document', projectId: 'drawing-package-project', libraryId: 'drawing-library', name: 'Plans.pdf', extension: 'pdf', type: 'application/pdf', status: 'verified', sectionCount: 1 }],
+    sections: [{ id: 'drawing-section', projectId: 'drawing-package-project', libraryId: 'drawing-library', documentId: 'drawing-document', text: 'M-101 MECHANICAL PLAN', crossReferenceIds: [] }],
+    drawingAnalyses: [{ drawingSetId: 'source-analysis', documentId: 'drawing-document', projectId: 'drawing-package-project', analyzedAt: '2026-07-31T00:00:00Z', sheets: [{ pageNumber: 1, pageWidth: 1000, pageHeight: 700, rotation: 0, textItems: [{ text: 'M-101', region: { x: .8, y: .9, width: .1, height: .02 } }, { text: 'MECHANICAL PLAN', region: { x: .6, y: .86, width: .3, height: .02 } }] }] }]
+  };
+  await engine.importProject(drawingPackage);
+  const [document] = await engine.documents();
+  assert.equal(document.sourceAvailability, 'reattachment-required');
+  assert.equal(await engine.sourceFile(document.id), null);
+  const analysis = await engine.drawingAnalysis(document.id);
+  assert.equal(analysis.sheets[0].sheetNumber, 'M-101');
+  const exported = await engine.exportProject();
+  assert.equal(exported.sourceFilesIncluded, false);
+  assert.equal(Object.hasOwn(exported, 'sourceFiles'), false);
+  assert.equal(exported.drawingAnalyses.length, 1);
 });
 
 test('Inspection Record CRUD is project-isolated, archived numbers are not reused, and export includes records', async () => {
@@ -521,4 +568,51 @@ test('Inspection Record CRUD is project-isolated, archived numbers are not reuse
 test('ordinary import remains backward compatible when Inspection Records are absent', async () => {
   await engine.importProject({ manifest: { project: { name: 'Legacy without inspections' } }, libraries: [], documents: [], sections: [] });
   assert.deepEqual(await engine.inspectionRecords({ includeArchived: true }), []);
+});
+
+test('conversations persist in existing localStorage and active chat remains compatible', () => {
+  const conversation = engine.createConversation({ projectId: engine.state().activeProject, now: '2026-07-31T12:00:00Z' });
+  engine.appendConversationMessage({ id: 'conversation-user-message', role: 'user', content: 'Persist this thread', createdAt: '2026-07-31T12:01:00Z' }, conversation.conversationId);
+  engine.addConversationAttachment('stable-document-reference', conversation.conversationId);
+  const stored = JSON.parse(globalThis.localStorage.getItem('mc-master-state-v2'));
+  assert.equal(stored.activeConversationId, conversation.conversationId);
+  assert.equal(stored.conversations.find(item => item.conversationId === conversation.conversationId).messages.length, 1);
+  assert.deepEqual(engine.state().chat.map(item => item.id), ['conversation-user-message']);
+  assert.deepEqual(engine.activeConversation().attachmentDocumentIds, ['stable-document-reference']);
+  engine.clearChat();
+  assert.equal(engine.conversations().some(item => item.conversationId === conversation.conversationId), true);
+});
+
+test('attachment scope constrains eligible sections without changing ordinary search', async () => {
+  engine.setProject('general');
+  const documents = await engine.documents();
+  const scoped = documents[0];
+  if (!scoped) return;
+  const ordinary = await engine.search('Chief preserve evidence');
+  const attached = await engine.search('Chief preserve evidence', { documentIds: [scoped.id] });
+  assert.ok(attached.every(hit => hit.documentId === scoped.id));
+  assert.ok(ordinary.length >= attached.length);
+});
+
+test('legacy flat chat migrates once into the active conversation compatibility view', async () => {
+  const legacyStorage = createLocalStorage();
+  legacyStorage.setItem('mc-master-state-v2', JSON.stringify({
+    projects: [{ id: 'general', name: 'General' }],
+    libraries: [{ id: 'general-library', projectId: 'general', name: 'General Library', enabled: true }],
+    activeProject: 'general', activeLibrary: 'general-library',
+    chat: [{ id: 'legacy-message', role: 'user', content: 'Legacy retained message', createdAt: '2026-01-01T00:00:00Z' }]
+  }));
+  const originalStorage = globalThis.localStorage;
+  globalThis.localStorage = legacyStorage;
+  try {
+    const { engine: migratedEngine } = await import(`../src/engine.js?legacy-migration=${Date.now()}`);
+    assert.equal(migratedEngine.conversations().length, 1);
+    assert.deepEqual(migratedEngine.state().chat.map(item => item.id), ['legacy-message']);
+    migratedEngine.saveSettings({ topK: 10 });
+    const stored = JSON.parse(legacyStorage.getItem('mc-master-state-v2'));
+    assert.equal(stored.conversations.length, 1);
+    assert.equal(stored.activeConversationId, stored.conversations[0].conversationId);
+  } finally {
+    globalThis.localStorage = originalStorage;
+  }
 });
