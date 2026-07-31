@@ -32,20 +32,20 @@ const chiefAssets = {
 };
 const chiefStateCopy = {
   idle: {
-    label: 'Ready',
-    detail: 'Standing by for your question.'
+    label: 'Idle',
+    detail: 'Ready to assist'
   },
   busy: {
     label: 'Thinking',
-    detail: 'Reviewing project evidence…'
+    detail: 'Searching project knowledge…'
   },
   success: {
     label: 'Complete',
-    detail: 'The latest analysis is ready.'
+    detail: 'Evidence prepared'
   },
   error: {
     label: 'Attention',
-    detail: 'The latest analysis could not be completed.'
+    detail: 'Action required'
   }
 };
 
@@ -148,8 +148,8 @@ app.innerHTML = `
                   aria-hidden="true"
                 >
                 <span class="mc-chief-status-copy">
-                  <strong id="chiefStatusLabel">Chief · Ready</strong>
-                  <small id="chiefStatusDetail">Standing by for your question.</small>
+                  <strong id="chiefStatusLabel">Idle</strong>
+                  <small id="chiefStatusDetail">Ready to assist</small>
                 </span>
               </div>
               <button id="clearChat" class="subtle">New conversation</button>
@@ -175,7 +175,10 @@ app.innerHTML = `
           </div>
 
           <div id="evidenceList" class="evidence-list">
-            <div class="empty">Sources used in the latest answer appear here.</div>
+            <div class="empty">
+              Evidence will appear here after Chief answers a question using
+              your project documents.
+            </div>
           </div>
         </aside>
       </div>
@@ -499,7 +502,7 @@ function setChiefState(name = 'idle') {
 
   status.dataset.chiefState = stateName;
   $('#chiefStatusImage').src = chiefAssets[stateName];
-  $('#chiefStatusLabel').textContent = `Chief · ${copy.label}`;
+  $('#chiefStatusLabel').textContent = copy.label;
   $('#chiefStatusDetail').textContent = copy.detail;
 }
 
@@ -754,6 +757,20 @@ function renderMessages(documents = [], sections = []) {
           retrieves and presents cited source language without requiring an
           API key. AI modes can provide additional synthesis when configured.
         </p>
+        <ol class="mc-chief-onboarding" aria-label="Getting started">
+          <li class="mc-chief-onboarding-step">
+            <span>Step 1</span>
+            <strong>Add project documents</strong>
+          </li>
+          <li class="mc-chief-onboarding-step">
+            <span>Step 2</span>
+            <strong>Inspect extraction</strong>
+          </li>
+          <li class="mc-chief-onboarding-step">
+            <span>Step 3</span>
+            <strong>Ask evidence-based questions</strong>
+          </li>
+        </ol>
         ${renderPromptSuggestions(documents, sections)}
         </div>
       </div>
