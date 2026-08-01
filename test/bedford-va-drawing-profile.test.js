@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BEDFORD_VA_PROFILE_ID, detectBedfordVaProfile, findBedfordDrawingIndexPage, parseBedfordDrawingIndex, parseBedfordTitleBlock } from '../src/bedford-va-drawing-profile.js';
-import { buildDrawingAnalysis, drawingIdFor } from '../src/drawing-intelligence.js';
+import { BEDFORD_VA_PROFILE_ID, BEDFORD_VA_PROFILE_VERSION, detectBedfordVaProfile, findBedfordDrawingIndexPage, parseBedfordDrawingIndex, parseBedfordTitleBlock } from '../src/bedford-va-drawing-profile.js';
+import { buildDrawingAnalysis, drawingAnalysisRequiresUpgrade, drawingIdFor, upgradeDrawingAnalysis } from '../src/drawing-intelligence.js';
+import { inspectDrawingRegistryRuntime } from '../src/drawing-registry-diagnostics.js';
 
 const item = (text, x, y, width = .12) => ({ text, region: { x, y, width, height: .008 } });
 const titleBlock = (number, title, building = '61') => [
@@ -73,4 +74,40 @@ test('Bedford analysis builds a stable owned direct page registry and tolerates 
   assert.equal(missing.drawingRegistry.some(item => item.sheetNumber === '61E-101'), false);
   assert.equal(missing.status, 'Completed with warnings');
   assert.throws(() => buildDrawingAnalysis({ documentId: 'bad-owner', projectId: 'general', pages: source, analyzedAt: 'now' }), /owning project other than General/);
+});
+
+test('legacy current-version Bedford analysis without profile registry metadata rebuilds once', () => {
+  const complete = buildDrawingAnalysis({ documentId: 'bedford-61', projectId: 'bedford-project', pages: pages(), analyzedAt: 'now' });
+  const legacy = structuredClone(complete);
+  delete legacy.profile;
+  delete legacy.drawingRegistry;
+  assert.equal(drawingAnalysisRequiresUpgrade(legacy), true);
+  assert.equal(drawingAnalysisRequiresUpgrade({ ...legacy, analysisVersion: 5 }), true);
+  const upgraded = upgradeDrawingAnalysis(legacy);
+  assert.equal(upgraded.profile.profileVersion, BEDFORD_VA_PROFILE_VERSION);
+  assert.equal(upgraded.indexEntries.length, 70);
+  assert.equal(upgraded.drawingRegistry.length, 70);
+  assert.equal(upgraded.drawingRegistry.find(record => record.normalizedSheetNumber === '61M101').sheetNumber, '61M-101');
+  assert.equal(upgraded.drawingRegistry.find(record => record.normalizedSheetNumber === '61T402').sheetNumber, '61T-402');
+  assert.equal(drawingAnalysisRequiresUpgrade(upgraded), false);
+  assert.deepEqual(upgradeDrawingAnalysis(upgraded), upgraded);
+});
+
+test('runtime registry diagnostics trace exact Bedford commands globally while General is active', () => {
+  const analysis = buildDrawingAnalysis({ documentId: 'bedford-61', projectId: 'bedford-project', pages: pages(), analyzedAt: 'now' });
+  const input = { activeProject: { id: 'general', name: 'General' }, documents: [{ id: 'bedford-61', title: 'Building 61 plans' }], analyses: [analysis] };
+  const mechanical = inspectDrawingRegistryRuntime({ ...input, query: 'Open Mechanical Sheet 61M-101' });
+  assert.equal(mechanical.activeProjectId, 'general');
+  assert.equal(mechanical.analyses[0].profileSelected, true);
+  assert.equal(mechanical.analyses[0].parsedIndexRowCount, 70);
+  assert.equal(mechanical.registeredSheetCount, 70);
+  assert.deepEqual(mechanical.knownSheets, { '61G001': true, '61M101': true, '61T402': true });
+  assert.equal(mechanical.commandTrace.normalizedQueryKey, '61M101');
+  assert.equal(mechanical.commandTrace.finalMatchCount, 1);
+  assert.equal(mechanical.commandTrace.rejectionReason, '');
+  assert.equal(mechanical.matchingRecords.find(record => record.normalizedSheetNumber === '61M101').projectId, 'bedford-project');
+  assert.deepEqual(mechanical.ownershipFailures, []);
+  const telecom = inspectDrawingRegistryRuntime({ ...input, query: 'Open sheet 61T-402' });
+  assert.equal(telecom.commandTrace.normalizedQueryKey, '61T402');
+  assert.equal(telecom.commandTrace.finalMatchCount, 1);
 });

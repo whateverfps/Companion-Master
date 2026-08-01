@@ -107,7 +107,7 @@ import {
 } from './data-model.js';
 import { openPdfBlob, readPdfPageGraphics, renderPdfPage } from './pdf-source.js';
 import { extractLegendCandidates, matchLegendOccurrences } from './drawing-legends.js';
-import { applyObservationVerification, drawingWarningPresentation, DRAWING_ANALYSIS_VERSION, groupDrawingObservations, observationKindLabel, reanalyzeDrawingAnalysis, upgradeDrawingAnalysis } from './drawing-intelligence.js';
+import { applyObservationVerification, drawingAnalysisRequiresUpgrade, drawingWarningPresentation, DRAWING_ANALYSIS_VERSION, groupDrawingObservations, observationKindLabel, reanalyzeDrawingAnalysis, upgradeDrawingAnalysis } from './drawing-intelligence.js';
 import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingViewportKey, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
 import { buildPlanQuery, buildPlanQueryScope, createChiefConstructionContext, drawingSearchSummary, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from './plan-query.js';
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
@@ -1603,7 +1603,7 @@ async function currentDrawingAnalyses() {
   const workspaceProjectId = state().activeProject;
   const analyses = await engine.drawingAnalyses();
   const outcomes = await Promise.all(analyses.map(async analysis => {
-    if (Number(analysis.analysisVersion) >= DRAWING_ANALYSIS_VERSION) {
+    if (!drawingAnalysisRequiresUpgrade(analysis)) {
       const ownership = await engine.drawingLifecycle(analysis.documentId, analysis.drawingSetId);
       return ownership.ok ? { ok: true, analysis } : ownership;
     }
@@ -1622,6 +1622,25 @@ async function currentDrawingAnalyses() {
   }));
   drawingLifecycleUnavailable = outcomes.filter(item => !item.ok);
   return outcomes.filter(item => item.ok && item.analysis).map(item => item.analysis);
+}
+
+async function currentGlobalDrawingRegistryAnalyses() {
+  const analyses = await engine.drawingRegistryAnalyses();
+  const outcomes = await Promise.all(analyses.map(async analysis => {
+    if (!drawingAnalysisRequiresUpgrade(analysis)) return { ok: true, analysis };
+    const key = drawingUpgradeKey(analysis, DRAWING_ANALYSIS_VERSION);
+    if (drawingUpgradeFailures.has(key)) return { ok: false, analysis };
+    if (!drawingUpgradeWork.has(key)) drawingUpgradeWork.set(key, (async () => {
+      const ownership = await engine.drawingLifecycle(analysis.documentId, analysis.drawingSetId);
+      if (!ownership.ok) return ownership;
+      const upgraded = upgradeDrawingAnalysis(analysis);
+      return engine.saveDrawingAnalysis(upgraded);
+    })().catch(error => ({ ok: false, status: 'failed', errorCode: 'drawing-upgrade-failed', analysis, owningProjectId: analysis.projectId, warning: error.message || 'Drawing registry upgrade failed.', recoverable: true })).finally(() => drawingUpgradeWork.delete(key)));
+    const result = await drawingUpgradeWork.get(key);
+    if (!result.ok) drawingUpgradeFailures.add(key);
+    return result;
+  }));
+  return outcomes.filter(outcome => outcome.ok && outcome.analysis).map(outcome => outcome.analysis);
 }
 
 async function buildActiveConstructionPackage(query, evidence = []) {
@@ -2249,7 +2268,7 @@ $('#missionControlContent').addEventListener('submit', async event => {
     const current = state();
     const conversation = engine.activeConversation();
     const navigationIntent = classifyEngineeringNavigationIntent(promptValue);
-    const [analyses, documents, sections] = await Promise.all([navigationIntent.kind === 'exact-drawing-navigation' ? engine.drawingRegistryAnalyses() : currentDrawingAnalyses(), engine.documents(), engine.sections()]);
+    const [analyses, documents, sections] = await Promise.all([navigationIntent.kind === 'exact-drawing-navigation' ? currentGlobalDrawingRegistryAnalyses() : currentDrawingAnalyses(), engine.documents(), engine.sections()]);
     const locationPresentation = buildChiefLocationPresentation(promptValue, { analyses, documents, sections, returnTarget: 'chief-answer', projectId: current.activeProject });
     activeChiefLocationPresentation = locationPresentation && locationPresentation.status !== 'none' ? locationPresentation : null;
     const resolvedLocationTarget = locationPresentation.status === 'resolved' && locationPresentation.target?.kind === 'drawing'

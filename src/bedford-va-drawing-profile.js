@@ -3,6 +3,7 @@ const list = value => Array.isArray(value) ? value : [];
 const clean = value => text(value).replace(/\s+/g, ' ');
 
 export const BEDFORD_VA_PROFILE_ID = 'bedford-va-triple-c';
+export const BEDFORD_VA_PROFILE_VERSION = 1;
 export const BEDFORD_TITLE_BLOCK_REGION = Object.freeze({ x: .48, y: .55, width: .52, height: .45 });
 export const normalizeBedfordSheetNumber = value => clean(value).toUpperCase().replace(/[^A-Z0-9]+/g, '');
 export const normalizeBedfordTitle = value => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();

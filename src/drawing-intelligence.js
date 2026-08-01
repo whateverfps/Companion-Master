@@ -1,7 +1,7 @@
 import { normalizeRegion } from './pdf-source.js';
 import { extractLegendCandidates } from './drawing-legends.js';
 import { extractScheduleCandidates } from './drawing-schedules.js';
-import { detectBedfordVaProfile, findBedfordDrawingIndexPage, normalizeBedfordSheetNumber, parseBedfordDrawingIndex, parseBedfordTitleBlock } from './bedford-va-drawing-profile.js';
+import { BEDFORD_VA_PROFILE_VERSION, detectBedfordVaProfile, findBedfordDrawingIndexPage, normalizeBedfordSheetNumber, parseBedfordDrawingIndex, parseBedfordTitleBlock } from './bedford-va-drawing-profile.js';
 
 export const DRAWING_ANALYSIS_VERSION = 7;
 export const VERIFICATION_STATES = Object.freeze(['Unreviewed', 'Confirmed', 'Corrected', 'Rejected', 'Uncertain']);
@@ -497,7 +497,7 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
     analysisVersion: DRAWING_ANALYSIS_VERSION, analyzedAt: text(analyzedAt),
     status: warnings.length ? 'Completed with warnings' : 'Ready for review',
     stages: ['Reading source', 'Inspecting pages', 'Detecting title blocks', 'Building sheet index', 'Classifying sheets', 'Recording text observations', 'Reconciling index', warnings.length ? 'Completed with warnings' : 'Ready for review'],
-    profile: { selected: profile.selected, profileId: profile.profileId, evidence: profile.evidence },
+    profile: { selected: profile.selected, profileId: profile.profileId, profileVersion: profile.selected ? BEDFORD_VA_PROFILE_VERSION : 0, evidence: profile.evidence },
     sheets, indexEntries, drawingIndex: { detected: indexEntries.length > 0, sourceSheetIds: [...new Set(indexEntries.map(item => item.sourceSheetId).filter(Boolean))], sourcePage: bedfordIndexPage?.pageNumber || indexEntries[0]?.sourcePage || null, rowCount: indexEntries.length },
     drawingRegistry: sheets.map(sheet => ({ drawingId: sheet.drawingId, projectId: sheet.projectId, documentId: sheet.documentId, drawingSetId: sheet.drawingSetId, sheetId: sheet.sheetId, sheetNumber: sheet.sheetNumber, normalizedSheetNumber: normalizeSheetNumber(sheet.sheetNumber), sheetTitle: sheet.sheetTitle, normalizedTitle: sheet.normalizedTitle, discipline: sheet.discipline, floor: sheet.floor, level: sheet.level, pageNumber: sheet.pageNumber, pdfPage: sheet.pdfPage, identityMethod: sheet.identityMethod, titleMethod: sheet.titleMethod, identityStatus: sheet.identityStatus })),
     registryHealth: { profileSelected: profile.selected, indexDetected: Boolean(indexEntries.length), drawingIndexFound: Boolean(indexEntries.length), indexPage: bedfordIndexPage?.pageNumber || indexEntries[0]?.sourcePage || null, expectedSheetCount: indexEntries.length, indexRowsParsed: indexEntries.length, titleBlocksParsed: sheets.filter(item => item.bedfordTitleBlock?.detected).length, pagesMatchedToIndex: sheets.filter(item => item.indexEntry).length, authoritativeTitleBlockIdentities: sheets.filter(item => item.identityStatus === 'Authoritative').length, missingIndexedSheets: reconciliation.filter(item => item.type === 'expected-sheet-missing').length, unindexedPages: reconciliation.filter(item => item.type === 'sheet-absent-from-index').length, indexTitleConflicts: reconciliation.filter(item => item.type === 'title-mismatch').length, duplicateSheetNumbers: reconciliation.filter(item => item.type === 'duplicate-sheet-number').length, registryRecordsCreated: sheets.length, projectOwnershipFailures: 0, pagesRequiringManualReview: sheets.filter(item => item.identityStatus === 'Ambiguous').length },
@@ -529,7 +529,14 @@ export function reanalyzeDrawingAnalysis(analysis = {}) {
 }
 
 export function upgradeDrawingAnalysis(analysis = {}) {
-  return Number(analysis.analysisVersion) >= DRAWING_ANALYSIS_VERSION ? structuredClone(analysis) : reanalyzeDrawingAnalysis(analysis);
+  return drawingAnalysisRequiresUpgrade(analysis) ? reanalyzeDrawingAnalysis(analysis) : structuredClone(analysis);
+}
+
+export function drawingAnalysisRequiresUpgrade(analysis = {}) {
+  if (Number(analysis.analysisVersion) < DRAWING_ANALYSIS_VERSION) return true;
+  const pages = list(analysis.sheets).map(sheet => ({ pageNumber: sheet.pageNumber, width: sheet.pageWidth, height: sheet.pageHeight, rotation: sheet.rotation, textItems: sheet.textItems }));
+  const bedford = detectBedfordVaProfile(pages);
+  return bedford.selected && (analysis.profile?.profileVersion !== BEDFORD_VA_PROFILE_VERSION || analysis.profile?.profileId !== bedford.profileId || !Array.isArray(analysis.drawingRegistry));
 }
 
 export const observationKindLabel = kind => ({
