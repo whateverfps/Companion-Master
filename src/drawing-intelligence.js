@@ -2,7 +2,7 @@ import { normalizeRegion } from './pdf-source.js';
 import { extractLegendCandidates } from './drawing-legends.js';
 import { extractScheduleCandidates } from './drawing-schedules.js';
 
-export const DRAWING_ANALYSIS_VERSION = 4;
+export const DRAWING_ANALYSIS_VERSION = 5;
 export const VERIFICATION_STATES = Object.freeze(['Unreviewed', 'Confirmed', 'Corrected', 'Rejected', 'Uncertain']);
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const list = value => Array.isArray(value) ? value : [];
@@ -16,6 +16,12 @@ function hash(value) {
 
 export const drawingSetIdFor = documentId => `drawing-set-${hash(text(documentId))}`;
 export const sheetIdFor = (documentId, pageNumber) => `sheet-${hash(`${text(documentId)}:${Number(pageNumber)}`)}`;
+export const drawingIdFor = (documentId, pageNumber) => `drawing-${hash(`${text(documentId)}:${Number(pageNumber)}`)}`;
+
+function resolveFloor(sheetTitle = '') {
+  const match = normalize(sheetTitle).match(/\b(BASEMENT|GROUND|FIRST|SECOND|THIRD|FOURTH|FIFTH|ROOF|PENTHOUSE)(?:\s+(?:FLOOR|LEVEL))?\b/i);
+  return match ? match[1].toUpperCase() : '';
+}
 
 const SHEET_NUMBER = /\b(?:\d{1,4})?[A-Z]{1,3}[-.]?\d{3,4}[A-Z]?\b/gi;
 const REJECTED_NUMBER_CONTEXT = /\b(?:VA\s*FORM|FORM\s*(?:NO|NUMBER)|PROJECT\s*(?:NO|NUMBER)|PAGE|SHEET\s+OF|REV(?:ISION)?|DATE|ISSUED?|RELEASE|REVIT|AUTODESK|LICENSE|LICENCE|REGISTRATION|CERTIFICATE|CONSULTANT|PHASE|GRID|FILE\s*(?:NAME|PATH))\b/i;
@@ -424,11 +430,15 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
       ...(titleConflict ? [`Drawing-index title "${indexEntry.sheetTitle}" conflicts with title-block title "${sheet.titleBlockSheetTitle}".`] : [])
     ];
     const numberMethod = indexEntry ? mapped?.method || 'index-title-block-reconciliation' : sheet.sheetNumberResolutionMethod;
+    const normalizedTitle = normalize(sheetTitle).toLowerCase();
     return {
-      ...sheet, sheetNumber, sheetTitle, discipline: discipline.discipline, disciplineEvidence: discipline.evidence, disciplineMethod: discipline.method,
+      ...sheet, drawingId: drawingIdFor(documentId, sheet.pageNumber), projectId, drawingSetId: drawingSetIdFor(documentId),
+      pdfPage: sheet.pageNumber, normalizedTitle, floor: resolveFloor(sheetTitle), level: resolveFloor(sheetTitle),
+      sheetNumber, sheetTitle, discipline: discipline.discipline, disciplineEvidence: discipline.evidence, disciplineMethod: discipline.method,
       sheetTypes, primarySheetType: primarySheetType(sheetTypes), indexEntry: indexEntry ? { ...indexEntry } : null,
       titleConflict: titleConflict ? { indexTitle: indexEntry.sheetTitle, titleBlockTitle: sheet.titleBlockSheetTitle } : null,
       sheetNumberResolutionMethod: numberMethod, sheetTitleResolutionMethod: indexEntry ? 'drawing-index' : sheet.sheetTitleResolutionMethod,
+      identityMethod: numberMethod, titleMethod: indexEntry ? 'drawing-index' : sheet.sheetTitleResolutionMethod,
       identityStatus: indexEntry && !titleConflict ? 'Verified' : addedWarnings.length || !sheetNumber ? 'Ambiguous' : 'Supported', analysisStatus: addedWarnings.length ? 'Completed with warnings' : sheet.analysisStatus,
       confidence: indexEntry && !titleConflict ? .98 : sheetNumber && sheetTitle ? .85 : sheetNumber || sheetTitle ? .65 : .25,
       building: sheet.building || resolveBuilding(sheet.textItems, indexEntry).building, buildingResolution: sheet.building ? { building: sheet.building, method: 'labeled-title-block-field', evidence: 'Building Number' } : resolveBuilding(sheet.textItems, indexEntry),

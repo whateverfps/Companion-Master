@@ -174,9 +174,10 @@ test('resolves drawing and inspection actions to their destination views', () =>
 });
 
 test('preserves drawing set context for exact drawing actions', () => {
-  const target = createActionTarget({ kind: 'drawing', projectId: project.id, documentId: document.id, drawingSetId: 'set-1', sheetId: 'sheet-1', sheetNumber: 'A101', origin: 'work-package' });
+  const target = createActionTarget({ kind: 'drawing', projectId: project.id, documentId: document.id, drawingSetId: 'set-1', drawingId: 'drawing-1', sheetId: 'sheet-1', sheetNumber: 'A101', origin: 'work-package' });
   const state = prepareActionNavigationState(target, { activeProjectId: project.id, projects: [project], documents: [document], sections: [section] });
   assert.equal(state.target?.drawingSetId, 'set-1');
+  assert.equal(state.target?.drawingId, 'drawing-1');
   assert.equal(state.target?.sheetNumber, 'A101');
   assert.equal(state.destination, 'drawings');
 });

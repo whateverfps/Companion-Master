@@ -7,12 +7,12 @@ export function drawingAnchorId(kind, identifier) {
   return `mc-drawing-${safe(kind).toLowerCase()}-${safe(identifier)}`;
 }
 
-export function createDrawingTarget({ projectId, documentId, drawingSetId, sheetId, pageNumber, sheetNumber, observationId, planObjectId, region, origin = 'drawings', matchingSheetIds = [], returnTarget = '' } = {}) {
+export function createDrawingTarget({ projectId, documentId, drawingSetId, drawingId, sheetId, pageNumber, sheetNumber, observationId, planObjectId, region, origin = 'drawings', matchingSheetIds = [], returnTarget = '' } = {}) {
   if (!text(documentId)) return null;
   const page = Number.isInteger(Number(pageNumber)) && Number(pageNumber) > 0 ? Number(pageNumber) : null;
   const normalizedMatchingSheetIds = Array.isArray(matchingSheetIds) ? matchingSheetIds.map(item => text(item)).filter(Boolean) : [];
   return {
-    projectId: text(projectId), documentId: text(documentId), drawingSetId: text(drawingSetId),
+    projectId: text(projectId), documentId: text(documentId), drawingSetId: text(drawingSetId), drawingId: text(drawingId),
     sheetId: text(sheetId), pageNumber: page, sheetNumber: text(sheetNumber),
     observationId: text(observationId), planObjectId: text(planObjectId), region: region ? normalizeRegion(region) : null, origin: text(origin),
     matchingSheetIds: normalizedMatchingSheetIds, returnTarget: text(returnTarget)
@@ -25,12 +25,14 @@ export function resolveDrawingTarget(target, { documents = [], analyses = [] } =
   if (!document) return { status: 'missing-document', document: null, analysis: null, sheet: null, observation: null, planObject: null, region: null, kind: 'missing-document' };
   const analysis = analyses.find(item => text(item?.documentId) === target.documentId && (!target.drawingSetId || text(item.drawingSetId) === target.drawingSetId)) || null;
   if (!analysis) return { status: 'missing-analysis', document, analysis: null, sheet: null, observation: null, planObject: null, region: null, kind: 'missing-analysis' };
-  const sheet = target.sheetId
-    ? analysis.sheets.find(item => text(item.sheetId) === target.sheetId) || null
+  const sheet = target.drawingId
+    ? analysis.sheets.find(item => text(item.drawingId) === target.drawingId) || null
+    : target.sheetId
+      ? analysis.sheets.find(item => text(item.sheetId) === target.sheetId) || null
     : target.pageNumber
       ? analysis.sheets.find(item => Number(item.pageNumber) === target.pageNumber) || null
       : null;
-  if ((target.sheetId || target.pageNumber) && !sheet) return { status: 'missing-page', document, analysis, sheet: null, observation: null, planObject: null, region: null, kind: 'missing-page' };
+  if ((target.drawingId || target.sheetId || target.pageNumber) && !sheet) return { status: 'missing-page', document, analysis, sheet: null, observation: null, planObject: null, region: null, kind: 'missing-page' };
   const observation = target.observationId
     ? analysis.observations.find(item => text(item.observationId) === target.observationId && (!sheet || item.sheetId === sheet.sheetId)) || null
     : null;
@@ -95,7 +97,7 @@ export function drawingMatchingSetTarget(sheetIds = [], currentSheetId = '', off
   const current = ordered.indexOf(text(currentSheetId));
   const nextId = ordered[current + Number(offset)];
   const sheet = analysis?.sheets?.find(item => text(item.sheetId) === nextId);
-  return sheet ? createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, sheetNumber: sheet.sheetNumber }) : null;
+  return sheet ? createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: sheet.drawingId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, sheetNumber: sheet.sheetNumber }) : null;
 }
 
 export function reconcileDrawingSelection(sheetIds = [], currentSheetId = '') {

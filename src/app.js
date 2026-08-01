@@ -1319,6 +1319,7 @@ async function applyActionTargetState(target = {}, navigationTarget = null) {
       projectId: actionTarget.projectId || state().activeProject || '',
       documentId: actionTarget.documentId || '',
       drawingSetId: actionTarget.drawingSetId || '',
+      drawingId: actionTarget.drawingId || '',
       sheetId: actionTarget.sheetId || '',
       pageNumber: actionTarget.pageNumber || null,
       observationId: actionTarget.observationId || '',
@@ -1671,7 +1672,7 @@ function constructionWorkPackageMarkup(message) {
     ${!sourceOnly && (beforeWork.length || afterWork.length) ? `<section class="mc-construction-timeline"><h4>Construction Timeline</h4><div>${beforeWork.length ? `<article><span>Before this work</span><ul>${beforeWork.map(item => `<li>Approved submittal: ${esc(item.title || item.id)}</li>`).join('')}</ul></article>` : ''}${afterWork.length ? `<article><span>After this work</span><ul>${afterWork.map(item => `<li>Inspection follow-up: ${esc(item.inspectionNumber || item.id)}</li>`).join('')}</ul></article>` : ''}</div></section>` : ''}
     ${!sourceOnly ? `<section><h4>Inspection preparation</h4><p>${esc(workPackage.inspectionPreparation.nextInspectionStatement)}</p></section>` : ''}
     <section class="mc-work-package-limitations"><h4>Limitations</h4><ul>${workPackage.limitations.map(item => `<li>${esc(item)}</li>`).join('')}</ul></section>
-    <div class="mc-work-package-actions">${sheetActions.slice(0, 8).map(action => `<button data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'drawing', projectId: state().activeProject || '', documentId: action.target?.documentId || '', sheetId: action.target?.sheetId || '', observationId: action.target?.observationId || '', pageNumber: action.target?.pageNumber || null, region: action.target?.region || null, origin: 'work-package' })))}' data-work-package-target='${esc(JSON.stringify(action.target || {}))}'>${esc(action.label)}</button>`).join('')}${!sourceOnly && currentWorkTarget.available ? '<button data-work-package-current>Add to Current Work</button>' : ''}${!sourceOnly && workPackage.projectId ? '<button data-work-package-inspection>Create Inspection</button>' : ''}</div>
+    <div class="mc-work-package-actions">${sheetActions.slice(0, 8).map(action => `<button data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'drawing', projectId: action.target?.projectId || workPackage.projectId || '', documentId: action.target?.documentId || '', drawingSetId: action.target?.drawingSetId || '', drawingId: action.target?.drawingId || '', sheetId: action.target?.sheetId || '', observationId: action.target?.observationId || '', pageNumber: action.target?.pageNumber || null, region: action.target?.region || null, origin: 'work-package' })))}' data-work-package-target='${esc(JSON.stringify(action.target || {}))}'>${esc(action.label)}</button>`).join('')}${!sourceOnly && currentWorkTarget.available ? '<button data-work-package-current>Add to Current Work</button>' : ''}${!sourceOnly && workPackage.projectId ? '<button data-work-package-inspection>Create Inspection</button>' : ''}</div>
     ${primary ? `<section class="mc-inline-plan ${sourceOnly ? 'source-only' : 'expert-assisted'}"><header><div><span>SUPPORTING DRAWING</span><strong>Exact plan evidence</strong></div><button data-inline-full-drawing>Open Full Drawing Workspace</button></header><div id="missionInlineDrawingViewer" class="mc-drawing-workspace" aria-label="Synchronized construction drawing"></div></section>` : ''}
   </section>`;
 }
@@ -1907,7 +1908,7 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const currentMatchingSheetIds = drawingTarget?.matchingSheetIds && drawingTarget.matchingSheetIds.length ? drawingTarget.matchingSheetIds : drawingMatchingSheetIds;
   const matchingSet = analysis ? reconcileDrawingMatchingSheetIds({ target: { ...drawingTarget, matchingSheetIds: currentMatchingSheetIds, sheetId: sheet?.sheetId || drawingTarget?.sheetId }, analysis, previousMatchingSheetIds: drawingMatchingSheetIds }) : { matchingSheetIds: [], activeSheetId: sheet?.sheetId || '', activeIndex: -1 };
   drawingMatchingSheetIds = matchingSet.matchingSheetIds;
-  if (sheet) drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: selected.id, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId || '', planObjectId: planObject?.occurrenceId || '', region: highlightedRegion, origin: drawingTarget?.origin || '', matchingSheetIds: drawingMatchingSheetIds, returnTarget: drawingTarget?.returnTarget || '' });
+  if (sheet) drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: selected.id, drawingSetId: analysis.drawingSetId, drawingId: sheet.drawingId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId || '', planObjectId: planObject?.occurrenceId || '', region: highlightedRegion, origin: drawingTarget?.origin || '', matchingSheetIds: drawingMatchingSheetIds, returnTarget: drawingTarget?.returnTarget || '' });
   const resolvedTarget = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses }) : null;
   const effectiveObservation = resolvedTarget?.observation || observation || null;
   const effectivePlanObject = resolvedTarget?.planObject || planObject || null;
@@ -2055,7 +2056,7 @@ $('#missionControlContent').onclick = async event => {
     const actionTarget = resolveSharedActionTarget(button.dataset.actionTarget);
     if (!actionTarget) return;
     if (actionTarget.kind === 'drawing') {
-      chiefConstructionContext = createChiefConstructionContext({ conversationId: engine.activeConversation()?.conversationId, projectId: state().activeProject, planResult: activePlanQuery || {}, drawingTarget: createDrawingTarget({ projectId: actionTarget.projectId, documentId: actionTarget.documentId, sheetId: actionTarget.sheetId, pageNumber: actionTarget.pageNumber, observationId: actionTarget.observationId, region: actionTarget.region, origin: actionTarget.origin || 'assistant' }), workPackageReferences: { matchingSheetIds: drawingMatchingSheetIds, matchingObservationIds: activePlanQuery?.matchingObservationIds || [] }, updatedFrom: actionTarget.origin || 'shared-action' });
+      chiefConstructionContext = createChiefConstructionContext({ conversationId: engine.activeConversation()?.conversationId, projectId: actionTarget.projectId, planResult: activePlanQuery || {}, drawingTarget: createDrawingTarget({ projectId: actionTarget.projectId, documentId: actionTarget.documentId, drawingSetId: actionTarget.drawingSetId, drawingId: actionTarget.drawingId, sheetId: actionTarget.sheetId, pageNumber: actionTarget.pageNumber, observationId: actionTarget.observationId, region: actionTarget.region, origin: actionTarget.origin || 'assistant' }), workPackageReferences: { matchingSheetIds: drawingMatchingSheetIds, matchingObservationIds: activePlanQuery?.matchingObservationIds || [] }, updatedFrom: actionTarget.origin || 'shared-action' });
       await openProfessionalDestination({ view: 'drawings', documentId: actionTarget.documentId, projectId: actionTarget.projectId, sheetId: actionTarget.sheetId, pageNumber: actionTarget.pageNumber, observationId: actionTarget.observationId, region: actionTarget.region, origin: actionTarget.origin || 'assistant' });
       return;
     }
@@ -2401,7 +2402,7 @@ app.addEventListener('click', async event => {
     captureDrawingViewport();
     const sheet = analysis.sheets.find(item => item.sheetId === button.dataset.drawingSheet);
     const observation = button.dataset.drawingSearchObservation ? analysis.observations.find(item => item.observationId === button.dataset.drawingSearchObservation) : null;
-    drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
+    drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: sheet.drawingId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
     await renderDrawingWorkspace(shell); return;
   }
   if (button.hasAttribute('data-drawing-reanalyze') && analysis && shell === 'professional') {
@@ -2416,7 +2417,7 @@ app.addEventListener('click', async event => {
     captureDrawingViewport();
     const observation = analysis.observations.find(item => item.observationId === button.dataset.drawingObservation);
     const sheet = analysis.sheets.find(item => item.sheetId === observation?.sheetId);
-    if (observation && sheet) drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation.observationId, region: observation.region });
+    if (observation && sheet) drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: sheet.drawingId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation.observationId, region: observation.region });
     await renderDrawingWorkspace(shell); return;
   }
   if (button.dataset.drawingVerify && analysis) {
@@ -2434,7 +2435,8 @@ app.addEventListener('click', async event => {
   if (button.dataset.drawingOccurrence && analysis) {
     const occurrence = (analysis.candidateOccurrences || []).find(item => item.occurrenceId === button.dataset.drawingOccurrence);
     if (occurrence) {
-      drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: occurrence.sheetId, pageNumber: occurrence.pageNumber, region: occurrence.region });
+      const occurrenceSheet = analysis.sheets.find(item => item.sheetId === occurrence.sheetId);
+      drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: occurrenceSheet?.drawingId, sheetId: occurrence.sheetId, pageNumber: occurrence.pageNumber, region: occurrence.region });
       await renderDrawingWorkspace(shell);
     }
     return;
@@ -2474,7 +2476,7 @@ app.addEventListener('click', async event => {
     const matchingTarget = drawingMatchingSheetIds.length ? drawingMatchingSetTarget(drawingMatchingSheetIds, drawingTarget?.sheetId, offset, analysis) : null;
     const next = analysis.sheets[currentIndex + offset];
     if (matchingTarget) drawingTarget = matchingTarget;
-    else if (next) drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, sheetId: next.sheetId, pageNumber: next.pageNumber });
+    else if (next) drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: next.drawingId, sheetId: next.sheetId, pageNumber: next.pageNumber });
     await renderDrawingWorkspace(shell); return;
   }
   if (button.dataset.drawingZoom) {
@@ -8157,7 +8159,7 @@ async function renderSources() {
     show('evaluate');
   };
   $('[data-source-open-drawing]')?.addEventListener('click', () => {
-    drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: selected.id, drawingSetId: sourceDrawingAnalysis?.drawingSetId, sheetId: sourceTargetResolution?.sheet?.sheetId, pageNumber: sourceTargetResolution?.sheet?.pageNumber || 1, observationId: sourceTargetResolution?.observation?.observationId, region: sourceTargetResolution?.observation?.region || sourceNavigationTarget?.region });
+    drawingTarget = createDrawingTarget({ projectId: sourceDrawingAnalysis?.projectId || state().activeProject, documentId: selected.id, drawingSetId: sourceDrawingAnalysis?.drawingSetId, drawingId: sourceTargetResolution?.sheet?.drawingId, sheetId: sourceTargetResolution?.sheet?.sheetId, pageNumber: sourceTargetResolution?.sheet?.pageNumber || 1, observationId: sourceTargetResolution?.observation?.observationId, region: sourceTargetResolution?.observation?.region || sourceNavigationTarget?.region });
     show('drawings');
   });
   $('#sourcePdfReattach')?.addEventListener('change', async event => {

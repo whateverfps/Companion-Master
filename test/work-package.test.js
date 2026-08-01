@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage, workPackageConfidence, workPackageModePresentation, workPackageReason } from '../src/work-package.js';
 
-const target = { projectId: 'p1', documentId: 'drawing', drawingSetId: 'set', sheetId: 'sheet1', pageNumber: 2, observationId: 'room137', region: { x: .1, y: .2, width: .1, height: .02 } };
+const target = { projectId: 'p1', documentId: 'drawing', drawingSetId: 'set', drawingId: 'drawing-sheet1', sheetId: 'sheet1', pageNumber: 2, observationId: 'room137', region: { x: .1, y: .2, width: .1, height: .02 } };
 const planResult = {
   projectId: 'p1', building: '61', floor: 'first floor', room: '137', discipline: 'Mechanical',
   matchingSheetIds: ['sheet1'], matchingObservationIds: ['room137'],
@@ -78,6 +78,7 @@ test('presentation is construction-first, exact, and hides unsupported groups', 
   assert.equal(result.presentation.location.room, '137');
   assert.equal(result.presentation.tradeSystem, 'Mechanical');
   assert.equal(result.presentation.primaryDrawing.sheetId, 'sheet1');
+  assert.equal(result.presentation.primaryDrawing.drawingId, 'drawing-sheet1');
   assert.equal(result.presentation.exactPlanEvidence[0].quality, 'Exact');
   assert.deepEqual(result.presentation.relatedPlans, []);
   assert.equal(result.presentation.projectRecords.inspections[0].id, 'ins');

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   applyObservationVerification, buildDrawingAnalysis, classifyDiscipline, classifySheetTypes, drawingWarningPresentation,
-  drawingSetIdFor, extractSheetNumberCandidates, extractTextObservations, groupDrawingObservations, observationEligibility, observationKindLabel, parseExactDrawingReference, primarySheetType, reanalyzeDrawingAnalysis, reconcileDrawingIndex, resolveBuilding, sheetIdFor, upgradeDrawingAnalysis, validSheetNumberCandidate
+  drawingIdFor, drawingSetIdFor, extractSheetNumberCandidates, extractTextObservations, groupDrawingObservations, observationEligibility, observationKindLabel, parseExactDrawingReference, primarySheetType, reanalyzeDrawingAnalysis, reconcileDrawingIndex, resolveBuilding, sheetIdFor, upgradeDrawingAnalysis, validSheetNumberCandidate
 } from '../src/drawing-intelligence.js';
 import { createDrawingTarget, drawingAnchorId, drawingReturnTarget, drawingScrollOptions, resolveDrawingTarget } from '../src/drawing-navigation.js';
 import { createSourceTarget, resolveSourceTarget } from '../src/source-navigation.js';
@@ -18,6 +18,8 @@ test('stable identities use exact document and page identifiers', () => {
   assert.equal(drawingSetIdFor('d1'), drawingSetIdFor('d1'));
   assert.equal(sheetIdFor('d1', 1), sheetIdFor('d1', 1));
   assert.notEqual(sheetIdFor('d1', 1), sheetIdFor('d1', 2));
+  assert.equal(drawingIdFor('d1', 1), drawingIdFor('d1', 1));
+  assert.notEqual(drawingIdFor('d1', 1), drawingIdFor('d1', 2));
 });
 
 test('classifies disciplines and exact visible sheet types', () => {
@@ -57,7 +59,7 @@ test('version 4 maps a complete ordered inventory only with exact anchors', () =
   assert.ok(analysis.sheets.every(sheet => sheet.sheetNumberResolutionMethod === 'drawing-index-page-order' || sheet.sheetNumberResolutionMethod === 'index-title-block-reconciliation'));
 });
 
-test('analysis version 4 uses split-column index inventory to recover exact identities', () => {
+test('analysis version 5 persists stable drawing registry identities from split-column inventory', () => {
   const titleBlock = (number, title, extra = []) => [item('VETERANS CLINIC RENOVATION', .62, .79, .3), ...(number ? [item(number, .82, .91)] : []), item(title, .62, .86, .32), ...extra];
   const indexItems = [item('DRAWING INDEX', .1, .08), item('61G-000', .1, .15), item('COVER SHEET', .28, .15), item('61G-001', .1, .19), item('DRAWING INDEX', .28, .19), item('61M-101', .1, .23), item('MECHANICAL PLAN - FIRST LEVEL - OVERALL', .28, .23, .45)];
   const actual = [
@@ -66,7 +68,7 @@ test('analysis version 4 uses split-column index inventory to recover exact iden
     { pageNumber: 3, width: 1000, height: 700, rotation: 0, textItems: titleBlock('61M-101', 'MECHANICAL PLAN - FIRST LEVEL - OVERALL') }
   ];
   const analysis = buildDrawingAnalysis({ documentId: 'building61', projectId: 'p1', pages: actual, analyzedAt: '2026-01-01' });
-  assert.equal(analysis.analysisVersion, 4);
+  assert.equal(analysis.analysisVersion, 5);
   assert.deepEqual(analysis.sheets.map(sheet => sheet.sheetNumber), ['61G-000', '61G-001', '61M-101']);
   assert.equal(analysis.sheets[0].sheetTitle, 'COVER SHEET');
   assert.equal(analysis.sheets[0].discipline, 'General');
@@ -75,6 +77,13 @@ test('analysis version 4 uses split-column index inventory to recover exact iden
   assert.equal(analysis.sheets[1].primarySheetType, 'Drawing Index');
   assert.equal(analysis.sheets[2].discipline, 'Mechanical');
   assert.equal(analysis.sheets[0].sheetNumberResolutionMethod, 'drawing-index-page-order');
+  assert.equal(analysis.sheets[0].drawingId, drawingIdFor('building61', 1));
+  assert.equal(analysis.sheets[0].projectId, 'p1');
+  assert.equal(analysis.sheets[0].pdfPage, 1);
+  assert.equal(analysis.sheets[2].normalizedTitle, 'mechanical plan - first level - overall');
+  assert.equal(analysis.sheets[2].floor, 'FIRST');
+  assert.equal(analysis.sheets[0].identityMethod, 'drawing-index-page-order');
+  assert.equal(analysis.sheets[0].titleMethod, 'drawing-index');
   assert.ok(analysis.sheets.every(sheet => sheet.sheetTitle !== 'FIRE PROTECTION REQUIREMENTS SHALL BE COORDINATED.'));
 });
 
@@ -92,10 +101,10 @@ test('version upgrades preserve resolvable verification overlays and report unma
   legacy.observations[0].verification = { status: 'Confirmed', correctedValue: '', verifiedAt: '2026-01-02' };
   legacy.observations.push({ observationId: 'removed', pageNumber: 99, kind: 'room-number-text', originalValue: '999', verification: { status: 'Rejected', correctedValue: '', verifiedAt: '2026-01-02' } });
   const upgraded = upgradeDrawingAnalysis(legacy);
-  assert.equal(upgraded.analysisVersion, 4);
+  assert.equal(upgraded.analysisVersion, 5);
   assert.equal(upgraded.observations.find(item => item.observationId === legacy.observations[0].observationId).verification.status, 'Confirmed');
   assert.equal(upgraded.unmappedVerificationOverlays[0].observationId, 'removed');
-  assert.equal(reanalyzeDrawingAnalysis(upgraded).analysisVersion, 4);
+  assert.equal(reanalyzeDrawingAnalysis(upgraded).analysisVersion, 5);
 });
 
 test('observation and warning presentation is field-readable and grouped', () => {

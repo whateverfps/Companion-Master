@@ -26,6 +26,17 @@ test('resolveDrawingTarget preserves page and region context for exact drawing r
   assert.deepEqual(resolved.region, { x: 0.1, y: 0.2, width: 0.3, height: 0.4 });
 });
 
+test('resolveDrawingTarget uses the permanent drawing registry identity before sheet metadata', () => {
+  const analysis = { documentId: 'doc-1', drawingSetId: 'set-1', projectId: 'project-1', sheets: [
+    { drawingId: 'drawing-1', sheetId: 'sheet-1', pageNumber: 1 },
+    { drawingId: 'drawing-2', sheetId: 'sheet-2', pageNumber: 2 }
+  ], observations: [] };
+  const target = createDrawingTarget({ projectId: 'project-1', documentId: 'doc-1', drawingSetId: 'set-1', drawingId: 'drawing-2', sheetId: 'stale-sheet', pageNumber: 99 });
+  const resolved = resolveDrawingTarget(target, { documents: [{ id: 'doc-1', projectId: 'project-1' }], analyses: [analysis] });
+  assert.equal(resolved.sheet?.drawingId, 'drawing-2');
+  assert.equal(resolved.sheet?.pageNumber, 2);
+});
+
 test('resolveDrawingTarget prefers exact plan-object and region state over stale observations', () => {
   const analysis = {
     documentId: 'doc-2',

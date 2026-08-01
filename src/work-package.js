@@ -128,7 +128,7 @@ export function workPackageModePresentation(workPackage = {}, mode = 'offline') 
 export function buildConstructionWorkPackage({ planResult = {}, documents = [], sections = [], inspections = [], relationships = [], revisions = [], lineages = [], evidence = [], workflow = null } = {}) {
   const matchingSheets = new Set(list(planResult.matchingSheetIds));
   const drawingItems = list(planResult.actions).filter(item => item.target?.sheetId && matchingSheets.has(item.target.sheetId)).map(item => ({
-    id: item.target.sheetId, documentId: item.target.documentId, sheetId: item.target.sheetId, pageNumber: item.target.pageNumber, observationId: item.target.observationId || '', region: item.target.region || null,
+    id: item.target.sheetId, drawingId: item.target.drawingId || '', documentId: item.target.documentId, sheetId: item.target.sheetId, pageNumber: item.target.pageNumber, observationId: item.target.observationId || '', region: item.target.region || null,
     reasonCode: item.target.observationId ? 'drawing-room-observation' : 'drawing-discipline-classification', reason: workPackageReason(item.target.observationId ? 'drawing-room-observation' : 'drawing-discipline-classification'), confidence: item.target.observationId ? 'Supported' : 'High', target: item.target
   }));
   const selectedIds = new Set(drawingItems.flatMap(item => [item.documentId, item.sheetId, item.observationId]).filter(Boolean));
