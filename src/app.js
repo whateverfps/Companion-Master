@@ -111,7 +111,7 @@ import { applyObservationVerification, drawingAnalysisRequiresUpgrade, drawingWa
 import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingViewportKey, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
 import { buildPlanQuery, buildPlanQueryScope, createChiefConstructionContext, drawingSearchSummary, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from './plan-query.js';
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
-import { drawingUpgradeKey, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
+import { drawingUpgradeKey, loadAuthoritativeDrawingRegistry, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
 import { buildChiefDrawingEvidence } from './chief-drawing-evidence.js';
 import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent } from './engineering-locator.js';
 import { inspectDrawingRegistryRuntime } from './drawing-registry-diagnostics.js';
@@ -1628,33 +1628,38 @@ async function currentDrawingAnalyses() {
 let latestDrawingRegistryInspection = null;
 
 async function currentGlobalDrawingRegistryAnalyses(query = '') {
-  const [analyses, activeAnalyses, activeDocuments] = await Promise.all([engine.drawingRegistryAnalyses(), engine.drawingAnalyses(), engine.documents()]);
+  const currentState = state();
+  const [activeAnalyses, activeDocuments] = await Promise.all([engine.drawingAnalyses(), engine.documents()]);
   const rebuildResults = [];
-  const outcomes = await Promise.all(analyses.map(async analysis => {
-    if (!drawingAnalysisRequiresUpgrade(analysis)) return { ok: true, analysis };
+  const shouldUpgradeForCommand = analysis => analysis.projectId === currentState.activeProject && drawingAnalysisRequiresUpgrade(analysis);
+  const refreshed = await loadAuthoritativeDrawingRegistry({
+    loadAnalyses: () => engine.drawingRegistryAnalyses(),
+    requiresUpgrade: shouldUpgradeForCommand,
+    validateOwnership: analysis => engine.drawingLifecycle(analysis.documentId, analysis.drawingSetId),
+    rebuild: analysis => upgradeDrawingAnalysis(analysis),
+    save: analysis => engine.saveDrawingAnalysis(analysis),
+    upgradeWork: drawingUpgradeWork
+  });
+  refreshed.results.forEach((result, index) => {
+    const analysis = refreshed.initial.filter(shouldUpgradeForCommand)[index];
+    if (!analysis) return;
     const key = drawingUpgradeKey(analysis, DRAWING_ANALYSIS_VERSION);
-    if (drawingUpgradeFailures.has(key)) return { ok: false, analysis };
-    if (!drawingUpgradeWork.has(key)) drawingUpgradeWork.set(key, (async () => {
-      const ownership = await engine.drawingLifecycle(analysis.documentId, analysis.drawingSetId);
-      if (!ownership.ok) return ownership;
-      const upgraded = upgradeDrawingAnalysis(analysis);
-      return engine.saveDrawingAnalysis(upgraded);
-    })().catch(error => ({ ok: false, status: 'failed', errorCode: 'drawing-upgrade-failed', analysis, owningProjectId: analysis.projectId, warning: error.message || 'Drawing registry upgrade failed.', recoverable: true })).finally(() => drawingUpgradeWork.delete(key)));
-    const result = await drawingUpgradeWork.get(key);
-    if (!result.ok) drawingUpgradeFailures.add(key);
+    if (result?.ok) drawingUpgradeFailures.delete(key);
+    else drawingUpgradeFailures.add(key);
     const beforeNumbers = new Set((analysis.drawingRegistry || []).map(item => item.normalizedSheetNumber).filter(Boolean));
     const afterNumbers = (result.analysis?.drawingRegistry || []).map(item => item.normalizedSheetNumber).filter(Boolean);
     rebuildResults.push({ drawingSetId: analysis.drawingSetId, documentId: analysis.documentId, projectId: analysis.projectId, ok: Boolean(result.ok), status: result.status || '', errorCode: result.errorCode || '', profileRevisionBefore: analysis.profile?.profileVersion || 0, profileRevisionAfter: result.analysis?.profile?.profileVersion || 0, savedRegistryCount: result.analysis?.drawingRegistry?.length || 0, recoveredRows: afterNumbers.filter(item => !beforeNumbers.has(item)) });
-    return result;
-  }));
-  const available = outcomes.filter(outcome => outcome.ok && outcome.analysis).map(outcome => outcome.analysis);
-  const currentState = state();
+  });
+  const available = refreshed.analyses.filter(analysis => !drawingAnalysisRequiresUpgrade(analysis));
+  const intent = classifyEngineeringNavigationIntent(query);
+  const activeExactMatch = intent.kind === 'exact-drawing-navigation' && available.some(analysis => analysis.projectId === currentState.activeProject && (analysis.drawingRegistry || []).some(item => item.normalizedSheetNumber === intent.value));
+  const commandAnalyses = activeExactMatch ? available.filter(analysis => analysis.projectId === currentState.activeProject) : available;
   try {
-    latestDrawingRegistryInspection = inspectDrawingRegistryRuntime({ activeProject: currentState.projects.find(project => project.id === currentState.activeProject) || { id: currentState.activeProject, name: currentState.activeProject }, documents: activeDocuments, analyses: available, persistedAnalyses: analyses, activeAnalyses, query, rebuild: { attempted: rebuildResults.length > 0, results: rebuildResults } });
+    latestDrawingRegistryInspection = inspectDrawingRegistryRuntime({ activeProject: currentState.projects.find(project => project.id === currentState.activeProject) || { id: currentState.activeProject, name: currentState.activeProject }, documents: activeDocuments, analyses: commandAnalyses, persistedAnalyses: refreshed.analyses, activeAnalyses, query, rebuild: { attempted: rebuildResults.length > 0, results: rebuildResults } });
   } catch (error) {
-    latestDrawingRegistryInspection = { activeProjectId: currentState.activeProject, query, diagnosticError: error.message || 'Runtime registry inspection could not be constructed.', globalAnalysisCount: analyses.length, availableAnalysisCount: available.length };
+    latestDrawingRegistryInspection = { activeProjectId: currentState.activeProject, query, diagnosticError: error.message || 'Runtime registry inspection could not be constructed.', globalAnalysisCount: refreshed.analyses.length, availableAnalysisCount: available.length };
   }
-  return available;
+  return commandAnalyses;
 }
 
 async function buildActiveConstructionPackage(query, evidence = []) {

@@ -5,7 +5,39 @@ const clone = value => value === undefined ? undefined : structuredClone(value);
 const action = (id, label, enabled = true) => enabled ? { id, label } : null;
 
 export function drawingUpgradeKey(analysis = {}, targetVersion = 0) {
-  return [text(analysis.drawingSetId), text(analysis.documentId), Number(targetVersion) || 0].join(':');
+  const registryRevision = Number(analysis.registryRevision || analysis.registryHealth?.registryRevision || 0);
+  const profileVersion = Number(analysis.profile?.profileVersion || 0);
+  const registered = list(analysis.drawingRegistry).filter(item => text(item.sheetNumber) && text(item.normalizedSheetNumber)).length;
+  const expected = list(analysis.indexEntries).length;
+  const unresolved = Number(analysis.registryHealth?.unresolvedPages || 0);
+  return [text(analysis.drawingSetId), text(analysis.documentId), Number(targetVersion) || 0, profileVersion, registryRevision, registered, expected, unresolved].join(':');
+}
+
+export async function loadAuthoritativeDrawingRegistry({
+  loadAnalyses,
+  requiresUpgrade,
+  validateOwnership,
+  rebuild,
+  save,
+  upgradeWork = new Map()
+} = {}) {
+  const initial = list(await loadAnalyses());
+  const results = [];
+  for (const analysis of initial) {
+    if (!requiresUpgrade(analysis)) continue;
+    const key = drawingUpgradeKey(analysis, analysis.analysisVersion);
+    if (!upgradeWork.has(key)) upgradeWork.set(key, (async () => {
+      const ownership = await validateOwnership(analysis);
+      if (!ownership?.ok) return ownership;
+      const rebuilt = await rebuild(analysis);
+      if (!rebuilt || requiresUpgrade(rebuilt)) return { ok: false, status: 'failed', errorCode: 'drawing-upgrade-incomplete', analysis: rebuilt || analysis, warning: 'Drawing registry rebuild did not satisfy its authoritative quality gate.' };
+      const saved = await save(rebuilt);
+      return saved?.ok ? { ...saved, analysis: saved.analysis || rebuilt } : saved;
+    })().finally(() => upgradeWork.delete(key)));
+    results.push(await upgradeWork.get(key));
+  }
+  const analyses = list(await loadAnalyses());
+  return { analyses, initial, results };
 }
 
 export function drawingRecoveryActions(outcome = {}) {

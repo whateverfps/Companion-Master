@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyDrawingOrphans, drawingRecoveryActions, drawingUpgradeKey, reduceStaleDrawingTarget, validateDrawingOwnership } from '../src/drawing-lifecycle.js';
+import { classifyDrawingOrphans, drawingRecoveryActions, drawingUpgradeKey, loadAuthoritativeDrawingRegistry, reduceStaleDrawingTarget, validateDrawingOwnership } from '../src/drawing-lifecycle.js';
 
 const document = { id: 'd1', projectId: 'p1', sourceAvailability: 'available' };
 const sourceFile = { documentId: 'd1', projectId: 'p1' };
@@ -43,9 +43,40 @@ test('stale target reduction preserves the highest valid exact level', () => {
 });
 
 test('recovery actions and upgrade keys are deterministic', () => {
-  assert.equal(drawingUpgradeKey(analysis, 3), 'set1:d1:3');
+  assert.equal(drawingUpgradeKey(analysis, 3), 'set1:d1:3:0:0:0:0:0');
   const labels = drawingRecoveryActions({ errorCode: 'drawing-document-missing', analysis, owningProjectId: 'p1', activeProjectId: 'general' }).map(item => item.label);
   assert.ok(labels.includes('Open Owning Project'));
   assert.ok(labels.includes('Remove Stale Analysis'));
   assert.ok(labels.includes('View Details'));
+});
+
+test('authoritative registry reload replaces a stale in-memory analysis during the same command', async () => {
+  const stale = { ...analysis, analysisVersion: 7, profile: { profileVersion: 2 }, registryHealth: { unresolvedPages: 52 }, indexEntries: Array.from({ length: 70 }, (_, index) => ({ sheetNumber: `61M-${index}` })), drawingRegistry: Array.from({ length: 18 }, (_, index) => ({ drawingId: `old-${index}`, sheetNumber: `61M-${index}`, normalizedSheetNumber: `61M${index}` })) };
+  const completeRegistry = Array.from({ length: 70 }, (_, index) => ({ drawingId: `new-${index}`, sheetNumber: index === 1 ? '61M-101' : `61M-${index}`, normalizedSheetNumber: index === 1 ? '61M101' : `61M${index}` }));
+  const complete = { ...stale, registryHealth: { unresolvedPages: 0 }, drawingRegistry: completeRegistry };
+  let persisted = structuredClone(stale);
+  let saves = 0;
+  const requiresUpgrade = item => item.drawingRegistry.length < item.indexEntries.length || item.registryHealth.unresolvedPages > 0;
+  const result = await loadAuthoritativeDrawingRegistry({
+    loadAnalyses: async () => [structuredClone(persisted)],
+    requiresUpgrade,
+    validateOwnership: async () => ({ ok: true }),
+    rebuild: async () => structuredClone(complete),
+    save: async rebuilt => { saves += 1; persisted = structuredClone(rebuilt); return { ok: true, status: 'saved', analysis: structuredClone(rebuilt) }; }
+  });
+  assert.equal(saves, 1);
+  assert.equal(result.initial[0].drawingRegistry.length, 18);
+  assert.equal(result.analyses[0].drawingRegistry.length, 70);
+  assert.ok(result.analyses[0].drawingRegistry.some(item => item.normalizedSheetNumber === '61M101'));
+  const second = await loadAuthoritativeDrawingRegistry({ loadAnalyses: async () => [structuredClone(persisted)], requiresUpgrade, validateOwnership: async () => ({ ok: true }), rebuild: async () => { throw new Error('must not rebuild'); }, save: async () => { throw new Error('must not save'); } });
+  assert.equal(second.results.length, 0);
+  assert.equal(saves, 1);
+});
+
+test('an incomplete rebuild is not saved or returned as authoritative', async () => {
+  const stale = { ...analysis, drawingRegistry: [], indexEntries: [{}], registryHealth: { unresolvedPages: 1 } };
+  let saved = false;
+  const result = await loadAuthoritativeDrawingRegistry({ loadAnalyses: async () => [structuredClone(stale)], requiresUpgrade: item => item.registryHealth.unresolvedPages > 0, validateOwnership: async () => ({ ok: true }), rebuild: async () => structuredClone(stale), save: async () => { saved = true; return { ok: true }; } });
+  assert.equal(saved, false);
+  assert.equal(result.results[0].errorCode, 'drawing-upgrade-incomplete');
 });

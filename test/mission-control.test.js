@@ -389,7 +389,10 @@ test('exact engineering navigation returns before retrieval and preserves regist
   const globalUpgrade = app.slice(app.indexOf('async function currentGlobalDrawingRegistryAnalyses'), app.indexOf('async function buildActiveConstructionPackage'));
   assert.match(globalUpgrade, /engine\.drawingRegistryAnalyses\(\)/);
   assert.match(globalUpgrade, /drawingAnalysisRequiresUpgrade\(analysis\)/);
-  assert.match(globalUpgrade, /engine\.saveDrawingAnalysis\(upgraded\)/);
+  assert.match(globalUpgrade, /loadAuthoritativeDrawingRegistry/);
+  assert.match(globalUpgrade, /loadAnalyses: \(\) => engine\.drawingRegistryAnalyses\(\)/);
+  assert.match(globalUpgrade, /save: analysis => engine\.saveDrawingAnalysis\(analysis\)/);
+  assert.match(globalUpgrade, /const commandAnalyses = activeExactMatch/);
   assert.match(globalUpgrade, /inspectDrawingRegistryRuntime/);
   const exactCommand = submit.slice(exactBranch, retrieval);
   assert.equal((exactCommand.match(/logger\.info\('Drawing registry runtime inspection'/g) || []).length, 1);

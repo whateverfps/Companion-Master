@@ -4,6 +4,7 @@ import { extractScheduleCandidates } from './drawing-schedules.js';
 import { BEDFORD_VA_PROFILE_VERSION, detectBedfordVaProfile, findBedfordDrawingIndexPage, normalizeBedfordSheetNumber, parseBedfordDrawingIndex, parseBedfordTitleBlock } from './bedford-va-drawing-profile.js';
 
 export const DRAWING_ANALYSIS_VERSION = 7;
+export const BEDFORD_DRAWING_REGISTRY_REVISION = 3;
 export const VERIFICATION_STATES = Object.freeze(['Unreviewed', 'Confirmed', 'Corrected', 'Rejected', 'Uncertain']);
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const list = value => Array.isArray(value) ? value : [];
@@ -500,10 +501,11 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
     analysisVersion: DRAWING_ANALYSIS_VERSION, analyzedAt: text(analyzedAt),
     status: warnings.length ? 'Completed with warnings' : 'Ready for review',
     stages: ['Reading source', 'Inspecting pages', 'Detecting title blocks', 'Building sheet index', 'Classifying sheets', 'Recording text observations', 'Reconciling index', warnings.length ? 'Completed with warnings' : 'Ready for review'],
+    registryRevision: profile.selected ? BEDFORD_DRAWING_REGISTRY_REVISION : 0,
     profile: { selected: profile.selected, profileId: profile.profileId, profileVersion: profile.selected ? BEDFORD_VA_PROFILE_VERSION : 0, evidence: profile.evidence },
     sheets, indexEntries, drawingIndex: { detected: indexEntries.length > 0, sourceSheetIds: [...new Set(indexEntries.map(item => item.sourceSheetId).filter(Boolean))], sourcePage: bedfordIndexPage?.pageNumber || indexEntries[0]?.sourcePage || null, rowCount: indexEntries.length },
     drawingRegistry,
-    registryHealth: { profileSelected: profile.selected, indexDetected: Boolean(indexEntries.length), drawingIndexFound: Boolean(indexEntries.length), indexPage: bedfordIndexPage?.pageNumber || indexEntries[0]?.sourcePage || null, expectedSheetCount: indexEntries.length, indexRowsParsed: indexEntries.length, totalPdfPages: sheets.length, titleBlocksParsed: sheets.filter(item => item.bedfordTitleBlock?.detected).length, pagesMatchedToIndex: sheets.filter(item => item.indexEntry).length, authoritativeTitleBlockIdentities: sheets.filter(item => item.identityStatus === 'Authoritative').length, missingIndexedSheets: reconciliation.filter(item => item.type === 'expected-sheet-missing').length, unindexedPages: reconciliation.filter(item => item.type === 'sheet-absent-from-index').length, indexTitleConflicts: reconciliation.filter(item => item.type === 'title-mismatch').length, duplicateSheetNumbers: reconciliation.filter(item => item.type === 'duplicate-sheet-number').length, registryRecordsCreated: drawingRegistry.length, unresolvedPages: sheets.length - drawingRegistry.length, projectOwnershipFailures: 0, pagesRequiringManualReview: sheets.filter(item => item.identityStatus === 'Ambiguous').length },
+    registryHealth: { registryRevision: profile.selected ? BEDFORD_DRAWING_REGISTRY_REVISION : 0, profileSelected: profile.selected, indexDetected: Boolean(indexEntries.length), drawingIndexFound: Boolean(indexEntries.length), indexPage: bedfordIndexPage?.pageNumber || indexEntries[0]?.sourcePage || null, expectedSheetCount: indexEntries.length, indexRowsParsed: indexEntries.length, totalPdfPages: sheets.length, titleBlocksParsed: sheets.filter(item => item.bedfordTitleBlock?.detected).length, pagesMatchedToIndex: sheets.filter(item => item.indexEntry).length, authoritativeTitleBlockIdentities: sheets.filter(item => item.identityStatus === 'Authoritative').length, missingIndexedSheets: reconciliation.filter(item => item.type === 'expected-sheet-missing').length, unindexedPages: reconciliation.filter(item => item.type === 'sheet-absent-from-index').length, indexTitleConflicts: reconciliation.filter(item => item.type === 'title-mismatch').length, duplicateSheetNumbers: reconciliation.filter(item => item.type === 'duplicate-sheet-number').length, registryRecordsCreated: drawingRegistry.length, unresolvedPages: sheets.length - drawingRegistry.length, projectOwnershipFailures: 0, pagesRequiringManualReview: sheets.filter(item => item.identityStatus === 'Ambiguous').length },
     observations, references, legends, schedules, keyedNoteDefinitions, keyedNoteOccurrences, candidateOccurrences: [], warnings,
     limitations: ['Text observations do not establish room boundaries, symbol ownership, graphical connectivity, or installed quantities.']
   };
@@ -540,10 +542,13 @@ export function drawingAnalysisRequiresUpgrade(analysis = {}) {
   const pages = list(analysis.sheets).map(sheet => ({ pageNumber: sheet.pageNumber, width: sheet.pageWidth, height: sheet.pageHeight, rotation: sheet.rotation, textItems: sheet.textItems }));
   const bedford = detectBedfordVaProfile(pages);
   if (!bedford.selected) return false;
+  if (Number(analysis.registryRevision || analysis.registryHealth?.registryRevision || 0) !== BEDFORD_DRAWING_REGISTRY_REVISION) return true;
   if (analysis.profile?.profileVersion !== BEDFORD_VA_PROFILE_VERSION || analysis.profile?.profileId !== bedford.profileId || !Array.isArray(analysis.drawingRegistry)) return true;
   const registry = list(analysis.drawingRegistry);
   const expected = list(analysis.indexEntries);
-  return registry.some(item => !text(item.sheetNumber) || !text(item.normalizedSheetNumber)) || registry.length < expected.length || Number(analysis.registryHealth?.unresolvedPages || 0) > 0;
+  const registryKeys = new Set(registry.map(item => normalizeSheetNumber(item.normalizedSheetNumber || item.sheetNumber)).filter(Boolean));
+  const expectedKeys = expected.map(item => normalizeSheetNumber(item.normalizedSheetNumber || item.sheetNumber)).filter(Boolean);
+  return registry.some(item => !text(item.sheetNumber) || !text(item.normalizedSheetNumber)) || registry.length < expected.length || expectedKeys.some(key => !registryKeys.has(key)) || Number(analysis.registryHealth?.unresolvedPages || 0) > 0;
 }
 
 export const observationKindLabel = kind => ({
