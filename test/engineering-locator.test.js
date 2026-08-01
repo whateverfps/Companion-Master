@@ -1,6 +1,60 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildChiefLocationPresentation, resolveEngineeringLocation } from '../src/engineering-locator.js';
+import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent, normalizeRegisteredSheetNumber, resolveEngineeringLocation } from '../src/engineering-locator.js';
+
+const registeredMechanicalAnalysis = projectId => ({
+  documentId: `doc-${projectId}`, drawingSetId: `set-${projectId}`, projectId,
+  sheets: [{ drawingId: `drawing-${projectId}-61m101`, sheetId: `sheet-${projectId}`, pageNumber: 23, sheetNumber: '61M-101', sheetTitle: 'Mechanical Plan — First Level — Overall', discipline: 'Mechanical' }],
+  observations: [
+    { observationId: `index-${projectId}`, sheetId: `sheet-${projectId}`, kind: 'positioned-pdf-text', value: '61M-101' },
+    { observationId: `building-${projectId}`, sheetId: `sheet-${projectId}`, kind: 'room-number-text', value: '80' }
+  ]
+});
+
+test('classifies and normalizes exact drawing navigation commands before location heuristics', () => {
+  for (const query of ['Open sheet 61M-101', 'Open Mechanical Sheet 61M101', 'Take me to 61 M-101', 'Show drawing 61M-101']) {
+    const intent = classifyEngineeringNavigationIntent(query);
+    assert.equal(intent.kind, 'exact-drawing-navigation');
+    assert.equal(intent.value, '61M101');
+  }
+  assert.equal(normalizeRegisteredSheetNumber('sheet 61 M-101'), '61M101');
+  assert.equal(classifyEngineeringNavigationIntent('What work is shown on 61M-101?').kind, 'knowledge-question');
+});
+
+test('exact registered sheet command resolves one drawingId without observation candidates', () => {
+  const analysis = registeredMechanicalAnalysis('bedford');
+  const result = resolveEngineeringLocation('Open Mechanical Sheet 61M-101', { analyses: [analysis], projectId: 'general', returnTarget: 'chief-answer' });
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.kind, 'sheet');
+  assert.equal(result.target?.drawingId, 'drawing-bedford-61m101');
+  assert.equal(result.target?.kind, 'drawing');
+  assert.equal(result.target?.projectId, 'bedford');
+  assert.equal(result.target?.sheetId, 'sheet-bedford');
+  assert.equal(result.target?.returnTarget, 'chief-answer');
+  assert.deepEqual(result.candidates.map(item => item.drawingId), ['drawing-bedford-61m101']);
+  assert.equal(result.candidates.some(item => item.label === '80'), false);
+});
+
+test('exact sheet ambiguity is deduplicated by drawingId and remains project-distinguishable', () => {
+  const bedford = registeredMechanicalAnalysis('bedford');
+  const duplicateObservationCopy = structuredClone(bedford);
+  const other = registeredMechanicalAnalysis('other');
+  const deduplicated = resolveEngineeringLocation('Open sheet 61M-101', { analyses: [bedford, duplicateObservationCopy], projectId: 'general' });
+  assert.equal(deduplicated.status, 'resolved');
+  const ambiguous = resolveEngineeringLocation('Open sheet 61M-101', { analyses: [bedford, other], projectId: 'general' });
+  assert.equal(ambiguous.status, 'ambiguous');
+  assert.deepEqual(ambiguous.candidates.map(item => item.projectId).sort(), ['bedford', 'other']);
+});
+
+test('explicit discipline constrains room candidates instead of broadening them', () => {
+  const mechanical = registeredMechanicalAnalysis('bedford');
+  mechanical.observations.push({ observationId: 'room-mech', sheetId: 'sheet-bedford', kind: 'room-number-text', value: '127B' });
+  const electrical = structuredClone(mechanical);
+  electrical.sheets[0] = { ...electrical.sheets[0], drawingId: 'drawing-electrical', sheetId: 'sheet-electrical', discipline: 'Electrical' };
+  electrical.observations = [{ observationId: 'room-elec', sheetId: 'sheet-electrical', kind: 'room-number-text', value: '127B' }];
+  const result = resolveEngineeringLocation('Show Room 127B on the mechanical plan', { analyses: [mechanical, electrical] });
+  assert.equal(result.target?.drawingId, 'drawing-bedford-61m101');
+});
 
 test('resolves an exact room query into a drawing target with observation metadata', () => {
   const result = resolveEngineeringLocation('Show room 101', {
@@ -24,7 +78,7 @@ test('resolves an exact room query into a drawing target with observation metada
   assert.deepEqual(result.target?.region, { x: 0.1, y: 0.2, width: 0.3, height: 0.4 });
 });
 
-test('resolves equipment and sheet identifiers without changing the underlying drawing metadata', () => {
+test('an explicit sheet command takes precedence over equipment observation text', () => {
   const result = resolveEngineeringLocation('Open sheet A102 and show AHU-01', {
     analyses: [{
       documentId: 'doc-2',
@@ -37,10 +91,10 @@ test('resolves equipment and sheet identifiers without changing the underlying d
   });
 
   assert.equal(result.status, 'resolved');
-  assert.equal(result.kind, 'equipment');
+  assert.equal(result.kind, 'sheet');
   assert.equal(result.target?.sheetId, 'sheet-2');
-  assert.equal(result.target?.observationId, 'obs-eq-1');
-  assert.equal(result.label, 'AHU-01');
+  assert.equal(result.target?.observationId, '');
+  assert.equal(result.label, 'A102');
 });
 
 test('resolves a named room by matching room-name observations', () => {

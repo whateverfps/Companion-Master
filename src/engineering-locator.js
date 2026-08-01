@@ -5,6 +5,26 @@ const text = value => value === null || value === undefined ? '' : String(value)
 const normalize = value => text(value).toLowerCase();
 const list = value => Array.isArray(value) ? value : [];
 
+export const normalizeRegisteredSheetNumber = value => text(value).toUpperCase().replace(/^\s*(?:SHEET|DRAWING)\s+/i, '').replace(/[^A-Z0-9]+/g, '');
+
+const DISCIPLINE_TERMS = Object.freeze([
+  ['Mechanical', /\b(?:mechanical|hvac)\b/i], ['Electrical', /\belectrical\b/i],
+  ['Telecommunications', /\b(?:telecommunications?|telecom)\b/i], ['Fire Protection', /\bfire protection\b/i],
+  ['Plumbing', /\bplumbing\b/i], ['Architectural', /\barchitectural\b/i]
+]);
+
+export function classifyEngineeringNavigationIntent(query = '') {
+  const raw = text(query);
+  const command = /^(?:open|take\s+me\s+to|go\s+to|navigate\s+to|show(?:\s+me)?|display)\b/i.test(raw);
+  if (!command) return { kind: 'knowledge-question', exact: false, value: '', discipline: '' };
+  const specification = raw.match(/\b(?:specification|spec|section)\s+([0-9]{2}\s*[0-9]{2}\s*[0-9]{2})\b/i);
+  if (specification) return { kind: 'exact-specification-navigation', exact: true, value: normalizeSectionNumber(specification[1]), discipline: '' };
+  const sheet = raw.match(/\b(?:sheet|drawing|plan)\s+((?:\d{1,4}\s*)?[A-Z]{1,3}\s*-?\s*\d{3,4}[A-Z]?)\b/i)
+    || raw.match(/\b((?:\d{1,4}\s*)?[A-Z]{1,3}\s*-\s*\d{3,4}[A-Z]?)\b/i);
+  if (!sheet) return { kind: 'knowledge-question', exact: false, value: '', discipline: '' };
+  return { kind: 'exact-drawing-navigation', exact: true, value: normalizeRegisteredSheetNumber(sheet[1]), discipline: DISCIPLINE_TERMS.find(([, pattern]) => pattern.test(raw))?.[0] || '' };
+}
+
 function normalizeSectionNumber(value) {
   return text(value).replace(/[^0-9A-Za-z]+/g, ' ').trim().replace(/\s+/g, ' ');
 }
@@ -64,8 +84,8 @@ function inferSpecCandidates(sections = []) {
 export function buildChiefLocationPresentation(question = '', options = {}) {
   const normalizedQuestion = typeof question === 'string' ? question : question?.content || '';
   const resolvedOptions = typeof question === 'string' ? options : (options || {});
-  const { analyses = [], documents = [], sections = [], returnTarget = '' } = resolvedOptions;
-  const result = resolveEngineeringLocation(normalizedQuestion, { analyses, documents, sections, returnTarget });
+  const { analyses = [], documents = [], sections = [], returnTarget = '', projectId = '' } = resolvedOptions;
+  const result = resolveEngineeringLocation(normalizedQuestion, { analyses, documents, sections, returnTarget, projectId });
   if (result.status === 'resolved') {
     const summary = result.kind === 'spec-section'
       ? `Resolved ${result.label} as a specification section.`
@@ -114,14 +134,32 @@ export function resolveEngineeringLocation(query = '', {
   analyses = [],
   documents = [],
   sections = [],
-  returnTarget = ''
+  returnTarget = '',
+  projectId = ''
 } = {}) {
   const rawQuery = text(query);
   const normalizedQuery = normalize(rawQuery);
 
   if (!rawQuery) return { status: 'none', kind: 'none', target: null, label: '', candidates: [] };
 
+  const navigationIntent = classifyEngineeringNavigationIntent(rawQuery);
+  if (navigationIntent.kind === 'exact-drawing-navigation') {
+    let exactMatches = inferSheetCandidates(analyses).filter(candidate => normalizeRegisteredSheetNumber(candidate.sheet?.sheetNumber) === navigationIntent.value);
+    if (projectId && projectId !== 'general') exactMatches = exactMatches.filter(candidate => text(candidate.analysis?.projectId) === text(projectId));
+    if (navigationIntent.discipline) exactMatches = exactMatches.filter(candidate => text(candidate.sheet?.discipline) === navigationIntent.discipline);
+    exactMatches = [...new Map(exactMatches.map(candidate => [text(candidate.sheet?.drawingId) || `${candidate.analysis?.documentId}:${candidate.sheet?.pageNumber}`, candidate])).values()];
+    if (exactMatches.length) return buildDrawingResolution({ query: rawQuery, resolved: exactMatches[0], candidates: exactMatches, kind: 'sheet', label: exactMatches[0].label, returnTarget, documents, analyses, navigationIntent });
+    return { status: 'none', kind: 'sheet', target: null, label: navigationIntent.value, candidates: [], navigationIntent };
+  }
+
+  if (navigationIntent.kind === 'exact-specification-navigation') {
+    const exactMatches = inferSpecCandidates(sections).filter(candidate => normalizeSectionNumber(candidate.section?.number || candidate.section?.title || '') === navigationIntent.value);
+    if (exactMatches.length) return { ...buildSpecResolution({ resolved: exactMatches[0], candidates: exactMatches, returnTarget }), navigationIntent };
+    return { status: 'none', kind: 'spec-section', target: null, label: navigationIntent.value, candidates: [], navigationIntent };
+  }
+
   const roomQuery = rawQuery.match(/\broom\s+([a-z0-9-]+)\b/i);
+  const explicitDiscipline = DISCIPLINE_TERMS.find(([, pattern]) => pattern.test(rawQuery))?.[0] || '';
   const namedRoomQuery = rawQuery.match(/\b(?:show|open|find|go to|where is)\s+(?:the\s+)?([a-z][a-z0-9\s&/-]{1,40})\b/i);
   const equipmentQuery = rawQuery.match(/(?:show|display|locate|find|identify|where is)\s+(?:the\s+)?([a-z0-9._/-]+)\b/i)?.[1];
   const sheetQuery = rawQuery.match(/\bsheet\s+([a-z0-9.-]+)\b/i);
@@ -129,7 +167,8 @@ export function resolveEngineeringLocation(query = '', {
 
   const roomCandidates = inferRoomCandidates(analyses).filter(candidate => {
     const token = roomQuery ? normalize(roomQuery[1]) : '';
-    return !roomQuery || normalize(candidate.label) === token || normalize(candidate.label).includes(token);
+    const sheet = list(candidate.analysis?.sheets).find(item => item.sheetId === candidate.observation?.sheetId);
+    return (!roomQuery || normalize(candidate.label) === token || normalize(candidate.label).includes(token)) && (!explicitDiscipline || sheet?.discipline === explicitDiscipline);
   });
 
   if (roomQuery && roomCandidates.length) {
@@ -224,15 +263,16 @@ export function resolveEngineeringLocation(query = '', {
   return { status: 'none', kind: 'none', target: null, label: '', candidates: [] };
 }
 
-function buildDrawingResolution({ resolved, candidates, kind, label, returnTarget, documents, analyses }) {
+function buildDrawingResolution({ resolved, candidates, kind, label, returnTarget, documents, navigationIntent = null }) {
   const analysis = resolved.analysis;
   const observation = resolved.observation;
-  const sheet = (analysis?.sheets || []).find(item => text(item.sheetId) === text(observation?.sheetId)) || null;
+  const sheet = resolved.sheet || (analysis?.sheets || []).find(item => text(item.sheetId) === text(observation?.sheetId)) || null;
   const document = documents.find(item => text(item.id) === text(analysis?.documentId)) || null;
-  const target = createDrawingTarget({
+  const target = { kind: 'drawing', ...createDrawingTarget({
     projectId: analysis?.projectId,
     documentId: analysis?.documentId,
     drawingSetId: analysis?.drawingSetId,
+    drawingId: sheet?.drawingId || '',
     sheetId: observation?.sheetId || sheet?.sheetId || '',
     pageNumber: sheet?.pageNumber || null,
     sheetNumber: sheet?.sheetNumber || '',
@@ -240,7 +280,7 @@ function buildDrawingResolution({ resolved, candidates, kind, label, returnTarge
     region: observation?.region || null,
     origin: 'engineering-locator',
     returnTarget: text(returnTarget)
-  });
+  }) };
 
   return {
     status: candidates.length > 1 ? 'ambiguous' : 'resolved',
@@ -250,14 +290,15 @@ function buildDrawingResolution({ resolved, candidates, kind, label, returnTarge
     document,
     sheet,
     observation,
-    candidates: candidates.map(item => ({ label: item.label, kind: item.kind }))
+    navigationIntent,
+    candidates: candidates.map(item => ({ label: candidates.length > 1 ? `${item.label} — ${item.analysis?.projectId || 'project unavailable'}` : item.label, kind: item.kind, projectId: item.analysis?.projectId || '', drawingId: item.sheet?.drawingId || '', sheetNumber: item.sheet?.sheetNumber || '', sheetTitle: item.sheet?.sheetTitle || '', discipline: item.sheet?.discipline || '' }))
   };
 }
 
 function buildSpecResolution({ resolved, candidates, returnTarget }) {
   const section = resolved.section;
   const sourceTarget = createActionTarget({
-    projectId: '',
+    projectId: section?.projectId || '',
     libraryId: '',
     documentId: section?.documentId || '',
     sectionId: section?.id || '',

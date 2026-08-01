@@ -113,7 +113,7 @@ import { buildPlanQuery, buildPlanQueryScope, createChiefConstructionContext, dr
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
 import { drawingUpgradeKey, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
 import { buildChiefDrawingEvidence } from './chief-drawing-evidence.js';
-import { buildChiefLocationPresentation } from './engineering-locator.js';
+import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent } from './engineering-locator.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -2248,12 +2248,33 @@ $('#missionControlContent').addEventListener('submit', async event => {
   try {
     const current = state();
     const conversation = engine.activeConversation();
-    const [analyses, documents, sections] = await Promise.all([currentDrawingAnalyses(), engine.documents(), engine.sections()]);
-    const locationPresentation = buildChiefLocationPresentation(promptValue, { analyses, documents, sections, returnTarget: 'chief-answer' });
+    const navigationIntent = classifyEngineeringNavigationIntent(promptValue);
+    const [analyses, documents, sections] = await Promise.all([navigationIntent.kind === 'exact-drawing-navigation' ? engine.drawingRegistryAnalyses() : currentDrawingAnalyses(), engine.documents(), engine.sections()]);
+    const locationPresentation = buildChiefLocationPresentation(promptValue, { analyses, documents, sections, returnTarget: 'chief-answer', projectId: current.activeProject });
     activeChiefLocationPresentation = locationPresentation && locationPresentation.status !== 'none' ? locationPresentation : null;
     const resolvedLocationTarget = locationPresentation.status === 'resolved' && locationPresentation.target?.kind === 'drawing'
-      ? createDrawingTarget({ projectId: current.activeProject, documentId: locationPresentation.target.documentId, drawingSetId: locationPresentation.target.drawingSetId, sheetId: locationPresentation.target.sheetId, pageNumber: locationPresentation.target.pageNumber, observationId: locationPresentation.target.observationId, region: locationPresentation.target.region, origin: 'engineering-locator', returnTarget: 'chief-answer' })
+      ? createDrawingTarget({ projectId: locationPresentation.target.projectId, documentId: locationPresentation.target.documentId, drawingSetId: locationPresentation.target.drawingSetId, drawingId: locationPresentation.target.drawingId, sheetId: locationPresentation.target.sheetId, pageNumber: locationPresentation.target.pageNumber, observationId: locationPresentation.target.observationId, region: locationPresentation.target.region, origin: 'engineering-locator', returnTarget: 'chief-answer' })
       : null;
+    if (navigationIntent.exact) {
+      if (!engine.activeConversation()) engine.createConversation({ projectId: resolvedLocationTarget?.projectId || current.activeProject });
+      engine.appendConversationMessage({ role: 'user', content: promptValue });
+      engine.appendConversationMessage({ role: 'assistant', content: locationPresentation.status === 'resolved' ? `Located ${locationPresentation.summary.replace(/^Located\s+/i, '')}` : locationPresentation.status === 'ambiguous' ? locationPresentation.summary : `No exact registered ${navigationIntent.kind === 'exact-drawing-navigation' ? 'drawing' : 'specification'} matched that command.`, navigationTarget: locationPresentation.target || null });
+      if (resolvedLocationTarget) {
+        if (resolvedLocationTarget.projectId && resolvedLocationTarget.projectId !== current.activeProject) await selectProjectThroughProductionPath(resolvedLocationTarget.projectId);
+        drawingTarget = resolvedLocationTarget;
+        pendingDrawingContext = resolvedLocationTarget;
+        drawingMatchingSheetIds = [resolvedLocationTarget.sheetId];
+        setChiefState('success');
+        await showMissionControlView('plans');
+      } else if (locationPresentation.status === 'resolved' && locationPresentation.mode === 'specification') {
+        setChiefState('success');
+        await openProfessionalDestination({ ...locationPresentation.target, view: 'knowledge' });
+      } else {
+        setChiefState(locationPresentation.status === 'ambiguous' ? 'success' : 'error');
+        await renderChiefWorkspace({ historyVisible: chiefHistoryVisible });
+      }
+      return;
+    }
     if (resolvedLocationTarget) pendingDrawingContext = resolvedLocationTarget;
     const construction = await buildActiveConstructionPackage(promptValue);
     const drawingScope = construction ? buildPlanQueryScope(construction.planResult, construction.sections, construction.analyses) : null;

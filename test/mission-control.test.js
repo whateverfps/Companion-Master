@@ -372,3 +372,17 @@ test('Mission Control uses user-facing Chief, command-desk, and drawing guidance
   assert.match(app, /Return to Chief/);
   assert.doesNotMatch(app, /No active Engineering Context/);
 });
+
+test('exact engineering navigation returns before retrieval and preserves registry ownership', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const submitStart = app.indexOf("$('#missionControlContent').addEventListener('submit'");
+  const submit = app.slice(submitStart, app.indexOf('async function ingestMissionControlFiles', submitStart));
+  const exactBranch = submit.indexOf('if (navigationIntent.exact)');
+  const retrieval = submit.indexOf('await engine.ask');
+  assert.ok(exactBranch >= 0 && retrieval > exactBranch);
+  assert.match(submit.slice(exactBranch, retrieval), /await showMissionControlView\('plans'\)/);
+  assert.match(submit.slice(exactBranch, retrieval), /await openProfessionalDestination\(\{ \.\.\.locationPresentation\.target, view: 'knowledge' \}\)/);
+  assert.match(submit.slice(exactBranch, retrieval), /return;/);
+  assert.match(submit, /projectId: locationPresentation\.target\.projectId/);
+  assert.match(submit, /drawingId: locationPresentation\.target\.drawingId/);
+});

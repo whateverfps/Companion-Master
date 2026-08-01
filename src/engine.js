@@ -882,6 +882,10 @@ export const engine = {
     return structuredClone(await all('drawingAnalyses', 'projectId', state.activeProject));
   },
 
+  async drawingRegistryAnalyses() {
+    return structuredClone(await all('drawingAnalyses'));
+  },
+
   async drawingLifecycle(documentId = '', drawingSetId = '') {
     const document = documentId ? await one('documents', documentId) : null;
     const sourceFile = documentId ? await one('sourceFiles', documentId) : null;
