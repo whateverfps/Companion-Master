@@ -1,0 +1,76 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { BEDFORD_VA_PROFILE_ID, detectBedfordVaProfile, findBedfordDrawingIndexPage, parseBedfordDrawingIndex, parseBedfordTitleBlock } from '../src/bedford-va-drawing-profile.js';
+import { buildDrawingAnalysis, drawingIdFor } from '../src/drawing-intelligence.js';
+
+const item = (text, x, y, width = .12) => ({ text, region: { x, y, width, height: .008 } });
+const titleBlock = (number, title, building = '61') => [
+  item('VA FORM 08-6231', .5, .58), item('TRIPLE C', .7, .58), item('PROJECT NUMBER', .5, .7), item('518-22-700', .5, .72),
+  item('BUILDING NUMBER', .62, .7), item(building, .62, .72), item('DRAWING TITLE', .5, .78), item(title, .5, .8, .3),
+  item('DRAWING NUMBER', .82, .86), item(number, .82, .88), item('ISSUE DATE', .65, .86), item('03/16/2026', .65, .88), item('BEDFORD VA MEDICAL CENTER', .5, .94, .35)
+];
+
+const required = new Map([
+  [0, ['61G-000', 'COVER SHEET']], [1, ['61G-001', 'DRAWING INDEX']], [20, ['61M-101', 'MECHANICAL PLAN - FIRST LEVEL - OVERALL']],
+  [28, ['61M-701', 'MECHANICAL SCHEDULES']], [35, ['61E-101', 'ELECTRICAL PLAN - FIRST LEVEL']],
+  [51, ['61T-402', 'TELECOMMUNICATION ROOM 137 - INVENTORY LIST']], [69, ['61R-900', 'PHOTO REFERENCES']]
+]);
+const entries = Array.from({ length: 70 }, (_, index) => required.get(index) || [`61A-${String(100 + index).padStart(3, '0')}`, `ARCHITECTURAL DETAIL ${index}`]);
+
+function indexItems() {
+  const output = [item('DRAWING INDEX', .06, .03), item('SHEET NUMBER', .06, .05), item('SHEET NAME', .2, .05)];
+  let current = '';
+  entries.forEach(([number, title], index) => {
+    const discipline = number.includes('M-') ? 'MECHANICAL' : number.includes('E-') ? 'ELECTRICAL' : number.includes('T-') ? 'TELECOMMUNICATIONS' : number.includes('R-') ? 'REFERENCE' : number.includes('G-') ? 'GENERAL' : 'ARCHITECTURAL';
+    const y = .07 + index * .0065;
+    if (discipline !== current) { output.push(item(discipline, .06, y - .002, .12)); current = discipline; }
+    output.push(item(number, .06, y, .09), item(title, .2, y, .4), item('YES', .7, y, .04));
+  });
+  return output;
+}
+
+function pages() {
+  return entries.map(([number, title], index) => ({ pageNumber: index + 1, width: 1000, height: 700, rotation: 0, textItems: [...(index === 1 ? indexItems() : []), ...titleBlock(number, title)] }));
+}
+
+test('Bedford profile detects exact project evidence and rejects unrelated formats', () => {
+  const detected = detectBedfordVaProfile(pages());
+  assert.equal(detected.selected, true);
+  assert.equal(detected.profileId, BEDFORD_VA_PROFILE_ID);
+  assert.equal(detectBedfordVaProfile([{ pageNumber: 1, textItems: [item('DRAWING INDEX', .1, .1)] }]).selected, false);
+});
+
+test('Bedford lower-right title block and 70-row index parse authoritatively', () => {
+  const source = pages();
+  const block = parseBedfordTitleBlock(source[20].textItems);
+  assert.equal(block.projectNumber, '518-22-700');
+  assert.equal(block.buildingNumber, '61');
+  assert.equal(block.drawingNumber, '61M-101');
+  assert.equal(block.drawingTitle, 'MECHANICAL PLAN - FIRST LEVEL - OVERALL');
+  const indexPage = findBedfordDrawingIndexPage(source);
+  assert.equal(indexPage.pageNumber, 2);
+  const rows = parseBedfordDrawingIndex(indexPage);
+  assert.equal(rows.length, 70);
+  assert.equal(rows.find(row => row.sheetNumber === '61M-101').discipline, 'Mechanical');
+  assert.equal(rows.find(row => row.sheetNumber === '61T-402').sheetTitle, 'TELECOMMUNICATION ROOM 137 - INVENTORY LIST');
+});
+
+test('Bedford analysis builds a stable owned direct page registry and tolerates one missing page', () => {
+  const source = pages();
+  const first = buildDrawingAnalysis({ documentId: 'bedford-61', projectId: 'bedford-project', pages: source, analyzedAt: 'now' });
+  const second = buildDrawingAnalysis({ documentId: 'bedford-61', projectId: 'bedford-project', pages: source, analyzedAt: 'later' });
+  assert.equal(first.profile.profileId, BEDFORD_VA_PROFILE_ID);
+  assert.equal(first.indexEntries.length, 70);
+  for (const [sheetNumber, title] of required.values()) {
+    const record = first.drawingRegistry.find(item => item.sheetNumber === sheetNumber);
+    assert.equal(record.sheetTitle, title);
+    assert.equal(record.projectId, 'bedford-project');
+    assert.equal(record.drawingId, drawingIdFor('bedford-61', record.pageNumber));
+    assert.equal(second.drawingRegistry.find(item => item.sheetNumber === sheetNumber).drawingId, record.drawingId);
+  }
+  const missing = buildDrawingAnalysis({ documentId: 'bedford-61-missing', projectId: 'bedford-project', pages: source.filter(page => page.pageNumber !== 36), analyzedAt: 'now' });
+  assert.equal(missing.registryHealth.missingIndexedSheets, 1);
+  assert.equal(missing.drawingRegistry.some(item => item.sheetNumber === '61E-101'), false);
+  assert.equal(missing.status, 'Completed with warnings');
+  assert.throws(() => buildDrawingAnalysis({ documentId: 'bad-owner', projectId: 'general', pages: source, analyzedAt: 'now' }), /owning project other than General/);
+});

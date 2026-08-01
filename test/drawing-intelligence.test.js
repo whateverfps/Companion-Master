@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   applyObservationVerification, buildDrawingAnalysis, classifyDiscipline, classifySheetTypes, drawingWarningPresentation,
-  drawingIdFor, drawingSetIdFor, extractSheetNumberCandidates, extractTextObservations, groupDrawingObservations, observationEligibility, observationKindLabel, parseExactDrawingReference, primarySheetType, reanalyzeDrawingAnalysis, reconcileDrawingIndex, resolveBuilding, sheetIdFor, upgradeDrawingAnalysis, validSheetNumberCandidate
+  drawingIdFor, drawingSetIdFor, extractSheetNumberCandidates, extractTextObservations, groupDrawingObservations, isDrawingIndexSheet, observationEligibility, observationKindLabel, parseExactDrawingReference, primarySheetType, reanalyzeDrawingAnalysis, reconcileDrawingIndex, resolveBuilding, sheetIdFor, upgradeDrawingAnalysis, validSheetNumberCandidate
 } from '../src/drawing-intelligence.js';
 import { createDrawingTarget, drawingAnchorId, drawingReturnTarget, drawingScrollOptions, resolveDrawingTarget } from '../src/drawing-navigation.js';
 import { createSourceTarget, resolveSourceTarget } from '../src/source-navigation.js';
@@ -56,35 +56,57 @@ test('version 4 maps a complete ordered inventory only with exact anchors', () =
   assert.equal(analysis.sheets[0].sheetNumber, '61G-000');
   assert.equal(analysis.sheets[1].sheetNumber, '61G-001');
   assert.equal(analysis.sheets[69].sheetNumber, '61G-069');
-  assert.ok(analysis.sheets.every(sheet => sheet.sheetNumberResolutionMethod === 'drawing-index-page-order' || sheet.sheetNumberResolutionMethod === 'index-title-block-reconciliation'));
+  assert.ok(analysis.sheets.every(sheet => ['labeled-title-block-field', 'drawing-index-page-order', 'index-title-block-reconciliation'].includes(sheet.sheetNumberResolutionMethod)));
 });
 
-test('analysis version 5 persists stable drawing registry identities from split-column inventory', () => {
+test('analysis version 7 persists authoritative title-block and drawing-index registry identities', () => {
   const titleBlock = (number, title, extra = []) => [item('VETERANS CLINIC RENOVATION', .62, .79, .3), ...(number ? [item(number, .82, .91)] : []), item(title, .62, .86, .32), ...extra];
-  const indexItems = [item('DRAWING INDEX', .1, .08), item('61G-000', .1, .15), item('COVER SHEET', .28, .15), item('61G-001', .1, .19), item('DRAWING INDEX', .28, .19), item('61M-101', .1, .23), item('MECHANICAL PLAN - FIRST LEVEL - OVERALL', .28, .23, .45)];
+  const indexItems = [item('DRAWING INDEX', .1, .08), item('SHEET NUMBER', .1, .11), item('SHEET NAME', .28, .11), item('GENERAL', .1, .13), item('61G-000', .1, .15), item('COVER SHEET', .28, .15), item('61G-001', .1, .19), item('DRAWING INDEX', .28, .19), item('MECHANICAL', .1, .21), item('61M-101', .1, .23), item('MECHANICAL PLAN - FIRST LEVEL - OVERALL', .28, .23, .45), item('YES', .8, .23), item('TELECOMMUNICATIONS', .1, .25), item('61T-402', .1, .27), item('TELECOMMUNICATION ROOM 137 - INVENTORY LIST', .28, .27, .45), item('ELECTRICAL', .1, .29), item('61E-401', .1, .31), item('ELECTRICAL DETAILS', .28, .31, .35)];
   const actual = [
     { pageNumber: 1, width: 1000, height: 700, rotation: 0, textItems: [...titleBlock('', 'COVER SHEET'), item('FIRE PROTECTION REQUIREMENTS SHALL BE COORDINATED.', .2, .3, .5)] },
     { pageNumber: 2, width: 1000, height: 700, rotation: 0, textItems: [...indexItems, ...titleBlock('61G-001', 'DRAWING INDEX')] },
-    { pageNumber: 3, width: 1000, height: 700, rotation: 0, textItems: titleBlock('61M-101', 'MECHANICAL PLAN - FIRST LEVEL - OVERALL') }
+    { pageNumber: 3, width: 1000, height: 700, rotation: 0, textItems: titleBlock('61M-101', 'MECHANICAL PLAN - FIRST LEVEL - OVERALL') },
+    { pageNumber: 4, width: 1000, height: 700, rotation: 0, textItems: titleBlock('61T-402', 'TELECOMMUNICATION ROOM 137 - INVENTORY LIST') }
   ];
   const analysis = buildDrawingAnalysis({ documentId: 'building61', projectId: 'p1', pages: actual, analyzedAt: '2026-01-01' });
-  assert.equal(analysis.analysisVersion, 5);
-  assert.deepEqual(analysis.sheets.map(sheet => sheet.sheetNumber), ['61G-000', '61G-001', '61M-101']);
+  assert.equal(analysis.analysisVersion, 7);
+  assert.deepEqual(analysis.sheets.map(sheet => sheet.sheetNumber), ['61G-000', '61G-001', '61M-101', '61T-402']);
   assert.equal(analysis.sheets[0].sheetTitle, 'COVER SHEET');
   assert.equal(analysis.sheets[0].discipline, 'General');
   assert.equal(analysis.sheets[0].primarySheetType, 'Cover');
   assert.equal(analysis.observations.some(observation => observation.sheetId === analysis.sheets[0].sheetId && /room|equipment/.test(observation.kind)), false);
   assert.equal(analysis.sheets[1].primarySheetType, 'Drawing Index');
   assert.equal(analysis.sheets[2].discipline, 'Mechanical');
-  assert.equal(analysis.sheets[0].sheetNumberResolutionMethod, 'drawing-index-page-order');
+  assert.equal(analysis.sheets[3].discipline, 'Telecommunications');
+  assert.equal(analysis.sheets[0].sheetNumberResolutionMethod, 'index-anchored-order');
   assert.equal(analysis.sheets[0].drawingId, drawingIdFor('building61', 1));
   assert.equal(analysis.sheets[0].projectId, 'p1');
   assert.equal(analysis.sheets[0].pdfPage, 1);
   assert.equal(analysis.sheets[2].normalizedTitle, 'mechanical plan - first level - overall');
   assert.equal(analysis.sheets[2].floor, 'FIRST');
-  assert.equal(analysis.sheets[0].identityMethod, 'drawing-index-page-order');
+  assert.equal(analysis.sheets[0].identityMethod, 'index-anchored-order');
   assert.equal(analysis.sheets[0].titleMethod, 'drawing-index');
+  assert.equal(analysis.indexEntries.find(entry => entry.sheetNumber === '61M-101').sheetTitle, 'MECHANICAL PLAN - FIRST LEVEL - OVERALL');
+  assert.equal(analysis.indexEntries.find(entry => entry.sheetNumber === '61T-402').sheetTitle, 'TELECOMMUNICATION ROOM 137 - INVENTORY LIST');
+  assert.equal(analysis.indexEntries.find(entry => entry.sheetNumber === '61M-101').includedStatus, 'YES');
+  assert.equal(analysis.sheets[2].identityStatus, 'Authoritative');
+  assert.equal(analysis.drawingRegistry.find(entry => entry.normalizedSheetNumber === '61M101').drawingId, analysis.sheets[2].drawingId);
+  assert.equal(analysis.registryHealth.indexDetected, true);
+  assert.equal(analysis.registryHealth.indexRowsParsed, 5);
+  assert.equal(analysis.registryHealth.missingIndexedSheets, 1);
+  assert.ok(analysis.status === 'Completed with warnings');
+  assert.equal(isDrawingIndexSheet(analysis.sheets[1]), true);
   assert.ok(analysis.sheets.every(sheet => sheet.sheetTitle !== 'FIRE PROTECTION REQUIREMENTS SHALL BE COORDINATED.'));
+});
+
+test('drawing-index detection rejects random body tables and title-block identity rejects page numbers', () => {
+  const random = { sheetNumber: 'M-101', sheetTitle: 'MECHANICAL PLAN', titleBlockSheetNumber: 'M-101', titleBlockSheetTitle: 'MECHANICAL PLAN', textItems: [item('DRAWING INDEX REFERENCE NOTE', .1, .1), item('ROOM 137', .2, .3)] };
+  assert.equal(isDrawingIndexSheet(random), false);
+  const analysis = buildDrawingAnalysis({ documentId: 'identity-filter', projectId: 'bedford', analyzedAt: 'now', pages: [{ pageNumber: 1, width: 1000, height: 700, rotation: 0, textItems: [item('ROOM 137', .2, .3), item('NOTE 10', .3, .4), item('PAGE 04', .82, .9)] }] });
+  assert.equal(analysis.sheets[0].sheetNumber, '');
+  assert.equal(analysis.sheets[0].drawingId, drawingIdFor('identity-filter', 1));
+  assert.equal(analysis.sheets[0].projectId, 'bedford');
+  assert.equal(analysis.sheets[0].identityStatus, 'Ambiguous');
 });
 
 test('narrative titles are rejected and conflicts remain reviewable', () => {
@@ -101,10 +123,10 @@ test('version upgrades preserve resolvable verification overlays and report unma
   legacy.observations[0].verification = { status: 'Confirmed', correctedValue: '', verifiedAt: '2026-01-02' };
   legacy.observations.push({ observationId: 'removed', pageNumber: 99, kind: 'room-number-text', originalValue: '999', verification: { status: 'Rejected', correctedValue: '', verifiedAt: '2026-01-02' } });
   const upgraded = upgradeDrawingAnalysis(legacy);
-  assert.equal(upgraded.analysisVersion, 5);
+  assert.equal(upgraded.analysisVersion, 7);
   assert.equal(upgraded.observations.find(item => item.observationId === legacy.observations[0].observationId).verification.status, 'Confirmed');
   assert.equal(upgraded.unmappedVerificationOverlays[0].observationId, 'removed');
-  assert.equal(reanalyzeDrawingAnalysis(upgraded).analysisVersion, 5);
+  assert.equal(reanalyzeDrawingAnalysis(upgraded).analysisVersion, 7);
 });
 
 test('observation and warning presentation is field-readable and grouped', () => {

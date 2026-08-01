@@ -1,12 +1,15 @@
 import { normalizeRegion } from './pdf-source.js';
 import { extractLegendCandidates } from './drawing-legends.js';
 import { extractScheduleCandidates } from './drawing-schedules.js';
+import { detectBedfordVaProfile, findBedfordDrawingIndexPage, normalizeBedfordSheetNumber, parseBedfordDrawingIndex, parseBedfordTitleBlock } from './bedford-va-drawing-profile.js';
 
-export const DRAWING_ANALYSIS_VERSION = 5;
+export const DRAWING_ANALYSIS_VERSION = 7;
 export const VERIFICATION_STATES = Object.freeze(['Unreviewed', 'Confirmed', 'Corrected', 'Rejected', 'Uncertain']);
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const list = value => Array.isArray(value) ? value : [];
 const normalize = value => text(value).replace(/\s+/g, ' ');
+const normalizeSheetNumber = value => normalize(value).toUpperCase().replace(/[^A-Z0-9]+/g, '');
+const normalizeTitle = value => normalize(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 function hash(value) {
   let result = 2166136261;
@@ -62,7 +65,7 @@ function lines(items) {
 }
 
 function candidateZone(region) {
-  if (region.x >= .58 && region.y >= .55) return 'lower-right';
+  if (region.x >= .48 && region.y >= .55) return 'lower-right';
   if (region.y >= .78) return 'lower-band';
   if (region.x >= .72) return 'right-band';
   return '';
@@ -77,6 +80,7 @@ export function resolveLabeledTitleBlockFields(items = []) {
   const fields = {};
   const diagnostics = [];
   for (const label of source) {
+    if (candidateZone(label.region) !== 'lower-right') continue;
     const key = TITLE_FIELDS[normalize(label.text).replace(/:$/, '').toUpperCase()];
     if (!key) continue;
     const candidates = source.filter(item => item !== label && !TITLE_FIELDS[normalize(item.text).replace(/:$/, '').toUpperCase()])
@@ -289,7 +293,7 @@ export function applyObservationVerification(machineObservation, { status, corre
 
 export function extractDrawingIndexEntries(sheets = []) {
   const entries = [];
-  for (const sheet of list(sheets).filter(item => lines(item.textItems).some(line => /\b(?:DRAWING|SHEET)\s+INDEX\b/i.test(line.text)))) {
+  for (const sheet of list(sheets).filter(isDrawingIndexSheet)) {
     const items = normalizeDrawingTextItems(sheet.textItems).sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x);
     let discipline = 'Unknown';
     for (const numberItem of items) {
@@ -298,26 +302,36 @@ export function extractDrawingIndexEntries(sheets = []) {
       const number = normalize(numberItem.text).toUpperCase();
       if (!validSheetNumberCandidate(number, '') || !new RegExp(`^(?:${SHEET_NUMBER.source})$`, 'i').test(number)) continue;
       const row = items.filter(item => item !== numberItem && Math.abs(item.region.y - numberItem.region.y) <= .009 && item.region.x > numberItem.region.x + numberItem.region.width * .5)
-        .filter(item => !/^(?:YES|NO|N\/A)$/i.test(item.text) && !INDEX_DISCIPLINES[normalize(item.text).toUpperCase()])
+        .filter(item => !INDEX_DISCIPLINES[normalize(item.text).toUpperCase()])
         .sort((a, b) => a.region.x - b.region.x);
-      let titleItems = row.filter(item => validTitleCandidate(item));
+      const statusItem = row.find(item => /^(?:YES|NO|N\/A|INCLUDED|ISSUED)$/i.test(item.text));
+      let titleItems = row.filter(item => item !== statusItem && validTitleCandidate(item));
       if (!titleItems.length) continue;
-      const firstStatusX = row.find(item => /^(?:YES|NO|N\/A)$/i.test(item.text))?.region.x ?? 1;
+      const firstStatusX = statusItem?.region.x ?? 1;
       titleItems = titleItems.filter(item => item.region.x < firstStatusX);
       const candidateTitle = cleanSheetTitle(titleItems.map(item => item.text).join(' '));
       if (!validTitleCandidate({ text: candidateTitle })) continue;
       const right = Math.max(numberItem.region.x + numberItem.region.width, ...titleItems.map(item => item.region.x + item.region.width));
-      entries.push({ sheetNumber: number, sheetTitle: candidateTitle, discipline: discipline === 'Unknown' ? classifyDiscipline(number, candidateTitle).discipline : discipline, sourcePage: sheet.pageNumber, sourceRegion: normalizeRegion({ x: numberItem.region.x, y: Math.min(numberItem.region.y, ...titleItems.map(item => item.region.y)), width: right - numberItem.region.x, height: Math.max(numberItem.region.height, ...titleItems.map(item => item.region.height)) }), inventoryOrder: entries.length, extractionMethod: 'positioned-index-columns' });
+      entries.push({ sheetNumber: number, normalizedSheetNumber: normalizeSheetNumber(number), sheetTitle: candidateTitle, normalizedTitle: normalizeTitle(candidateTitle), discipline: discipline === 'Unknown' ? classifyDiscipline(number, candidateTitle).discipline : discipline, includedStatus: statusItem?.text || '', sourcePage: sheet.pageNumber, sourceSheetId: sheet.sheetId, sourceRegion: normalizeRegion({ x: numberItem.region.x, y: Math.min(numberItem.region.y, ...titleItems.map(item => item.region.y)), width: right - numberItem.region.x, height: Math.max(numberItem.region.height, ...titleItems.map(item => item.region.height)) }), expectedOrder: entries.length, inventoryOrder: entries.length, extractionMethod: 'positioned-index-columns' });
     }
     for (const line of lines(sheet.textItems)) {
       const match = line.text.match(/^((?:\d{1,4})?[A-Z]{1,3}[-.]?\d{3,4}[A-Z]?)\s+(.{3,})$/i);
       if (!match || entries.some(entry => entry.sourcePage === sheet.pageNumber && entry.sheetNumber === match[1].toUpperCase())) continue;
       const candidateTitle = cleanSheetTitle(match[2].replace(/(?:\s+(?:YES|NO)){2,}.*$/i, ''));
       if (!validSheetNumberCandidate(match[1], '') || !validTitleCandidate({ text: candidateTitle })) continue;
-      entries.push({ sheetNumber: match[1].toUpperCase(), sheetTitle: candidateTitle, discipline: classifyDiscipline(match[1], candidateTitle).discipline, sourcePage: sheet.pageNumber, sourceRegion: line.region, inventoryOrder: entries.length, extractionMethod: 'positioned-index-combined-row' });
+      entries.push({ sheetNumber: match[1].toUpperCase(), normalizedSheetNumber: normalizeSheetNumber(match[1]), sheetTitle: candidateTitle, normalizedTitle: normalizeTitle(candidateTitle), discipline: classifyDiscipline(match[1], candidateTitle).discipline, includedStatus: '', sourcePage: sheet.pageNumber, sourceSheetId: sheet.sheetId, sourceRegion: line.region, expectedOrder: entries.length, inventoryOrder: entries.length, extractionMethod: 'positioned-index-combined-row' });
     }
   }
-  return entries.map((entry, index) => ({ ...entry, inventoryOrder: index }));
+  return entries.map((entry, index) => ({ ...entry, expectedOrder: index, inventoryOrder: index }));
+}
+
+export function isDrawingIndexSheet(sheet = {}) {
+  const visibleLines = lines(sheet.textItems).map(item => item.text);
+  const hasIndexHeading = visibleLines.some(value => /\b(?:DRAWING|SHEET)\s+INDEX\b/i.test(value));
+  const titleBlockIndex = normalizeTitle(sheet.titleBlockSheetTitle || sheet.sheetTitle) === 'drawing index';
+  const indexNumber = /G[-.]?001$/i.test(normalize(sheet.titleBlockSheetNumber || sheet.sheetNumber));
+  const hasTableHeadings = visibleLines.some(value => /\bSHEET\s+(?:NUMBER|NO)\b/i.test(value)) && visibleLines.some(value => /\bSHEET\s+(?:NAME|TITLE)\b/i.test(value));
+  return titleBlockIndex || (hasIndexHeading && (indexNumber || hasTableHeadings));
 }
 
 export function reconcileDrawingIndex(indexEntries = [], sheets = []) {
@@ -331,7 +345,7 @@ export function reconcileDrawingIndex(indexEntries = [], sheets = []) {
   for (const entry of list(indexEntries)) {
     const matches = byNumber.get(entry.sheetNumber) || [];
     if (!matches.length) warnings.push({ type: 'expected-sheet-missing', sheetNumber: entry.sheetNumber });
-    else if (matches.length === 1 && entry.sheetTitle && matches[0].sheetTitle && normalize(entry.sheetTitle).toLowerCase() !== normalize(matches[0].sheetTitle).toLowerCase()) warnings.push({ type: 'title-mismatch', sheetNumber: entry.sheetNumber, indexTitle: entry.sheetTitle, titleBlockTitle: matches[0].sheetTitle });
+    else if (matches.length === 1 && entry.sheetTitle && matches[0].sheetTitle && normalizeTitle(entry.sheetTitle) !== normalizeTitle(matches[0].sheetTitle)) warnings.push({ type: 'title-mismatch', sheetNumber: entry.sheetNumber, indexTitle: entry.sheetTitle, titleBlockTitle: matches[0].sheetTitle });
   }
   const indexed = new Set(list(indexEntries).map(item => item.sheetNumber));
   for (const sheet of list(sheets).filter(item => item.sheetNumber && !indexed.has(item.sheetNumber))) warnings.push({ type: 'sheet-absent-from-index', sheetNumber: sheet.sheetNumber, sheetId: sheet.sheetId });
@@ -381,6 +395,8 @@ function mapDrawingIndexToSheets(indexEntries, sheets) {
 
 export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyzedAt = '' } = {}) {
   if (!text(documentId) || !text(projectId)) throw new Error('Drawing analysis requires exact document and project identifiers.');
+  const profile = detectBedfordVaProfile(pages);
+  if (profile.selected && projectId === 'general') throw new Error('Bedford VA drawing packages require an owning project other than General.');
   const titleFrequency = new Map();
   for (const page of list(pages)) for (const candidate of extractTitleBlockCandidates(page.textItems)) {
     const value = cleanSheetTitle(candidate.text).toUpperCase();
@@ -390,12 +406,18 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
   let sheets = list(pages).map(page => {
     const sheetId = sheetIdFor(documentId, page.pageNumber);
     const metadata = selectSheetMetadata(page.textItems, { repeatedTitles });
+    const bedfordTitleBlock = profile.selected ? parseBedfordTitleBlock(page.textItems) : null;
+    if (bedfordTitleBlock?.drawingNumber) { metadata.sheetNumber = bedfordTitleBlock.drawingNumber; metadata.sheetNumberMethod = 'bedford-va-title-block'; metadata.sheetNumberCandidates = metadata.numberCandidates; }
+    if (bedfordTitleBlock?.drawingTitle) { metadata.sheetTitle = bedfordTitleBlock.drawingTitle; metadata.sheetTitleMethod = 'bedford-va-title-block'; }
+    if (bedfordTitleBlock?.projectNumber) metadata.projectNumber = bedfordTitleBlock.projectNumber;
+    if (bedfordTitleBlock?.buildingNumber) metadata.building = bedfordTitleBlock.buildingNumber;
+    if (bedfordTitleBlock?.issueDate) metadata.issueDate = bedfordTitleBlock.issueDate;
     const discipline = classifyDiscipline(metadata.sheetNumber, metadata.sheetTitle);
     return {
       sheetId, documentId, pageNumber: Number(page.pageNumber), sheetNumber: metadata.sheetNumber,
       sheetTitle: metadata.sheetTitle, discipline: discipline.discipline, disciplineEvidence: discipline.evidence,
       sheetTypes: classifySheetTypes(metadata.sheetTitle), issueDate: metadata.issueDate, revision: metadata.revision,
-      building: metadata.building, projectNumber: metadata.projectNumber, labeledFieldDiagnostics: metadata.labeledFieldDiagnostics,
+      building: metadata.building, projectNumber: metadata.projectNumber, labeledFieldDiagnostics: metadata.labeledFieldDiagnostics, bedfordTitleBlock,
       pageWidth: Number(page.width) || 0, pageHeight: Number(page.height) || 0, rotation: Number(page.rotation) || 0,
       titleBlockRegion: metadata.titleBlockRegion, analysisStatus: metadata.conflicts.length ? 'Completed with warnings' : 'Ready for review',
       confidence: metadata.sheetNumber ? (metadata.sheetTitle ? .9 : .75) : .35,
@@ -407,7 +429,8 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
       warnings: [...(metadata.conflicts.length ? [`Conflicting sheet-number candidates: ${metadata.conflicts.join(', ')}`] : []), ...(metadata.titleConflicts.length ? [`Ambiguous sheet-title candidates: ${metadata.titleConflicts.join(' | ')}`] : [])]
     };
   }).sort((a, b) => a.pageNumber - b.pageNumber);
-  const indexEntries = extractDrawingIndexEntries(sheets);
+  const bedfordIndexPage = profile.selected ? findBedfordDrawingIndexPage(pages) : null;
+  const indexEntries = bedfordIndexPage ? parseBedfordDrawingIndex(bedfordIndexPage).map(entry => ({ ...entry, sourceSheetId: sheetIdFor(documentId, bedfordIndexPage.pageNumber) })) : extractDrawingIndexEntries(sheets);
   const indexByNumber = new Map();
   for (const entry of indexEntries) {
     if (!indexByNumber.has(entry.sheetNumber)) indexByNumber.set(entry.sheetNumber, []);
@@ -420,26 +443,29 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
     const uniqueReconciled = [...new Map(reconciled.map(entry => [entry.sheetNumber, entry])).values()];
     const mapped = indexMappings.get(sheet.sheetId);
     const indexEntry = mapped?.entry || (uniqueReconciled.length === 1 && (indexByNumber.get(uniqueReconciled[0].sheetNumber) || []).length === 1 ? uniqueReconciled[0] : null);
-    const sheetNumber = indexEntry?.sheetNumber || (candidateNumbers.length === 1 ? candidateNumbers[0] : '');
-    const sheetTitle = indexEntry?.sheetTitle || sheet.titleBlockSheetTitle || '';
-    const titleConflict = Boolean(indexEntry?.sheetTitle && sheet.titleBlockSheetTitle && normalize(indexEntry.sheetTitle).toLowerCase() !== normalize(sheet.titleBlockSheetTitle).toLowerCase());
-    const discipline = classifyDiscipline(sheetNumber, sheetTitle, indexEntry?.discipline);
+    const authoritativeTitleBlockNumber = ['bedford-va-title-block', 'labeled-title-block-field', 'title-block'].includes(sheet.sheetNumberResolutionMethod) && sheet.titleBlockSheetNumber && validSheetNumberCandidate(sheet.titleBlockSheetNumber, '') ? sheet.titleBlockSheetNumber : '';
+    const bedfordNumberMatch = profile.selected && authoritativeTitleBlockNumber ? indexEntries.find(entry => entry.normalizedSheetNumber === normalizeBedfordSheetNumber(authoritativeTitleBlockNumber)) : null;
+    const canonicalIndexEntry = bedfordNumberMatch || indexEntry;
+    const sheetNumber = canonicalIndexEntry?.sheetNumber || authoritativeTitleBlockNumber || (candidateNumbers.length === 1 ? candidateNumbers[0] : '');
+    const sheetTitle = canonicalIndexEntry?.sheetTitle || sheet.titleBlockSheetTitle || '';
+    const titleConflict = Boolean(canonicalIndexEntry?.sheetTitle && sheet.titleBlockSheetTitle && normalizeTitle(canonicalIndexEntry.sheetTitle) !== normalizeTitle(sheet.titleBlockSheetTitle));
+    const discipline = classifyDiscipline(sheetNumber, sheetTitle, canonicalIndexEntry?.discipline);
     const sheetTypes = classifySheetTypes(sheetTitle);
     const addedWarnings = [
       ...(uniqueReconciled.length > 1 ? [`Ambiguous drawing-index mapping: ${uniqueReconciled.map(entry => entry.sheetNumber).join(', ')}`] : []),
-      ...(titleConflict ? [`Drawing-index title "${indexEntry.sheetTitle}" conflicts with title-block title "${sheet.titleBlockSheetTitle}".`] : [])
+      ...(titleConflict ? [`Drawing-index title "${canonicalIndexEntry.sheetTitle}" conflicts with title-block title "${sheet.titleBlockSheetTitle}".`] : [])
     ];
-    const numberMethod = indexEntry ? mapped?.method || 'index-title-block-reconciliation' : sheet.sheetNumberResolutionMethod;
+    const numberMethod = authoritativeTitleBlockNumber ? (profile.selected ? 'bedford-va-title-block' : 'labeled-title-block-field') : canonicalIndexEntry ? mapped?.method || 'index-title-block-reconciliation' : sheet.sheetNumberResolutionMethod;
     const normalizedTitle = normalize(sheetTitle).toLowerCase();
     return {
       ...sheet, drawingId: drawingIdFor(documentId, sheet.pageNumber), projectId, drawingSetId: drawingSetIdFor(documentId),
       pdfPage: sheet.pageNumber, normalizedTitle, floor: resolveFloor(sheetTitle), level: resolveFloor(sheetTitle),
       sheetNumber, sheetTitle, discipline: discipline.discipline, disciplineEvidence: discipline.evidence, disciplineMethod: discipline.method,
-      sheetTypes, primarySheetType: primarySheetType(sheetTypes), indexEntry: indexEntry ? { ...indexEntry } : null,
-      titleConflict: titleConflict ? { indexTitle: indexEntry.sheetTitle, titleBlockTitle: sheet.titleBlockSheetTitle } : null,
-      sheetNumberResolutionMethod: numberMethod, sheetTitleResolutionMethod: indexEntry ? 'drawing-index' : sheet.sheetTitleResolutionMethod,
-      identityMethod: numberMethod, titleMethod: indexEntry ? 'drawing-index' : sheet.sheetTitleResolutionMethod,
-      identityStatus: indexEntry && !titleConflict ? 'Verified' : addedWarnings.length || !sheetNumber ? 'Ambiguous' : 'Supported', analysisStatus: addedWarnings.length ? 'Completed with warnings' : sheet.analysisStatus,
+      sheetTypes, primarySheetType: primarySheetType(sheetTypes), indexEntry: canonicalIndexEntry ? { ...canonicalIndexEntry } : null,
+      titleConflict: titleConflict ? { indexTitle: canonicalIndexEntry.sheetTitle, titleBlockTitle: sheet.titleBlockSheetTitle } : null,
+      sheetNumberResolutionMethod: numberMethod, sheetTitleResolutionMethod: canonicalIndexEntry ? (profile.selected ? 'bedford-va-drawing-index' : 'drawing-index') : sheet.sheetTitleResolutionMethod,
+      identityMethod: numberMethod, titleMethod: canonicalIndexEntry ? (profile.selected ? 'bedford-va-drawing-index' : 'drawing-index') : sheet.sheetTitleResolutionMethod,
+      identityStatus: authoritativeTitleBlockNumber && canonicalIndexEntry?.normalizedSheetNumber === normalizeBedfordSheetNumber(authoritativeTitleBlockNumber) && !titleConflict ? 'Authoritative' : canonicalIndexEntry && !titleConflict ? 'Verified' : addedWarnings.length || !sheetNumber ? 'Ambiguous' : 'Supported', analysisStatus: addedWarnings.length ? 'Completed with warnings' : sheet.analysisStatus,
       confidence: indexEntry && !titleConflict ? .98 : sheetNumber && sheetTitle ? .85 : sheetNumber || sheetTitle ? .65 : .25,
       building: sheet.building || resolveBuilding(sheet.textItems, indexEntry).building, buildingResolution: sheet.building ? { building: sheet.building, method: 'labeled-title-block-field', evidence: 'Building Number' } : resolveBuilding(sheet.textItems, indexEntry),
       extractionEligibility: observationEligibility(primarySheetType(sheetTypes), discipline.discipline), warnings: [...sheet.warnings, ...addedWarnings]
@@ -471,7 +497,11 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
     analysisVersion: DRAWING_ANALYSIS_VERSION, analyzedAt: text(analyzedAt),
     status: warnings.length ? 'Completed with warnings' : 'Ready for review',
     stages: ['Reading source', 'Inspecting pages', 'Detecting title blocks', 'Building sheet index', 'Classifying sheets', 'Recording text observations', 'Reconciling index', warnings.length ? 'Completed with warnings' : 'Ready for review'],
-    sheets, indexEntries, observations, references, legends, schedules, keyedNoteDefinitions, keyedNoteOccurrences, candidateOccurrences: [], warnings,
+    profile: { selected: profile.selected, profileId: profile.profileId, evidence: profile.evidence },
+    sheets, indexEntries, drawingIndex: { detected: indexEntries.length > 0, sourceSheetIds: [...new Set(indexEntries.map(item => item.sourceSheetId).filter(Boolean))], sourcePage: bedfordIndexPage?.pageNumber || indexEntries[0]?.sourcePage || null, rowCount: indexEntries.length },
+    drawingRegistry: sheets.map(sheet => ({ drawingId: sheet.drawingId, projectId: sheet.projectId, documentId: sheet.documentId, drawingSetId: sheet.drawingSetId, sheetId: sheet.sheetId, sheetNumber: sheet.sheetNumber, normalizedSheetNumber: normalizeSheetNumber(sheet.sheetNumber), sheetTitle: sheet.sheetTitle, normalizedTitle: sheet.normalizedTitle, discipline: sheet.discipline, floor: sheet.floor, level: sheet.level, pageNumber: sheet.pageNumber, pdfPage: sheet.pdfPage, identityMethod: sheet.identityMethod, titleMethod: sheet.titleMethod, identityStatus: sheet.identityStatus })),
+    registryHealth: { profileSelected: profile.selected, indexDetected: Boolean(indexEntries.length), drawingIndexFound: Boolean(indexEntries.length), indexPage: bedfordIndexPage?.pageNumber || indexEntries[0]?.sourcePage || null, expectedSheetCount: indexEntries.length, indexRowsParsed: indexEntries.length, titleBlocksParsed: sheets.filter(item => item.bedfordTitleBlock?.detected).length, pagesMatchedToIndex: sheets.filter(item => item.indexEntry).length, authoritativeTitleBlockIdentities: sheets.filter(item => item.identityStatus === 'Authoritative').length, missingIndexedSheets: reconciliation.filter(item => item.type === 'expected-sheet-missing').length, unindexedPages: reconciliation.filter(item => item.type === 'sheet-absent-from-index').length, indexTitleConflicts: reconciliation.filter(item => item.type === 'title-mismatch').length, duplicateSheetNumbers: reconciliation.filter(item => item.type === 'duplicate-sheet-number').length, registryRecordsCreated: sheets.length, projectOwnershipFailures: 0, pagesRequiringManualReview: sheets.filter(item => item.identityStatus === 'Ambiguous').length },
+    observations, references, legends, schedules, keyedNoteDefinitions, keyedNoteOccurrences, candidateOccurrences: [], warnings,
     limitations: ['Text observations do not establish room boundaries, symbol ownership, graphical connectivity, or installed quantities.']
   };
 }
