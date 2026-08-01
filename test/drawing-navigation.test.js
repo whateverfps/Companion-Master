@@ -101,4 +101,6 @@ test('drawing return and focus helpers produce deterministic labels and announce
   assert.equal(drawingReturnAction('work-package').label, 'Return to Work Package');
   assert.equal(drawingFocusTarget({ observation: { observationId: 'obs' } }), 'mc-drawing-selected-evidence');
   assert.match(drawingAnnouncementText({ sheet: { sheetNumber: 'S-101', sheetTitle: 'Floor Plan' }, observation: { value: 'Room 101' } }), /S-101/);
+  assert.equal(drawingAnnouncementText({ sheet: null }), 'No drawing selected');
+  assert.equal(drawingAnnouncementText(), 'No drawing selected');
 });

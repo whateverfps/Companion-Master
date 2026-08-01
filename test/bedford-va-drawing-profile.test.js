@@ -95,7 +95,7 @@ test('legacy current-version Bedford analysis without profile registry metadata 
 
 test('runtime registry diagnostics trace exact Bedford commands globally while General is active', () => {
   const analysis = buildDrawingAnalysis({ documentId: 'bedford-61', projectId: 'bedford-project', pages: pages(), analyzedAt: 'now' });
-  const input = { activeProject: { id: 'general', name: 'General' }, documents: [{ id: 'bedford-61', title: 'Building 61 plans' }], analyses: [analysis] };
+  const input = { activeProject: { id: 'general', name: 'General' }, documents: [{ id: 'bedford-61', title: 'Building 61 plans' }], analyses: [analysis], persistedAnalyses: [analysis] };
   const mechanical = inspectDrawingRegistryRuntime({ ...input, query: 'Open Mechanical Sheet 61M-101' });
   assert.equal(mechanical.activeProjectId, 'general');
   assert.equal(mechanical.activeProjectRegistryCount, 0);
@@ -103,6 +103,12 @@ test('runtime registry diagnostics trace exact Bedford commands globally while G
   assert.equal(mechanical.analyses[0].profileSelected, true);
   assert.equal(mechanical.analyses[0].parsedIndexRowCount, 70);
   assert.equal(mechanical.registeredSheetCount, 70);
+  assert.equal(mechanical.registeredSheetNumbers.length, 70);
+  assert.ok(mechanical.registeredSheetNumbers.includes('61M-101'));
+  assert.ok(mechanical.registeredSheetNumbers.includes('61T-402'));
+  assert.deepEqual(mechanical.registeredSheetNumbers, [...mechanical.registeredSheetNumbers].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })));
+  assert.equal(mechanical.lifecycle.persisted[0].has61M101, true);
+  assert.equal(mechanical.lifecycle.availableAfterRebuild[0].has61M101, true);
   assert.deepEqual(mechanical.knownSheets, { '61G001': true, '61M101': true, '61T402': true });
   assert.equal(mechanical.commandTrace.normalizedQueryKey, '61M101');
   assert.equal(mechanical.commandTrace.rawSheetToken, '61M-101');

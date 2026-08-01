@@ -1625,6 +1625,8 @@ async function currentDrawingAnalyses() {
   return outcomes.filter(item => item.ok && item.analysis).map(item => item.analysis);
 }
 
+let latestDrawingRegistryInspection = null;
+
 async function currentGlobalDrawingRegistryAnalyses(query = '') {
   const [analyses, activeAnalyses] = await Promise.all([engine.drawingRegistryAnalyses(), engine.drawingAnalyses()]);
   const rebuildResults = [];
@@ -1645,7 +1647,11 @@ async function currentGlobalDrawingRegistryAnalyses(query = '') {
   }));
   const available = outcomes.filter(outcome => outcome.ok && outcome.analysis).map(outcome => outcome.analysis);
   const currentState = state();
-  logger.info('Drawing registry runtime inspection', inspectDrawingRegistryRuntime({ activeProject: currentState.projects.find(project => project.id === currentState.activeProject) || { id: currentState.activeProject, name: currentState.activeProject }, analyses: available, activeAnalyses, query, rebuild: { attempted: rebuildResults.length > 0, results: rebuildResults } }));
+  try {
+    latestDrawingRegistryInspection = inspectDrawingRegistryRuntime({ activeProject: currentState.projects.find(project => project.id === currentState.activeProject) || { id: currentState.activeProject, name: currentState.activeProject }, analyses: available, persistedAnalyses: analyses, activeAnalyses, query, rebuild: { attempted: rebuildResults.length > 0, results: rebuildResults } });
+  } catch (error) {
+    latestDrawingRegistryInspection = { activeProjectId: currentState.activeProject, query, diagnosticError: error.message || 'Runtime registry inspection could not be constructed.', globalAnalysisCount: analyses.length, availableAnalysisCount: available.length };
+  }
   return available;
 }
 
@@ -1959,7 +1965,7 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
   const returnLabel = shell === 'professional' && returnAction?.kind === 'mission-control' ? 'Return to Chief' : returnAction?.label;
   const focusTarget = drawingFocusTarget({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion });
-  const announcementText = drawingAnnouncementText({ sheet, observation: effectiveObservation, region: effectiveRegion });
+  const announcementText = sheet ? drawingAnnouncementText({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion }) : 'No drawing selected';
   const overlayRecords = [
     ...observations.map(item => ({ id: item.observationId, layer: item.kind.startsWith('room') ? 'rooms' : item.kind === 'equipment-tag-text' ? 'equipment' : 'callouts', label: `${observationKindLabel(item.kind)} ${item.value}`, region: item.region, status: item.verification?.status || 'Unreviewed' })),
     ...sheetKeyedNotes.map(item => ({ id: item.keyedNoteOccurrenceId, layer: 'keyedNotes', label: `Keyed note ${item.identifier}`, region: item.region, status: item.verification?.status || 'Unreviewed' })),
@@ -2281,6 +2287,8 @@ $('#missionControlContent').addEventListener('submit', async event => {
       ? createDrawingTarget({ projectId: locationPresentation.target.projectId, documentId: locationPresentation.target.documentId, drawingSetId: locationPresentation.target.drawingSetId, drawingId: locationPresentation.target.drawingId, sheetId: locationPresentation.target.sheetId, pageNumber: locationPresentation.target.pageNumber, observationId: locationPresentation.target.observationId, region: locationPresentation.target.region, origin: 'engineering-locator', returnTarget: 'chief-answer' })
       : null;
     if (navigationIntent.exact) {
+      logger.info('Drawing registry runtime inspection', latestDrawingRegistryInspection || { activeProjectId: current.activeProject, query: promptValue, commandIntent: navigationIntent, diagnosticStatus: navigationIntent.kind === 'exact-drawing-navigation' ? 'registry-inspection-unavailable' : 'not-a-drawing-command' });
+      latestDrawingRegistryInspection = null;
       if (!engine.activeConversation()) engine.createConversation({ projectId: resolvedLocationTarget?.projectId || current.activeProject });
       engine.appendConversationMessage({ role: 'user', content: promptValue });
       engine.appendConversationMessage({ role: 'assistant', content: locationPresentation.status === 'resolved' ? `Located ${locationPresentation.summary.replace(/^Located\s+/i, '')}` : locationPresentation.status === 'ambiguous' ? locationPresentation.summary : `No exact registered ${navigationIntent.kind === 'exact-drawing-navigation' ? 'drawing' : 'specification'} matched that command.`, navigationTarget: locationPresentation.target || null });

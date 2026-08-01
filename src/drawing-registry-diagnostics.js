@@ -4,7 +4,7 @@ import { drawingAnalysisRequiresUpgrade } from './drawing-intelligence.js';
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const list = value => Array.isArray(value) ? value : [];
 
-export function inspectDrawingRegistryRuntime({ activeProject = null, documents = [], analyses = [], activeAnalyses = [], query = '', rebuild = {} } = {}) {
+export function inspectDrawingRegistryRuntime({ activeProject = null, documents = [], analyses = [], persistedAnalyses = [], activeAnalyses = [], query = '', rebuild = {} } = {}) {
   const records = list(analyses).flatMap(analysis => list(analysis.drawingRegistry).length
     ? analysis.drawingRegistry
     : list(analysis.sheets).map(sheet => ({ ...sheet, projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId })));
@@ -16,6 +16,9 @@ export function inspectDrawingRegistryRuntime({ activeProject = null, documents 
   const projectMatches = activeProject?.id && activeProject.id !== 'general' ? disciplineMatches.filter(record => text(record.projectId) === text(activeProject.id)) : disciplineMatches;
   const targets = ['61G001', '61M101', '61T402'];
   const matchingRecords = records.filter(record => targets.includes(normalizeRegisteredSheetNumber(record.normalizedSheetNumber || record.sheetNumber)));
+  const building61Records = records.filter(record => /^61[A-Z]/.test(normalizeRegisteredSheetNumber(record.normalizedSheetNumber || record.sheetNumber)));
+  const registeredSheetNumbers = [...new Set(building61Records.map(record => text(record.sheetNumber)).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const summarizeStage = analysis => ({ documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, projectId: analysis.projectId, analysisVersion: analysis.analysisVersion, profileVersion: analysis.profile?.profileVersion || 0, profileSelected: Boolean(analysis.profile?.selected), drawingIndexDetected: Boolean(analysis.drawingIndex?.detected), parsedIndexRowCount: list(analysis.indexEntries).length, registeredSheetCount: list(analysis.drawingRegistry).length, sheetCount: list(analysis.sheets).length, has61M101: [...list(analysis.drawingRegistry), ...list(analysis.sheets)].some(record => normalizeRegisteredSheetNumber(record.normalizedSheetNumber || record.sheetNumber) === '61M101') });
   return {
     activeProjectId: text(activeProject?.id), activeProjectName: text(activeProject?.name),
     activeProjectRegistryCount: list(activeAnalyses).reduce((count, analysis) => count + (list(analysis.drawingRegistry).length || list(analysis.sheets).length), 0),
@@ -23,6 +26,8 @@ export function inspectDrawingRegistryRuntime({ activeProject = null, documents 
     documents: list(documents).map(document => ({ documentId: text(document.id), title: text(document.title || document.name) })),
     analyses: list(analyses).map(analysis => ({ documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, projectId: analysis.projectId, analysisVersion: analysis.analysisVersion, profileVersion: analysis.profile?.profileVersion || 0, profileSelected: Boolean(analysis.profile?.selected), profileEvidence: analysis.profile?.evidence || {}, drawingIndexDetected: Boolean(analysis.drawingIndex?.detected), drawingIndexPage: analysis.drawingIndex?.sourcePage || null, parsedIndexRowCount: analysis.indexEntries?.length || 0, registeredSheetCount: analysis.drawingRegistry?.length || analysis.sheets?.length || 0, staleAnalysis: drawingAnalysisRequiresUpgrade(analysis) })),
     registeredSheetCount: records.length,
+    registeredSheetNumbers,
+    lifecycle: { persisted: list(persistedAnalyses).map(summarizeStage), availableAfterRebuild: list(analyses).map(summarizeStage) },
     firstFormattedSheetNumbers: records.slice(0, 20).map(record => text(record.sheetNumber)),
     firstNormalizedSheetNumbers: records.slice(0, 20).map(record => normalizeRegisteredSheetNumber(record.normalizedSheetNumber || record.sheetNumber)),
     knownSheets: Object.fromEntries(targets.map(key => [key, records.some(record => normalizeRegisteredSheetNumber(record.normalizedSheetNumber || record.sheetNumber) === key)])),

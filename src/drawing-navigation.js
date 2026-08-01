@@ -71,7 +71,8 @@ export function drawingFocusTarget(target = {}) {
 }
 
 export function drawingAnnouncementText({ sheet = {}, observation = {}, planObject = null, region = null } = {}) {
-  const sheetLabel = [sheet.sheetNumber, sheet.sheetTitle].filter(Boolean).join(' — ') || 'Drawing';
+  const resolvedSheet = sheet || {};
+  const sheetLabel = [resolvedSheet.sheetNumber, resolvedSheet.sheetTitle].filter(Boolean).join(' — ') || 'No drawing selected';
   const evidenceLabel = observation?.value || (planObject ? 'Selected plan object' : region ? 'Selected region' : '');
   return evidenceLabel ? `${sheetLabel}. ${evidenceLabel}` : sheetLabel;
 }

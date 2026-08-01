@@ -390,6 +390,8 @@ test('exact engineering navigation returns before retrieval and preserves regist
   assert.match(globalUpgrade, /engine\.drawingRegistryAnalyses\(\)/);
   assert.match(globalUpgrade, /drawingAnalysisRequiresUpgrade\(analysis\)/);
   assert.match(globalUpgrade, /engine\.saveDrawingAnalysis\(upgraded\)/);
-  assert.match(globalUpgrade, /Drawing registry runtime inspection/);
   assert.match(globalUpgrade, /inspectDrawingRegistryRuntime/);
+  const exactCommand = submit.slice(exactBranch, retrieval);
+  assert.equal((exactCommand.match(/logger\.info\('Drawing registry runtime inspection'/g) || []).length, 1);
+  assert.match(exactCommand, /latestDrawingRegistryInspection = null/);
 });

@@ -60,3 +60,10 @@ test('main and Professional drawing views share state and switching does not res
   assert.match(route, /if \(name === 'drawings'\) void renderDrawingWorkspace\('professional'\)/);
   assert.doesNotMatch(route, /drawingTarget\s*=\s*null|drawingViewportBySet\.clear|drawingMatchingSheetIds\s*=\s*\[\]/);
 });
+
+test('drawing workspace preserves unresolved targets with a safe empty selection', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /const announcementText = sheet \? drawingAnnouncementText/);
+  assert.match(app, /<strong>No drawing selected\.<\/strong>/);
+  assert.doesNotMatch(app, /sheetNumber:\s*['"](?:UNRESOLVED|UNKNOWN)/);
+});
