@@ -3,7 +3,7 @@ const list = value => Array.isArray(value) ? value : [];
 const clean = value => text(value).replace(/\s+/g, ' ');
 
 export const BEDFORD_VA_PROFILE_ID = 'bedford-va-triple-c';
-export const BEDFORD_VA_PROFILE_VERSION = 1;
+export const BEDFORD_VA_PROFILE_VERSION = 2;
 export const BEDFORD_TITLE_BLOCK_REGION = Object.freeze({ x: .48, y: .55, width: .52, height: .45 });
 export const normalizeBedfordSheetNumber = value => clean(value).toUpperCase().replace(/[^A-Z0-9]+/g, '');
 export const normalizeBedfordTitle = value => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -66,13 +66,22 @@ export function findBedfordDrawingIndexPage(pages = []) {
 export function parseBedfordDrawingIndex(page = null) {
   if (!page) return [];
   const items = normalizedItems(page.textItems).sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x);
+  const tableItems = items.filter(item => Number(item.region.y) < BEDFORD_TITLE_BLOCK_REGION.y);
+  const sheetItems = tableItems.filter(item => SHEET.test(item.text));
+  const columnStarts = [];
+  for (const item of sheetItems.slice().sort((a, b) => a.region.x - b.region.x)) {
+    if (!columnStarts.some(value => Math.abs(value - item.region.x) <= .04)) columnStarts.push(Number(item.region.x));
+  }
   const rows = [];
-  let discipline = 'Unknown';
-  for (const item of items) {
-    const heading = DISCIPLINES[item.text.toUpperCase()];
-    if (heading) { discipline = heading; continue; }
-    if (!SHEET.test(item.text) || Number(item.region.x) >= .45) continue;
-    const row = items.filter(other => other !== item && Math.abs(other.region.y - item.region.y) <= .003 && other.region.x > item.region.x + item.region.width * .5).sort((a, b) => a.region.x - b.region.x);
+  for (const item of sheetItems.sort((a, b) => a.order - b.order || a.region.y - b.region.y || a.region.x - b.region.x)) {
+    const columnIndex = columnStarts.findIndex(value => Math.abs(value - item.region.x) <= .04);
+    const columnLeft = columnStarts[columnIndex] ?? Number(item.region.x);
+    const columnRight = columnStarts[columnIndex + 1] === undefined ? 1 : columnStarts[columnIndex + 1] - .01;
+    const nextRow = sheetItems.filter(other => other !== item && Math.abs(other.region.x - columnLeft) <= .04 && other.region.y > item.region.y + .001).sort((a, b) => a.region.y - b.region.y)[0];
+    const rowBottom = Math.min(Number(item.region.y) + .018, nextRow ? Number(nextRow.region.y) - .001 : Number(item.region.y) + .018);
+    const row = tableItems.filter(other => other !== item && other.region.x > item.region.x + item.region.width * .5 && other.region.x < columnRight && other.region.y >= item.region.y - .003 && other.region.y <= rowBottom).sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x);
+    const headingItem = tableItems.filter(other => DISCIPLINES[other.text.toUpperCase()] && other.region.x >= columnLeft - .04 && other.region.x < columnRight && other.region.y <= item.region.y).sort((a, b) => b.region.y - a.region.y)[0];
+    const discipline = DISCIPLINES[headingItem?.text.toUpperCase()] || 'Unknown';
     const status = row.find(other => /^(?:YES|NO|N\/A|INCLUDED|ISSUED)$/i.test(other.text));
     const title = clean(row.filter(other => other !== status && !DISCIPLINES[other.text.toUpperCase()] && !FIELD_NAMES[other.text.replace(/:$/, '').toUpperCase()]).map(other => other.text).join(' '));
     if (!title || /^(?:SHEET (?:NAME|TITLE))$/i.test(title)) continue;

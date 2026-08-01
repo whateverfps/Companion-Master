@@ -30,8 +30,31 @@ function indexItems() {
   return output;
 }
 
+function runtimeIndexItems() {
+  const output = [item('DRAWING INDEX', .05, .02), item('SHEET NUMBER', .05, .045), item('SHEET NAME', .16, .045), item('SHEET NUMBER', .53, .045), item('SHEET NAME', .64, .045)];
+  [entries.slice(0, 56), entries.slice(56)].forEach((columnEntries, columnIndex) => {
+    let current = '';
+    const numberX = columnIndex ? .53 : .05;
+    const titleX = columnIndex ? .64 : .16;
+    columnEntries.forEach(([number, title], index) => {
+      const discipline = number.includes('M-') ? 'MECHANICAL' : number.includes('E-') ? 'ELECTRICAL' : number.includes('T-') ? 'TELECOMMUNICATIONS' : number.includes('R-') ? 'REFERENCE' : number.includes('G-') ? 'GENERAL' : 'ARCHITECTURAL';
+      const y = .065 + index * .008;
+      if (discipline !== current) { output.push(item(discipline, numberX, y - .003, .1)); current = discipline; }
+      const words = title.split(' '), split = Math.max(1, Math.ceil(words.length / 2));
+      output.push(item(number, numberX, y, .08), item(words.slice(0, split).join(' '), titleX, y, .18), item(words.slice(split).join(' '), titleX, y + .0035, .18), item('YES', titleX + .29, y, .03));
+    });
+  });
+  return output;
+}
+
 function pages() {
   return entries.map(([number, title], index) => ({ pageNumber: index + 1, width: 1000, height: 700, rotation: 0, textItems: [...(index === 1 ? indexItems() : []), ...titleBlock(number, title)] }));
+}
+
+function runtimePages() {
+  const source = pages();
+  source[1].textItems = [...runtimeIndexItems(), ...titleBlock('61G-001', 'DRAWING INDEX')];
+  return source;
 }
 
 test('Bedford profile detects exact project evidence and rejects unrelated formats', () => {
@@ -54,6 +77,17 @@ test('Bedford lower-right title block and 70-row index parse authoritatively', (
   assert.equal(rows.length, 70);
   assert.equal(rows.find(row => row.sheetNumber === '61M-101').discipline, 'Mechanical');
   assert.equal(rows.find(row => row.sheetNumber === '61T-402').sheetTitle, 'TELECOMMUNICATION ROOM 137 - INVENTORY LIST');
+});
+
+test('runtime-shaped split-column index recovers all 70 rows including wrapped titles', () => {
+  const source = runtimePages();
+  const rows = parseBedfordDrawingIndex(findBedfordDrawingIndexPage(source));
+  assert.equal(rows.length, 70);
+  assert.equal(rows.find(row => row.normalizedSheetNumber === '61M101').sheetTitle, 'MECHANICAL PLAN - FIRST LEVEL - OVERALL');
+  assert.equal(rows.some(row => row.normalizedSheetNumber === '61T402'), true);
+  const analysis = buildDrawingAnalysis({ documentId: 'runtime-general', projectId: 'general', pages: source, analyzedAt: 'now' });
+  assert.equal(analysis.drawingRegistry.length, 70);
+  assert.equal(analysis.registryHealth.unresolvedPages, 0);
 });
 
 test('Bedford analysis builds a stable owned direct page registry and tolerates one missing page', () => {
@@ -95,6 +129,8 @@ test('legacy current-version Bedford analysis without profile registry metadata 
   assert.equal(upgraded.drawingRegistry.find(record => record.normalizedSheetNumber === '61T402').sheetNumber, '61T-402');
   assert.equal(drawingAnalysisRequiresUpgrade(upgraded), false);
   assert.deepEqual(upgradeDrawingAnalysis(upgraded), upgraded);
+  const incompleteV1 = { ...structuredClone(upgraded), profile: { ...upgraded.profile, profileVersion: 1 }, indexEntries: upgraded.indexEntries.slice(0, 56), drawingRegistry: upgraded.drawingRegistry.slice(0, 18) };
+  assert.equal(drawingAnalysisRequiresUpgrade(incompleteV1), true);
 });
 
 test('Bedford registry counts only authoritative identities and rejects body-text FX candidates', () => {

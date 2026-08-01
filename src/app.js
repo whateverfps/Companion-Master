@@ -1642,7 +1642,9 @@ async function currentGlobalDrawingRegistryAnalyses(query = '') {
     })().catch(error => ({ ok: false, status: 'failed', errorCode: 'drawing-upgrade-failed', analysis, owningProjectId: analysis.projectId, warning: error.message || 'Drawing registry upgrade failed.', recoverable: true })).finally(() => drawingUpgradeWork.delete(key)));
     const result = await drawingUpgradeWork.get(key);
     if (!result.ok) drawingUpgradeFailures.add(key);
-    rebuildResults.push({ drawingSetId: analysis.drawingSetId, documentId: analysis.documentId, projectId: analysis.projectId, ok: Boolean(result.ok), status: result.status || '', errorCode: result.errorCode || '', savedProfileVersion: result.analysis?.profile?.profileVersion || 0, savedRegistryCount: result.analysis?.drawingRegistry?.length || 0 });
+    const beforeNumbers = new Set((analysis.drawingRegistry || []).map(item => item.normalizedSheetNumber).filter(Boolean));
+    const afterNumbers = (result.analysis?.drawingRegistry || []).map(item => item.normalizedSheetNumber).filter(Boolean);
+    rebuildResults.push({ drawingSetId: analysis.drawingSetId, documentId: analysis.documentId, projectId: analysis.projectId, ok: Boolean(result.ok), status: result.status || '', errorCode: result.errorCode || '', profileRevisionBefore: analysis.profile?.profileVersion || 0, profileRevisionAfter: result.analysis?.profile?.profileVersion || 0, savedRegistryCount: result.analysis?.drawingRegistry?.length || 0, recoveredRows: afterNumbers.filter(item => !beforeNumbers.has(item)) });
     return result;
   }));
   const available = outcomes.filter(outcome => outcome.ok && outcome.analysis).map(outcome => outcome.analysis);

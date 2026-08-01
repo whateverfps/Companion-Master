@@ -536,7 +536,11 @@ export function drawingAnalysisRequiresUpgrade(analysis = {}) {
   if (Number(analysis.analysisVersion) < DRAWING_ANALYSIS_VERSION) return true;
   const pages = list(analysis.sheets).map(sheet => ({ pageNumber: sheet.pageNumber, width: sheet.pageWidth, height: sheet.pageHeight, rotation: sheet.rotation, textItems: sheet.textItems }));
   const bedford = detectBedfordVaProfile(pages);
-  return bedford.selected && (analysis.profile?.profileVersion !== BEDFORD_VA_PROFILE_VERSION || analysis.profile?.profileId !== bedford.profileId || !Array.isArray(analysis.drawingRegistry));
+  if (!bedford.selected) return false;
+  if (analysis.profile?.profileVersion !== BEDFORD_VA_PROFILE_VERSION || analysis.profile?.profileId !== bedford.profileId || !Array.isArray(analysis.drawingRegistry)) return true;
+  const registry = list(analysis.drawingRegistry);
+  const expected = list(analysis.indexEntries);
+  return registry.some(item => !text(item.sheetNumber) || !text(item.normalizedSheetNumber)) || registry.length < expected.length || Number(analysis.registryHealth?.unresolvedPages || 0) > 0;
 }
 
 export const observationKindLabel = kind => ({
