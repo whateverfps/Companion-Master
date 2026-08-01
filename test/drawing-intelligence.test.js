@@ -170,8 +170,12 @@ test('drawing navigation resolves exact documents, sheets, pages, observations, 
 test('application exposes bounded Mission Control viewing and Professional inspection without graphical claims', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
-  assert.match(app, /data-control-view="plans">Open Plans/);
-  assert.match(app, /data-view="drawings">Drawing Set Inspector/);
+  assert.match(app, /data-control-view="plans">Drawings<\/button>/);
+  const tools = app.slice(app.indexOf('id="professionalWorkspaceTools"'), app.indexOf('<h3>Administration<\/h3>'));
+  assert.match(tools, /<h3>Drawing \/ Engineering<\/h3>[\s\S]*data-view="drawings">Drawing Set Inspector<\/button>/);
+  assert.doesNotMatch(tools, /left:-9999px[\s\S]*data-view="drawings"/);
+  assert.match(app, /<section id="drawings" class="view">[\s\S]*id="drawingInspector" class="mc-drawing-workspace"/);
+  assert.match(app, /if \(name === 'drawings'\) void renderDrawingWorkspace\('professional'\)/);
   assert.match(app, /Original drawing unavailable — reattach PDF to view sheet/);
   assert.match(app, /Graphical association has not been verified/);
   assert.match(app, /updateDrawingSearchResults/);

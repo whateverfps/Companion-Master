@@ -259,12 +259,12 @@ app.innerHTML = `
             <button type="button" data-view="inspections">Inspection Records</button>
             <button type="button" data-view="sources">Source Inspector</button>
             <button type="button" data-view="evidence">Evidence Explorer</button>
-            <span style="position:absolute;left:-9999px;clip:rect(0 0 0 0);"><button type="button" data-view="drawings">Drawing Set Inspector</button></span>
           </div>
         </div>
         <div class="mc-workspace-tools-group">
-          <h3>Engineering</h3>
+          <h3>Drawing / Engineering</h3>
           <div class="mc-workspace-tools-list">
+            <button type="button" data-view="drawings">Drawing Set Inspector</button>
             <button type="button" data-view="engineering">Engineering Workspace</button>
             <button type="button" data-view="workflow">Workflow Workspace</button>
             <button type="button" data-view="relationships">Relationship Explorer</button>
@@ -1909,6 +1909,7 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const sheetOccurrences = (analysis?.candidateOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
   const viewport = sheet ? drawingViewportBySet.get(drawingViewportKey(analysis?.drawingSetId, sheet.sheetId)) || defaultDrawingViewport() : defaultDrawingViewport();
   const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
+  const returnLabel = shell === 'professional' && returnAction?.kind === 'mission-control' ? 'Return to Chief' : returnAction?.label;
   const focusTarget = drawingFocusTarget({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion });
   const announcementText = drawingAnnouncementText({ sheet, observation: effectiveObservation, region: effectiveRegion });
   const overlayRecords = [
@@ -1917,7 +1918,7 @@ async function renderDrawingWorkspace(shell = 'professional') {
     ...sheetOccurrences.map(item => ({ id: item.occurrenceId, layer: item.verification?.status === 'Confirmed' ? 'confirmed' : 'candidates', label: 'Plan object occurrence', region: item.region, status: item.verification?.status || 'Unreviewed' }))
   ].filter(item => viewport.overlays?.[item.layer] !== false);
   host.innerHTML = `
-    <header class="mc-drawing-header" id="mc-drawing-header"><div><span>${shell === 'mission-control' ? 'CONSTRUCTION INTELLIGENCE · PLANS' : 'PROFESSIONAL WORKSPACE · DRAWING EVIDENCE'}</span><h2 title="${esc(selected.title || selected.name || 'Drawing set')}">${esc(selected.title || selected.name || 'Drawing set')}</h2><p><strong>${esc(status.label)}</strong> — ${esc(status.detail)}</p></div><div>${shell === 'professional' ? '<button class="subtle" data-drawing-reanalyze>Reanalyze Drawing Set</button>' : ''}${returnAction ? `<button class="subtle" data-drawing-return="${esc(returnAction.kind)}">${esc(returnAction.label)}</button>` : ''}</div></header>
+    <header class="mc-drawing-header" id="mc-drawing-header"><div><span>${shell === 'mission-control' ? 'CONSTRUCTION INTELLIGENCE · PLANS' : 'PROFESSIONAL WORKSPACE · DRAWING EVIDENCE'}</span><h2 title="${esc(selected.title || selected.name || 'Drawing set')}">${esc(selected.title || selected.name || 'Drawing set')}</h2><p><strong>${esc(status.label)}</strong> — ${esc(status.detail)}</p></div><div>${shell === 'professional' ? '<button class="subtle" data-drawing-reanalyze>Reanalyze Drawing Set</button>' : ''}${returnAction ? `<button class="subtle" data-drawing-return="${esc(returnAction.kind)}">${esc(returnLabel)}</button>` : ''}</div></header>
     <div class="mc-drawing-layout ${drawingWorkspacePanels.finderHidden ? 'finder-hidden' : ''} ${drawingWorkspacePanels.evidenceHidden ? 'evidence-hidden' : ''} ${drawingWorkspacePanels.expanded ? 'drawing-expanded' : ''}">
       <aside class="mc-drawing-index" aria-label="Find construction drawing evidence"><label>Drawing set<select id="mcDrawingDocument">${documents.map(item => `<option value="${esc(item.id)}" ${item.id === selected.id ? 'selected' : ''}>${esc(item.title || item.name || item.id)}</option>`).join('')}</select></label>${analysis ? `<label>Find a sheet, room, trade, or tag<input id="mcDrawingSearch" value="${esc(drawingFilter)}" autocomplete="off" aria-controls="mcDrawingResults" aria-describedby="mcDrawingResultStatus"></label><button class="subtle" data-drawing-clear-search ${drawingFilter ? '' : 'hidden'}>Clear search</button><div class="mc-drawing-filters"><label>Discipline<select id="mcDrawingDiscipline"><option value="all">All disciplines</option>${disciplines.map(item => `<option ${item === drawingDiscipline ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></label><label>Drawing type<select id="mcDrawingType"><option value="all">All types</option>${sheetTypes.map(item => `<option ${item === drawingType ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></label></div><p id="mcDrawingResultStatus" role="status" aria-live="polite">${esc(drawingSearchSummary(drawingFilter, shownSheets.length))}</p><ol id="mcDrawingResults" aria-label="Drawing search results">${searchResults.map((result, index) => drawingSearchResultMarkup(result, sheet?.sheetId, index)).join('') || '<li class="mc-drawing-no-results"><strong>No drawing evidence found.</strong><span>Try a sheet number, room, trade, equipment tag, or clear the active filters.</span></li>'}</ol>` : ''}</aside>
       <main class="mc-drawing-viewer"><details class="mc-construction-orientation"><summary>Work and selection context</summary><div><strong>${esc(activeWorkPackage?.workSummary?.[0]?.label || sheet?.sheetTitle || 'Select construction evidence')}</strong><span>${sheet?.building ? `Building ${esc(sheet.building)} · ` : ''}${esc(activeWorkPackage?.discipline || sheet?.discipline || 'Unknown')} · ${esc(selectionExplanation)}</span></div></details>

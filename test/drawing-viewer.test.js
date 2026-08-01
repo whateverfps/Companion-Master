@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { calculateDrawingFit, createDrawingRenderIdentity, defaultDrawingViewport, drawingRenderDecision, sameDrawingRenderIdentity, drawingWorkspaceLayout, restoreDrawingViewport, saveDrawingViewport } from '../src/drawing-navigation.js';
 
 test('true Fit Page waits for size and accounts for rotation', () => {
@@ -45,4 +46,17 @@ test('observation, verification, overlays, and rail state are outside render ide
   for (const reason of UI_ONLY) assert.equal(drawingRenderDecision({ previousIdentity: base, nextIdentity: { ...base }, canvas }).reason, 'unchanged-render-inputs', reason);
   assert.equal(drawingRenderDecision({ previousIdentity: base, nextIdentity: { ...base }, canvas, fittedScaleChanged: true }).reason, 'fitted-scale-changed');
   assert.equal(drawingRenderDecision({ previousIdentity: base, nextIdentity: { ...base }, canvas: { ...canvas, isConnected: false } }).reason, 'canvas-unavailable');
+});
+
+test('main and Professional drawing views share state and switching does not reset it', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.equal((app.match(/let drawingTarget = null;/g) || []).length, 1);
+  assert.equal((app.match(/const drawingViewportBySet = new Map\(\);/g) || []).length, 1);
+  assert.equal((app.match(/let drawingMatchingSheetIds = \[\];/g) || []).length, 1);
+  assert.match(app, /renderDrawingWorkspace\('mission-control'\)/);
+  assert.match(app, /renderDrawingWorkspace\('professional'\)/);
+  const routeStart = app.indexOf('function show(name)');
+  const route = app.slice(routeStart, routeStart + 5000);
+  assert.match(route, /if \(name === 'drawings'\) void renderDrawingWorkspace\('professional'\)/);
+  assert.doesNotMatch(route, /drawingTarget\s*=\s*null|drawingViewportBySet\.clear|drawingMatchingSheetIds\s*=\s*\[\]/);
 });
