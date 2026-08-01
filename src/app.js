@@ -1628,7 +1628,7 @@ async function currentDrawingAnalyses() {
 let latestDrawingRegistryInspection = null;
 
 async function currentGlobalDrawingRegistryAnalyses(query = '') {
-  const [analyses, activeAnalyses] = await Promise.all([engine.drawingRegistryAnalyses(), engine.drawingAnalyses()]);
+  const [analyses, activeAnalyses, activeDocuments] = await Promise.all([engine.drawingRegistryAnalyses(), engine.drawingAnalyses(), engine.documents()]);
   const rebuildResults = [];
   const outcomes = await Promise.all(analyses.map(async analysis => {
     if (!drawingAnalysisRequiresUpgrade(analysis)) return { ok: true, analysis };
@@ -1648,7 +1648,7 @@ async function currentGlobalDrawingRegistryAnalyses(query = '') {
   const available = outcomes.filter(outcome => outcome.ok && outcome.analysis).map(outcome => outcome.analysis);
   const currentState = state();
   try {
-    latestDrawingRegistryInspection = inspectDrawingRegistryRuntime({ activeProject: currentState.projects.find(project => project.id === currentState.activeProject) || { id: currentState.activeProject, name: currentState.activeProject }, analyses: available, persistedAnalyses: analyses, activeAnalyses, query, rebuild: { attempted: rebuildResults.length > 0, results: rebuildResults } });
+    latestDrawingRegistryInspection = inspectDrawingRegistryRuntime({ activeProject: currentState.projects.find(project => project.id === currentState.activeProject) || { id: currentState.activeProject, name: currentState.activeProject }, documents: activeDocuments, analyses: available, persistedAnalyses: analyses, activeAnalyses, query, rebuild: { attempted: rebuildResults.length > 0, results: rebuildResults } });
   } catch (error) {
     latestDrawingRegistryInspection = { activeProjectId: currentState.activeProject, query, diagnosticError: error.message || 'Runtime registry inspection could not be constructed.', globalAnalysisCount: analyses.length, availableAnalysisCount: available.length };
   }

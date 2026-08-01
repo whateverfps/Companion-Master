@@ -73,7 +73,11 @@ test('Bedford analysis builds a stable owned direct page registry and tolerates 
   assert.equal(missing.registryHealth.missingIndexedSheets, 1);
   assert.equal(missing.drawingRegistry.some(item => item.sheetNumber === '61E-101'), false);
   assert.equal(missing.status, 'Completed with warnings');
-  assert.throws(() => buildDrawingAnalysis({ documentId: 'bad-owner', projectId: 'general', pages: source, analyzedAt: 'now' }), /owning project other than General/);
+  const general = buildDrawingAnalysis({ documentId: 'general-owned', projectId: 'general', pages: source, analyzedAt: 'now' });
+  assert.equal(general.projectId, 'general');
+  assert.equal(general.drawingRegistry.length, 70);
+  assert.equal(general.registryHealth.totalPdfPages, 70);
+  assert.equal(general.registryHealth.unresolvedPages, 0);
 });
 
 test('legacy current-version Bedford analysis without profile registry metadata rebuilds once', () => {
@@ -91,6 +95,19 @@ test('legacy current-version Bedford analysis without profile registry metadata 
   assert.equal(upgraded.drawingRegistry.find(record => record.normalizedSheetNumber === '61T402').sheetNumber, '61T-402');
   assert.equal(drawingAnalysisRequiresUpgrade(upgraded), false);
   assert.deepEqual(upgradeDrawingAnalysis(upgraded), upgraded);
+});
+
+test('Bedford registry counts only authoritative identities and rejects body-text FX candidates', () => {
+  const source = pages();
+  source[10].textItems.push(item('FX500', .2, .2), item('FX001', .3, .3));
+  source[10].textItems = source[10].textItems.filter(entry => !titleBlock(entries[10][0], entries[10][1]).some(blockItem => blockItem.text === entry.text && blockItem.region.x === entry.region.x));
+  source[1].textItems = source[1].textItems.filter(entry => entry.text !== entries[10][0] && entry.text !== entries[10][1]);
+  const analysis = buildDrawingAnalysis({ documentId: 'bedford-runtime-shape', projectId: 'general', pages: source, analyzedAt: 'now' });
+  assert.equal(analysis.registryHealth.totalPdfPages, 70);
+  assert.ok(analysis.registryHealth.registryRecordsCreated < analysis.registryHealth.totalPdfPages);
+  assert.equal(analysis.registryHealth.unresolvedPages, analysis.registryHealth.totalPdfPages - analysis.registryHealth.registryRecordsCreated);
+  assert.equal(analysis.drawingRegistry.some(record => !record.sheetNumber || !record.normalizedSheetNumber), false);
+  assert.equal(analysis.drawingRegistry.some(record => ['FX500', 'FX001'].includes(record.sheetNumber)), false);
 });
 
 test('runtime registry diagnostics trace exact Bedford commands globally while General is active', () => {
