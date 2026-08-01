@@ -113,7 +113,7 @@ import { buildPlanQuery, buildPlanQueryScope, createChiefConstructionContext, dr
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
 import { drawingUpgradeKey, loadAuthoritativeDrawingRegistry, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
 import { buildChiefDrawingEvidence } from './chief-drawing-evidence.js';
-import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent } from './engineering-locator.js';
+import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent, navigateExactDrawingCommand } from './engineering-locator.js';
 import { inspectDrawingRegistryRuntime } from './drawing-registry-diagnostics.js';
 
 installGlobalHandlers();
@@ -3891,6 +3891,26 @@ async function ask() {
   renderPreparingAnswer(revealResponse);
 
   try {
+    const navigationIntent = classifyEngineeringNavigationIntent(prompt);
+    if (navigationIntent.kind === 'exact-drawing-navigation') {
+      const [analyses, documents, sections] = await Promise.all([currentGlobalDrawingRegistryAnalyses(prompt), engine.documents(), engine.sections()]);
+      const navigation = await navigateExactDrawingCommand(prompt, { analyses, documents, sections, returnTarget: 'chief-answer', projectId: state().activeProject }, async target => {
+        const exactTarget = createDrawingTarget({ ...target, origin: 'engineering-locator', returnTarget: 'chief-answer' });
+        if (exactTarget.projectId && exactTarget.projectId !== state().activeProject) await selectProjectThroughProductionPath(exactTarget.projectId);
+        drawingTarget = exactTarget;
+        pendingDrawingContext = exactTarget;
+        drawingMatchingSheetIds = [exactTarget.sheetId];
+        await showMissionControlView('plans');
+      });
+      logger.info('Drawing registry runtime inspection', latestDrawingRegistryInspection || { activeProjectId: state().activeProject, query: prompt, commandIntent: navigationIntent, diagnosticStatus: 'registry-inspection-unavailable' });
+      latestDrawingRegistryInspection = null;
+      if (navigation.handled) {
+        $('#prompt').value = '';
+        resizeComposer();
+        setChiefState('success');
+        return;
+      }
+    }
     const retrievalContext = state();
     const project = retrievalContext.projects.find(item =>
       item.id === retrievalContext.activeProject

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent, normalizeRegisteredSheetNumber, resolveEngineeringLocation } from '../src/engineering-locator.js';
+import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent, navigateExactDrawingCommand, normalizeRegisteredSheetNumber, resolveEngineeringLocation } from '../src/engineering-locator.js';
 
 const registeredMechanicalAnalysis = projectId => ({
   documentId: `doc-${projectId}`, drawingSetId: `set-${projectId}`, projectId,
@@ -33,6 +33,30 @@ test('exact registered sheet command resolves one drawingId without observation 
   assert.equal(result.target?.returnTarget, 'chief-answer');
   assert.deepEqual(result.candidates.map(item => item.drawingId), ['drawing-bedford-61m101']);
   assert.equal(result.candidates.some(item => item.label === '80'), false);
+});
+
+test('successful exact sheet commands navigate once and terminate before AI', async () => {
+  const analyses = [registeredMechanicalAnalysis('general'), {
+    documentId: 'doc-general-telecom', drawingSetId: 'set-general', projectId: 'general', observations: [],
+    sheets: [{ drawingId: 'drawing-general-61t402', sheetId: 'sheet-telecom', pageNumber: 61, sheetNumber: '61T-402', sheetTitle: 'Telecommunication Room 137 — Inventory List', discipline: 'Telecommunications' }]
+  }];
+  const opened = [];
+  let askCalls = 0;
+  for (const query of ['Open Mechanical Sheet 61M-101', 'Open Sheet 61T-402']) {
+    const navigation = await navigateExactDrawingCommand(query, { analyses, projectId: 'general' }, target => opened.push(target));
+    if (!navigation.handled) askCalls += 1;
+    assert.equal(navigation.handled, true);
+  }
+  assert.equal(askCalls, 0);
+  assert.deepEqual(opened.map(target => target.drawingId), ['drawing-general-61m101', 'drawing-general-61t402']);
+});
+
+test('failed exact sheet resolution remains available to the ordinary question path', async () => {
+  let opened = false;
+  const navigation = await navigateExactDrawingCommand('Open Sheet 61T-402', { analyses: [], projectId: 'general' }, () => { opened = true; });
+  assert.equal(navigation.attempted, true);
+  assert.equal(navigation.handled, false);
+  assert.equal(opened, false);
 });
 
 test('exact sheet ambiguity is deduplicated by drawingId and remains project-distinguishable', () => {

@@ -130,6 +130,17 @@ export function buildChiefLocationPresentation(question = '', options = {}) {
   };
 }
 
+export async function navigateExactDrawingCommand(query = '', options = {}, openDrawing = async () => {}) {
+  const navigationIntent = classifyEngineeringNavigationIntent(query);
+  if (navigationIntent.kind !== 'exact-drawing-navigation') return { attempted: false, handled: false, navigationIntent, presentation: null };
+  const presentation = buildChiefLocationPresentation(query, options);
+  if (presentation.status !== 'resolved' || presentation.target?.kind !== 'drawing') {
+    return { attempted: true, handled: false, navigationIntent, presentation };
+  }
+  await openDrawing(presentation.target);
+  return { attempted: true, handled: true, navigationIntent, presentation };
+}
+
 export function resolveEngineeringLocation(query = '', {
   analyses = [],
   documents = [],

@@ -398,3 +398,16 @@ test('exact engineering navigation returns before retrieval and preserves regist
   assert.equal((exactCommand.match(/logger\.info\('Drawing registry runtime inspection'/g) || []).length, 1);
   assert.match(exactCommand, /latestDrawingRegistryInspection = null/);
 });
+
+test('legacy Command Desk exact drawing commands terminate before Expert-assisted generation', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const askStart = app.indexOf('async function ask()');
+  const ask = app.slice(askStart, app.indexOf("$('#send').onclick = ask", askStart));
+  const navigation = ask.indexOf('await navigateExactDrawingCommand');
+  const ai = ask.indexOf('await engine.ask');
+  assert.ok(navigation >= 0 && ai > navigation);
+  const successfulBranch = ask.slice(navigation, ai);
+  assert.match(successfulBranch, /if \(navigation\.handled\)/);
+  assert.match(successfulBranch, /await showMissionControlView\('plans'\)/);
+  assert.match(successfulBranch, /return;/);
+});
