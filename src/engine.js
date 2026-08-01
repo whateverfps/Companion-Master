@@ -1476,8 +1476,10 @@ export const engine = {
     const sectionIds = normalizeAttachmentDocumentIds(options.sectionIds);
     const pageNumbers = [...new Set((Array.isArray(options.pageNumbers) ? options.pageNumbers : []).map(Number).filter(value => Number.isInteger(value) && value > 0))];
     const sheetIds = normalizeAttachmentDocumentIds(options.sheetIds);
-    const hits = await this.search(cleanedPrompt, { documentIds, sectionIds, pageNumbers });
-    if ((documentIds.length || sectionIds.length || pageNumbers.length) && !hits.length && !options.drawingContext) {
+    const routingDocumentIds = normalizeAttachmentDocumentIds(options.routingDocumentIds);
+    const scopedDocumentIds = [...new Set([...documentIds, ...routingDocumentIds].filter(Boolean))];
+    const hits = await this.search(cleanedPrompt, { documentIds: scopedDocumentIds, sectionIds, pageNumbers });
+    if ((scopedDocumentIds.length || sectionIds.length || pageNumbers.length) && !hits.length && !options.drawingContext) {
       throw new Error(pageNumbers.length || sectionIds.length ? 'The exact drawing scope has no usable indexed section evidence. The drawing viewer remains available.' : 'The selected attachments do not contain usable indexed sections for this question.');
     }
 
@@ -1582,7 +1584,7 @@ export const engine = {
       workPackageReferences: options.workPackageReferences ? {
         matchingSheetIds: normalizeAttachmentDocumentIds(options.workPackageReferences.matchingSheetIds),
         matchingObservationIds: normalizeAttachmentDocumentIds(options.workPackageReferences.matchingObservationIds),
-        documentIds, sectionIds, pageNumbers, sheetIds
+        documentIds: scopedDocumentIds, sectionIds, pageNumbers, sheetIds
       } : null
     };
 

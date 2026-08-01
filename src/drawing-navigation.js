@@ -7,33 +7,41 @@ export function drawingAnchorId(kind, identifier) {
   return `mc-drawing-${safe(kind).toLowerCase()}-${safe(identifier)}`;
 }
 
-export function createDrawingTarget({ projectId, documentId, drawingSetId, sheetId, pageNumber, sheetNumber, observationId, region, origin = 'drawings' } = {}) {
+export function createDrawingTarget({ projectId, documentId, drawingSetId, sheetId, pageNumber, sheetNumber, observationId, planObjectId, region, origin = 'drawings', matchingSheetIds = [], returnTarget = '' } = {}) {
   if (!text(documentId)) return null;
   const page = Number.isInteger(Number(pageNumber)) && Number(pageNumber) > 0 ? Number(pageNumber) : null;
+  const normalizedMatchingSheetIds = Array.isArray(matchingSheetIds) ? matchingSheetIds.map(item => text(item)).filter(Boolean) : [];
   return {
     projectId: text(projectId), documentId: text(documentId), drawingSetId: text(drawingSetId),
     sheetId: text(sheetId), pageNumber: page, sheetNumber: text(sheetNumber),
-    observationId: text(observationId), region: region ? normalizeRegion(region) : null, origin: text(origin)
+    observationId: text(observationId), planObjectId: text(planObjectId), region: region ? normalizeRegion(region) : null, origin: text(origin),
+    matchingSheetIds: normalizedMatchingSheetIds, returnTarget: text(returnTarget)
   };
 }
 
 export function resolveDrawingTarget(target, { documents = [], analyses = [] } = {}) {
-  if (!target?.documentId) return { status: 'none', document: null, analysis: null, sheet: null, observation: null };
+  if (!target?.documentId) return { status: 'none', document: null, analysis: null, sheet: null, observation: null, planObject: null, region: null, kind: 'none' };
   const document = documents.find(item => text(item?.id) === target.documentId) || null;
-  if (!document) return { status: 'missing-document', document: null, analysis: null, sheet: null, observation: null };
+  if (!document) return { status: 'missing-document', document: null, analysis: null, sheet: null, observation: null, planObject: null, region: null, kind: 'missing-document' };
   const analysis = analyses.find(item => text(item?.documentId) === target.documentId && (!target.drawingSetId || text(item.drawingSetId) === target.drawingSetId)) || null;
-  if (!analysis) return { status: 'missing-analysis', document, analysis: null, sheet: null, observation: null };
+  if (!analysis) return { status: 'missing-analysis', document, analysis: null, sheet: null, observation: null, planObject: null, region: null, kind: 'missing-analysis' };
   const sheet = target.sheetId
     ? analysis.sheets.find(item => text(item.sheetId) === target.sheetId) || null
     : target.pageNumber
       ? analysis.sheets.find(item => Number(item.pageNumber) === target.pageNumber) || null
       : null;
-  if ((target.sheetId || target.pageNumber) && !sheet) return { status: 'missing-page', document, analysis, sheet: null, observation: null };
+  if ((target.sheetId || target.pageNumber) && !sheet) return { status: 'missing-page', document, analysis, sheet: null, observation: null, planObject: null, region: null, kind: 'missing-page' };
   const observation = target.observationId
     ? analysis.observations.find(item => text(item.observationId) === target.observationId && (!sheet || item.sheetId === sheet.sheetId)) || null
     : null;
-  if (target.observationId && !observation) return { status: 'missing-observation', document, analysis, sheet, observation: null };
-  return { status: observation || target.region ? 'region' : sheet ? 'sheet' : 'document', document, analysis, sheet, observation };
+  if (target.observationId && !observation) return { status: 'missing-observation', document, analysis, sheet, observation: null, planObject: null, region: null, kind: 'missing-observation' };
+  const planObject = target.planObjectId
+    ? analysis.candidateOccurrences?.find(item => text(item.occurrenceId) === target.planObjectId && (!sheet || item.sheetId === sheet.sheetId)) || null
+    : null;
+  if (target.planObjectId && !planObject) return { status: 'missing-plan-object', document, analysis, sheet, observation, planObject: null, region: null, kind: 'missing-plan-object' };
+  const resolvedRegion = planObject?.region || observation?.region || target.region || null;
+  const kind = planObject ? 'plan-object' : observation ? 'observation' : resolvedRegion ? 'region' : sheet ? 'sheet' : 'document';
+  return { status: kind === 'sheet' ? 'sheet' : kind === 'document' ? 'document' : 'region', document, analysis, sheet, observation, planObject, region: resolvedRegion, kind };
 }
 
 export function drawingScrollOptions(reducedMotion = false) {
@@ -43,6 +51,43 @@ export function drawingScrollOptions(reducedMotion = false) {
 export function drawingReturnTarget(target, destination) {
   if (!target?.documentId || !['mission-control', 'professional-workspace', 'source'].includes(destination)) return null;
   return { ...target, destination };
+}
+
+export function drawingReturnAction(returnTarget = '') {
+  const value = text(returnTarget || '').toLowerCase();
+  if (['chief-answer', 'chiefanswer', 'chief', 'answer'].includes(value)) return { kind: 'chief-answer', label: 'Return to Chief Answer' };
+  if (['work-package', 'workpackage', 'work package', 'package'].includes(value)) return { kind: 'work-package', label: 'Return to Work Package' };
+  if (['room-package', 'room', 'room-package'].includes(value)) return { kind: 'room-package', label: 'Return to Room Package' };
+  if (['equipment-package', 'equipment', 'equipment-package'].includes(value)) return { kind: 'equipment-package', label: 'Return to Equipment Package' };
+  return { kind: value || 'mission-control', label: value ? `Return to ${returnTarget}` : 'Return to Mission Control' };
+}
+
+export function drawingFocusTarget(target = {}) {
+  if (target.observation || target.planObject || target.region) return 'mc-drawing-selected-evidence';
+  if (target.sheet) return 'mc-drawing-sheet-title';
+  return 'mc-drawing-header';
+}
+
+export function drawingAnnouncementText({ sheet = {}, observation = {}, planObject = null, region = null } = {}) {
+  const sheetLabel = [sheet.sheetNumber, sheet.sheetTitle].filter(Boolean).join(' — ') || 'Drawing';
+  const evidenceLabel = observation?.value || (planObject ? 'Selected plan object' : region ? 'Selected region' : '');
+  return evidenceLabel ? `${sheetLabel}. ${evidenceLabel}` : sheetLabel;
+}
+
+export function reconcileDrawingMatchingSheetIds({ target = null, analysis = null, previousMatchingSheetIds = [] } = {}) {
+  const ordered = [...new Set((Array.isArray(target?.matchingSheetIds) ? target.matchingSheetIds : []).map(text).filter(Boolean))];
+  const validIds = ordered.filter(id => (analysis?.sheets || []).some(sheet => text(sheet.sheetId) === id));
+  const currentSheetId = text(target?.sheetId);
+  const preserved = validIds.length ? validIds : (Array.isArray(previousMatchingSheetIds) ? previousMatchingSheetIds.filter(id => (analysis?.sheets || []).some(sheet => text(sheet.sheetId) === id)) : []);
+  const nextIds = preserved.length ? preserved : [];
+  if (currentSheetId && (analysis?.sheets || []).some(sheet => text(sheet.sheetId) === currentSheetId) && !nextIds.includes(currentSheetId)) {
+    nextIds.push(currentSheetId);
+  }
+  return {
+    matchingSheetIds: nextIds,
+    activeSheetId: nextIds.includes(currentSheetId) ? currentSheetId : (nextIds[0] || ''),
+    activeIndex: nextIds.indexOf(currentSheetId)
+  };
 }
 
 export function drawingMatchingSetTarget(sheetIds = [], currentSheetId = '', offset = 0, analysis = null) {

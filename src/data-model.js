@@ -27,13 +27,25 @@ export function firstText(...values) {
 
 export function normalizeSectionNumber(value) {
   const digits = textValue(value).replace(/\D/g, '');
-  return digits.length === 6
-    ? `${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4)}`
-    : '';
+  if (!digits) return '';
+  if (digits.length === 6) {
+    return `${digits.slice(0, 2)} ${digits.slice(2, 4)} ${digits.slice(4)}`;
+  }
+  return digits;
 }
 
 export function sectionNumberKey(value) {
-  return normalizeSectionNumber(value).replace(/\D/g, '');
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? firstText(
+        value.sectionNumber,
+        value.metadata?.sectionNumber,
+        value.number,
+        value.metadata?.number,
+        value.label,
+        value.metadata?.label
+      )
+    : value;
+  return normalizeSectionNumber(source).replace(/\D/g, '');
 }
 
 export function sectionTextValue(section) {

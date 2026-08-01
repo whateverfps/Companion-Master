@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPlanQuery, createChiefConstructionContext, drawingSearchSummary, inheritPlanQueryContext, normalizePlanQuery, planQueryConstraints, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from '../src/plan-query.js';
+import { buildConstructionRoutingProfile, buildPlanQuery, buildPlanQueryScope, classifyConstructionIntent, createChiefConstructionContext, drawingSearchSummary, inheritPlanQueryContext, normalizePlanQuery, planQueryConstraints, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from '../src/plan-query.js';
 import { drawingResultKeyTarget, reconcileDrawingSelection } from '../src/drawing-navigation.js';
+import { buildConstructionWorkPackage } from '../src/work-package.js';
 
 const observation = (id, sheetId, kind, value) => ({ observationId: id, sheetId, kind, value, region: { x: .2, y: .2, width: .1, height: .02 } });
 const sheets = [
@@ -68,6 +69,74 @@ test('section scope uses exact document pages without changing retrieval order o
   assert.deepEqual(scope.documentIds, ['d1']);
   assert.deepEqual(scope.pageNumbers, [1]);
   assert.deepEqual(scope.sectionIds, ['s1']);
+});
+
+test('plan-query scope combines routing-profile documents with exact page scope before retrieval', () => {
+  const result = {
+    viewerTarget: { documentId: 'd1', sheetId: 'plan1', pageNumber: 1 },
+    matchingSheetIds: ['plan1'],
+    routingProfile: { documentIds: ['spec-1'] }
+  };
+  const scope = buildPlanQueryScope(result, [{ id: 's1', documentId: 'd1', pageStart: 1, pageEnd: 1 }], [analysis]);
+  assert.deepEqual(scope.documentIds, ['spec-1', 'd1']);
+  assert.deepEqual(scope.pageNumbers, [1]);
+  assert.deepEqual(scope.sectionIds, ['s1']);
+});
+
+test('construction router classifies intent with deterministic source priorities', () => {
+  assert.equal(classifyConstructionIntent('What rooms receive HVAC work?').intent, 'location');
+  assert.deepEqual(classifyConstructionIntent('What rooms receive HVAC work?').sourcePriority.slice(0, 3), ['drawings', 'legends', 'schedules']);
+  assert.equal(classifyConstructionIntent('How is duct insulation installed?').intent, 'means-and-methods');
+  assert.deepEqual(classifyConstructionIntent('How is duct insulation installed?').sourcePriority.slice(0, 3), ['specifications', 'submittals', 'details']);
+  assert.equal(classifyConstructionIntent('When is telecom rough-in?').intent, 'schedule');
+  assert.equal(classifyConstructionIntent('Why is Room 137 delayed?').intent, 'risk');
+});
+
+test('construction routing profiles split location and method scopes before retrieval', () => {
+  const locationProfile = buildConstructionRoutingProfile('Where is the HVAC work in Building 61?', { drawingContext: { documentId: 'drawing-1', sheetId: 'sheet-1', pageNumber: 3 } });
+  assert.equal(locationProfile.primaryIntent, 'location');
+  assert.deepEqual(locationProfile.sourcePriority.slice(0, 3), ['drawings', 'legends', 'schedules']);
+  assert.ok(locationProfile.documentIds.includes('drawing-1'));
+  assert.equal(locationProfile.answerLayout, 'location');
+
+  const methodProfile = buildConstructionRoutingProfile('How should the ductwork be insulated?', { documentIds: ['spec-1'] });
+  assert.equal(methodProfile.primaryIntent, 'means-and-methods');
+  assert.deepEqual(methodProfile.sourcePriority.slice(0, 3), ['specifications', 'submittals', 'details']);
+  assert.ok(methodProfile.documentIds.includes('spec-1'));
+  assert.equal(methodProfile.answerLayout, 'method');
+});
+
+test('follow-up questions inherit deterministic construction context and work packages hide empty sections', () => {
+  const inherited = inheritPlanQueryContext('Show me.', { building: 'B1', floor: 'Second Floor', room: '137', discipline: 'Mechanical' });
+  assert.equal(inherited.building, 'B1');
+  assert.equal(inherited.room, '137');
+  assert.equal(inherited.floor, 'Second Floor');
+
+  const workPackage = buildConstructionWorkPackage({
+    planResult: {
+      projectId: 'p1',
+      building: 'B1',
+      floor: 'Second Floor',
+      room: '137',
+      discipline: 'Mechanical',
+      matchingSheetIds: ['plan1'],
+      matchingObservationIds: ['room137'],
+      supportedWorkItems: [{ sheetId: 'plan1', statement: 'Mechanical work in Room 137.', basis: 'Drawing index' }],
+      actions: [],
+      limitations: ['No quantities are available.']
+    },
+    documents: [],
+    sections: [],
+    inspections: [],
+    relationships: [],
+    revisions: [],
+    evidence: [],
+    workflow: null
+  });
+
+  assert.equal(workPackage.presentation.evidenceConfidence, 'High');
+  assert.equal(workPackage.presentation.sections.some(section => section.key === 'summary'), true);
+  assert.equal(workPackage.presentation.sections.some(section => section.key === 'specifications' && !section.items.length), false);
 });
 
 test('plan results state graphical limitations and never claim quantity, ownership, or boundaries', () => {

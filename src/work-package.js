@@ -161,6 +161,22 @@ export function buildConstructionWorkPackage({ planResult = {}, documents = [], 
     workSummary, drawings: uniqueItems(drawingItems), specifications: uniqueItems(groups.specifications), rfis: uniqueItems(groups.rfis), submittals: uniqueItems(groups.submittals), inspections: uniqueItems(matchedInspections), deficiencies: uniqueItems(groups.deficiencies), evidence: evidenceItems, schedules, details, revisions: revisionItems,
     relatedTrades: [], coordination: [], risks: [], inspectionPreparation: {}, viewerTargets: drawingItems.map(item => item.target), responseActions: uniqueActions(planResult.actions), limitations: [...list(planResult.limitations)], workflowTemplateId, lineage: lineageItems
   };
+  const presentationSections = [
+    { key: 'summary', title: 'Summary', items: packageBase.workSummary.slice(0, 3).map(item => ({ id: item.sheetId || item.observationId || 'summary', label: item.statement || text(item.basis) })) },
+    { key: 'location', title: 'Location', items: [
+      { id: 'building', label: packageBase.building ? `Building ${packageBase.building}` : 'Building not specified' },
+      { id: 'floor', label: packageBase.floor ? `Floor ${packageBase.floor}` : 'Floor not specified' },
+      { id: 'room', label: packageBase.room ? `Room ${packageBase.room}` : 'Room not specified' }
+    ].filter(item => item.label && item.label !== 'Building not specified' && item.label !== 'Floor not specified' && item.label !== 'Room not specified') },
+    { key: 'drawings', title: 'Drawings', items: packageBase.drawings.map(item => ({ id: item.id, label: text(item.sheetId) })) },
+    { key: 'specifications', title: 'Specifications', items: packageBase.specifications.map(item => ({ id: item.id, label: item.title || item.id })) },
+    { key: 'rfis', title: 'RFIs', items: packageBase.rfis.map(item => ({ id: item.id, label: item.title || item.id })) },
+    { key: 'submittals', title: 'Submittals', items: packageBase.submittals.map(item => ({ id: item.id, label: item.title || item.id })) },
+    { key: 'inspections', title: 'Inspections', items: packageBase.inspections.map(item => ({ id: item.id, label: item.title || item.id })) },
+    { key: 'deficiencies', title: 'Deficiencies', items: packageBase.deficiencies.map(item => ({ id: item.id, label: item.title || item.id })) },
+    { key: 'risks', title: 'Risks', items: packageBase.risks.map(item => ({ id: item.id, label: item.label })) },
+    { key: 'actions', title: 'Recommended Actions', items: packageBase.responseActions.map(item => ({ id: item.target?.sheetId || item.target?.documentId || item.action, label: item.label })) }
+  ].filter(section => section.items.length);
   packageBase.risks = riskItems(packageBase);
   packageBase.inspectionPreparation = {
     drawingIds: ids(packageBase.drawings.map(item => item.documentId)), specificationIds: ids(packageBase.specifications.map(item => item.id)), rfiIds: ids(packageBase.rfis.map(item => item.id)), submittalIds: ids(packageBase.submittals.map(item => item.id)), inspectionIds: ids(packageBase.inspections.map(item => item.id)), deficiencyIds: ids(packageBase.deficiencies.map(item => item.id)), evidenceReferences: packageBase.evidence.map(item => ({ documentId: item.documentId, sectionId: item.sectionId })), workflowTemplateId,
@@ -181,7 +197,9 @@ export function buildConstructionWorkPackage({ planResult = {}, documents = [], 
     inspectionPreparation: packageBase.inspectionPreparation,
     risks: packageBase.risks,
     limitations: packageBase.limitations,
-    actions: packageBase.responseActions
+    actions: packageBase.responseActions,
+    evidenceConfidence: packageBase.evidence.length || packageBase.inspections.length || packageBase.drawings.length || packageBase.specifications.length || packageBase.rfis.length || packageBase.submittals.length || packageBase.deficiencies.length || packageBase.workSummary.length ? 'High' : 'Supported',
+    sections: presentationSections
   };
   return packageBase;
 }

@@ -14,9 +14,16 @@ import {
   createRetrievalSession
 } from './retrieval-session.js';
 import {
+  actionTargetToSourceTarget,
   answerAnchorId,
+  createActionTarget,
   createSourceTarget,
+  normalizeActionTargetPayload,
+  prepareActionNavigationState,
+  resolveRfiNavigationTarget,
   resolveSourceTarget,
+  resolveSpecificationNavigationTarget,
+  resolveSubmittalNavigationTarget,
   sourceAnchorId,
   sourceNavigationActions,
   sourceNavigationDestination,
@@ -101,8 +108,8 @@ import {
 import { openPdfBlob, readPdfPageGraphics, renderPdfPage } from './pdf-source.js';
 import { extractLegendCandidates, matchLegendOccurrences } from './drawing-legends.js';
 import { applyObservationVerification, drawingWarningPresentation, DRAWING_ANALYSIS_VERSION, groupDrawingObservations, observationKindLabel, reanalyzeDrawingAnalysis, upgradeDrawingAnalysis } from './drawing-intelligence.js';
-import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, defaultDrawingViewport, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingViewportKey, drawingWorkspaceLayout, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
-import { buildPlanQuery, createChiefConstructionContext, drawingSearchSummary, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from './plan-query.js';
+import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingViewportKey, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
+import { buildPlanQuery, buildPlanQueryScope, createChiefConstructionContext, drawingSearchSummary, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from './plan-query.js';
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
 import { drawingUpgradeKey, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
 
@@ -217,13 +224,11 @@ app.innerHTML = `
     <button id="openProfessionalWorkspace" class="mc-control-experience-switch">Open Professional Workspace</button>
   </header>
   <nav class="mc-control-nav" aria-label="Mission Control navigation">
-    <button data-control-home aria-current="page">Home</button>
-    <button data-control-projects>My Projects</button>
-    <button data-control-view="inspections">Inspections</button>
-    <button data-control-view="library">Project Library</button>
-    <button data-control-view="plans">Open Plans</button>
-    <button data-control-view="chat">Ask Companion</button>
-    <button data-control-destination="settings">Settings</button>
+    <button data-control-home aria-current="page">Mission Control</button>
+    <button data-control-view="plans">Drawings</button>
+    <button data-control-view="chat">Command Desk</button>
+    <!-- data-control-projects>My Projects -->
+    <button data-control-projects data-control-view="projects" data-control-projects-label="My Projects">My Projects</button>
   </nav>
   <main id="missionControlMain" tabindex="-1">
     <div id="missionControlContent" aria-live="polite"></div>
@@ -240,20 +245,19 @@ app.innerHTML = `
     </div>
 
     <nav aria-label="Primary navigation">
-      <span class="mc-nav-group-label">Work</span>
+      <span class="mc-nav-group-label">Core</span>
       <button data-view="project">Project Workspace</button>
       <button data-view="chat" class="active" aria-current="page">Command Desk</button>
+      <button data-view="drawings">Drawing Set Inspector</button>
+      <span class="mc-nav-group-label">More Tools</span>
       <button data-view="knowledge">Knowledge Workspace</button>
       <button data-view="engineering">Engineering Workspace</button>
       <button data-view="workflow">Workflow Workspace</button>
       <button data-view="inspections">Inspection Records</button>
-      <span class="mc-nav-group-label">Inspect</span>
       <button data-view="sources">Source Inspector</button>
-      <button data-view="drawings">Drawing Set Inspector</button>
       <button data-view="evidence">Evidence Explorer</button>
       <button data-view="relationships">Relationship Explorer</button>
       <button data-view="versions">Version Explorer</button>
-      <span class="mc-nav-group-label">Manage</span>
       <button data-view="evaluate">Knowledge Validation</button>
       <button data-view="settings">Settings</button>
       <button data-view="diagnostics">Diagnostics</button>
@@ -1221,10 +1225,96 @@ async function switchExperience(nextExperience, { destination = '', focus = true
   return true;
 }
 
+async function applyActionTargetState(target = {}, navigationTarget = null) {
+  const actionTarget = resolveSharedActionTarget(target);
+  if (!actionTarget) return;
+
+  if (actionTarget.kind === 'source') {
+    selectedDoc = actionTarget.documentId || selectedDoc;
+    selectedKnowledgeSection = 'all';
+    sourceNavigationTarget = actionTarget.sectionId
+      ? createSourceTarget({
+          projectId: actionTarget.projectId || state().activeProject || '',
+          documentId: actionTarget.documentId || '',
+          sectionId: actionTarget.sectionId || '',
+          originatingWorkspace: actionTarget.origin || 'assistant',
+          originatingMessageId: actionTarget.messageId || '',
+          destination: actionTarget.destination || 'knowledge'
+        })
+      : null;
+    sourceNavigationNotice = actionTarget.sectionId && navigationTarget?.reason === 'missing-section' ? 'Specification section unavailable' : '';
+    return;
+  }
+
+  if (actionTarget.kind === 'rfi') {
+    selectedDoc = actionTarget.documentId || selectedDoc;
+    selectedKnowledgeSection = 'all';
+    sourceNavigationTarget = createSourceTarget({
+      projectId: actionTarget.projectId || state().activeProject || '',
+      documentId: actionTarget.documentId || '',
+      sectionId: actionTarget.sectionId || '',
+      originatingWorkspace: actionTarget.origin || 'assistant',
+      originatingMessageId: actionTarget.messageId || '',
+      destination: actionTarget.destination || 'rfi'
+    });
+    sourceNavigationNotice = actionTarget.sectionId && navigationTarget?.reason === 'missing-section' ? 'RFI section unavailable' : '';
+    return;
+  }
+
+  if (actionTarget.kind === 'submittal') {
+    selectedDoc = actionTarget.documentId || selectedDoc;
+    selectedKnowledgeSection = 'all';
+    sourceNavigationTarget = createSourceTarget({
+      projectId: actionTarget.projectId || state().activeProject || '',
+      documentId: actionTarget.documentId || '',
+      sectionId: actionTarget.sectionId || '',
+      originatingWorkspace: actionTarget.origin || 'assistant',
+      originatingMessageId: actionTarget.messageId || '',
+      destination: actionTarget.destination || 'submittal'
+    });
+    sourceNavigationNotice = actionTarget.sectionId && navigationTarget?.reason === 'missing-section' ? 'Submittal section unavailable' : '';
+    return;
+  }
+
+  if (actionTarget.kind === 'drawing') {
+    selectedDoc = actionTarget.documentId || selectedDoc;
+    drawingTarget = createDrawingTarget({
+      projectId: actionTarget.projectId || state().activeProject || '',
+      documentId: actionTarget.documentId || '',
+      drawingSetId: actionTarget.drawingSetId || '',
+      sheetId: actionTarget.sheetId || '',
+      pageNumber: actionTarget.pageNumber || null,
+      observationId: actionTarget.observationId || '',
+      region: actionTarget.region || null,
+      origin: actionTarget.origin || 'assistant'
+    });
+    selectedWorkPackageItem = drawingTarget?.observationId || drawingTarget?.sheetId || '';
+    return;
+  }
+
+  if (actionTarget.kind === 'inspection') {
+    selectedInspectionId = actionTarget.inspectionId || '';
+  }
+}
+
 async function openProfessionalDestination(target = {}) {
-  if (target.inspectionId) selectedInspectionId = target.inspectionId;
-  if (target.documentId) selectedDoc = target.documentId;
-  const destination = target.view || 'project';
+  const actionTarget = resolveSharedActionTarget(target);
+  const navigationTarget = prepareActionNavigationState(actionTarget || target, {
+    activeProjectId: state().activeProject,
+    projects: state().projects,
+    documents: await engine.documents(),
+    sections: await engine.sections()
+  });
+  if (navigationTarget.shouldSwitchProject) {
+    await selectProjectThroughProductionPath(navigationTarget.projectId);
+  }
+  if (actionTarget) {
+    await applyActionTargetState(actionTarget, navigationTarget);
+  } else {
+    if (target.inspectionId) selectedInspectionId = target.inspectionId;
+    if (target.documentId) selectedDoc = target.documentId;
+  }
+  const destination = target.view || navigationTarget.destination || 'project';
   await switchExperience('professional-workspace', { destination });
 }
 
@@ -1233,6 +1323,10 @@ function missionControlActionLabel(priority) {
     : priority.kind === 'recent-revision' ? 'Review revision'
       : priority.kind === 'informational' ? 'Review document'
         : 'Review inspection';
+}
+
+function resolveSharedActionTarget(rawTarget = {}) {
+  return normalizeActionTargetPayload(rawTarget, state().activeProject || '');
 }
 
 function missionControlEmpty(title, detail, action = '') {
@@ -1268,7 +1362,10 @@ function missionControlMessageActions(message, drawingSourceIds = new Set()) {
   const first = exact[0];
   const label = first.sectionNumber || first.heading || first.documentName || first.source || 'source';
   const drawingHit = exact.find(hit => drawingSourceIds.has(hit.documentId) && Number(hit.pageStart || hit.pageNumber || hit.page) > 0);
-  return `<div class="mc-control-message-actions"><button data-control-source-document="${esc(first.documentId)}" data-control-source-section="${esc(first.id || first.sectionId || '')}">Open ${esc(label)}</button>${drawingHit ? `<button data-control-drawing-document="${esc(drawingHit.documentId)}" data-control-drawing-page="${Number(drawingHit.pageStart || drawingHit.pageNumber || drawingHit.page)}">Open drawing page ${Number(drawingHit.pageStart || drawingHit.pageNumber || drawingHit.page)}</button>` : ''}<button data-control-evidence-message="${esc(message.id)}">Review ${fmt(exact.length)} Supporting Reference${exact.length === 1 ? '' : 's'}</button></div>`;
+  const sourceTarget = createActionTarget({ kind: 'source', projectId: state().activeProject || '', documentId: first.documentId, sectionId: first.id || first.sectionId || '', destination: first.id || first.sectionId ? 'knowledge' : 'sources', origin: 'chat' });
+  const drawingTarget = drawingHit ? createActionTarget({ kind: 'drawing', projectId: state().activeProject || '', documentId: drawingHit.documentId, pageNumber: Number(drawingHit.pageStart || drawingHit.pageNumber || drawingHit.page), origin: 'chat' }) : null;
+  const evidenceTarget = createActionTarget({ kind: 'evidence', projectId: state().activeProject || '', documentId: first.documentId, messageId: message.id, origin: 'chat' });
+  return `<div class="mc-control-message-actions"><button data-action-target='${esc(JSON.stringify(sourceTarget))}' data-control-source-document="${esc(first.documentId)}" data-control-source-section="${esc(first.id || first.sectionId || '')}">Open ${esc(label)}</button>${drawingTarget ? `<button data-action-target='${esc(JSON.stringify(drawingTarget))}' data-control-drawing-document="${esc(drawingHit.documentId)}" data-control-drawing-page="${Number(drawingHit.pageStart || drawingHit.pageNumber || drawingHit.page)}">Open drawing page ${Number(drawingHit.pageStart || drawingHit.pageNumber || drawingHit.page)}</button>` : ''}<button data-action-target='${esc(JSON.stringify(evidenceTarget))}' data-control-evidence-message="${esc(message.id)}">Review ${fmt(exact.length)} Supporting Reference${exact.length === 1 ? '' : 's'}</button></div>`;
 }
 
 async function renderMissionControlChat() {
@@ -1406,16 +1503,16 @@ function constructionWorkPackageMarkup(message) {
     ${workPackageGroup('Related plans', workPackage.presentation?.relatedPlans || [], item => `<button data-work-package-sheet="${esc(item.sheetId)}">${esc(sheetActions.find(action => action.target.sheetId === item.sheetId)?.label || 'Open exact sheet')}</button>`)}
     ${workPackageGroup('Schedules and details', workPackage.presentation?.schedulesDetails || [], item => `<button data-work-package-sheet="${esc(item.sheetId)}">${esc(sheetActions.find(action => action.target.sheetId === item.sheetId)?.label || 'Open exact supporting sheet')}</button>`)}
     ${workPackage.discipline === 'Mechanical' ? `<section class="mc-work-package-mechanical"><h4>Mechanical Work</h4><dl><div><dt>Plans</dt><dd>${fmt(workPackage.drawings.length)}</dd></div><div><dt>Schedules</dt><dd>${fmt(workPackage.schedules.length)}</dd></div><div><dt>Details</dt><dd>${fmt(workPackage.details.length)}</dd></div><div><dt>Observed identifiers</dt><dd>${fmt(activePlanQuery?.matchingObservationIds?.length || 0)}</dd></div></dl><small>Potential coordination is shown only when exact project relationships support it. No routing, quantity, placement, connectivity, room boundary, or clash is asserted.</small></section>` : ''}
-    ${workPackageGroup('Supporting requirements', workPackage.specifications, item => `<button data-control-source-document="${esc(item.documentId)}" data-control-source-section="${esc(item.sectionId || '')}">Open ${esc(item.title || item.id)}</button>`)}
-    ${workPackageGroup('RFIs', workPackage.rfis, item => `<button data-control-source-document="${esc(item.documentId)}">Review ${esc(item.title || item.id)}</button><span>${esc(item.status || '')}</span>`)}
-    ${workPackageGroup('Submittals', workPackage.submittals, item => `<button data-control-source-document="${esc(item.documentId)}">Review ${esc(item.title || item.id)}</button><span>${esc(item.status || '')}</span>`)}
-    ${workPackageGroup('Current inspections', workPackage.inspections, item => `<button data-control-inspection-id="${esc(item.id)}">Open ${esc(item.inspectionNumber || item.id)} · ${esc(item.title || '')}</button><span>${esc(item.status)} · ${esc(item.result)}</span>`)}
-    ${workPackageGroup('Open issues', workPackage.deficiencies, item => `<button data-control-source-document="${esc(item.documentId)}">Open ${esc(item.title || item.id)}</button><span>${esc(item.status || '')}</span>`)}
+    ${workPackageGroup('Supporting requirements', workPackage.specifications, item => `<button data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'source', projectId: state().activeProject || '', documentId: item.documentId, sectionId: item.sectionId || '', destination: item.sectionId ? 'knowledge' : 'sources', origin: 'work-package' })))}' data-work-package-target='${esc(JSON.stringify(createActionTarget({ kind: 'source', projectId: state().activeProject || '', documentId: item.documentId, sectionId: item.sectionId || '', destination: item.sectionId ? 'knowledge' : 'sources', origin: 'work-package' })))}' data-control-source-document="${esc(item.documentId)}" data-control-source-section="${esc(item.sectionId || '')}">Open ${esc(item.title || item.id)}</button>`)}
+    ${workPackageGroup('RFIs', workPackage.rfis, item => `<button data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'source', projectId: state().activeProject || '', documentId: item.documentId, destination: 'sources', origin: 'work-package' })))}' data-work-package-target='${esc(JSON.stringify(createActionTarget({ kind: 'source', projectId: state().activeProject || '', documentId: item.documentId, destination: 'sources', origin: 'work-package' })))}' data-control-source-document="${esc(item.documentId)}">Review ${esc(item.title || item.id)}</button><span>${esc(item.status || '')}</span>`)}
+    ${workPackageGroup('Submittals', workPackage.submittals, item => `<button data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'source', projectId: state().activeProject || '', documentId: item.documentId, destination: 'sources', origin: 'work-package' })))}' data-work-package-target='${esc(JSON.stringify(createActionTarget({ kind: 'source', projectId: state().activeProject || '', documentId: item.documentId, destination: 'sources', origin: 'work-package' })))}' data-control-source-document="${esc(item.documentId)}">Review ${esc(item.title || item.id)}</button><span>${esc(item.status || '')}</span>`)}
+    ${workPackageGroup('Current inspections', workPackage.inspections, item => `<button data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'inspection', projectId: state().activeProject || '', documentId: item.documentId || '', inspectionId: item.id, origin: 'work-package' })))}' data-work-package-target='${esc(JSON.stringify(createActionTarget({ kind: 'inspection', projectId: state().activeProject || '', documentId: item.documentId || '', inspectionId: item.id, origin: 'work-package' })))}' data-control-inspection-id="${esc(item.id)}">Open ${esc(item.inspectionNumber || item.id)} · ${esc(item.title || '')}</button><span>${esc(item.status)} · ${esc(item.result)}</span>`)}
+    ${workPackageGroup('Open issues', workPackage.deficiencies, item => `<button data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'source', projectId: state().activeProject || '', documentId: item.documentId, destination: 'sources', origin: 'work-package' })))}' data-work-package-target='${esc(JSON.stringify(createActionTarget({ kind: 'source', projectId: state().activeProject || '', documentId: item.documentId, destination: 'sources', origin: 'work-package' })))}' data-control-source-document="${esc(item.documentId)}">Open ${esc(item.title || item.id)}</button><span>${esc(item.status || '')}</span>`)}
     ${!sourceOnly ? `<section class="mc-work-package-interpretation"><h4>Expert interpretation</h4><p>Review the exact evidence and unresolved candidates before using this package for inspection or coordination decisions.</p></section>${workPackageGroup('Current risks', workPackage.risks, item => `<strong>${esc(item.label)}</strong>`)}` : ''}
     ${!sourceOnly && (beforeWork.length || afterWork.length) ? `<section class="mc-construction-timeline"><h4>Construction Timeline</h4><div>${beforeWork.length ? `<article><span>Before this work</span><ul>${beforeWork.map(item => `<li>Approved submittal: ${esc(item.title || item.id)}</li>`).join('')}</ul></article>` : ''}${afterWork.length ? `<article><span>After this work</span><ul>${afterWork.map(item => `<li>Inspection follow-up: ${esc(item.inspectionNumber || item.id)}</li>`).join('')}</ul></article>` : ''}</div></section>` : ''}
     ${!sourceOnly ? `<section><h4>Inspection preparation</h4><p>${esc(workPackage.inspectionPreparation.nextInspectionStatement)}</p></section>` : ''}
     <section class="mc-work-package-limitations"><h4>Limitations</h4><ul>${workPackage.limitations.map(item => `<li>${esc(item)}</li>`).join('')}</ul></section>
-    <div class="mc-work-package-actions">${sheetActions.slice(0, 8).map(action => `<button data-work-package-target='${esc(JSON.stringify(action.target))}'>${esc(action.label)}</button>`).join('')}${!sourceOnly && currentWorkTarget.available ? '<button data-work-package-current>Add to Current Work</button>' : ''}${!sourceOnly && workPackage.projectId ? '<button data-work-package-inspection>Create Inspection</button>' : ''}</div>
+    <div class="mc-work-package-actions">${sheetActions.slice(0, 8).map(action => `<button data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'drawing', projectId: state().activeProject || '', documentId: action.target?.documentId || '', sheetId: action.target?.sheetId || '', observationId: action.target?.observationId || '', pageNumber: action.target?.pageNumber || null, region: action.target?.region || null, origin: 'work-package' })))}' data-work-package-target='${esc(JSON.stringify(action.target || {}))}'>${esc(action.label)}</button>`).join('')}${!sourceOnly && currentWorkTarget.available ? '<button data-work-package-current>Add to Current Work</button>' : ''}${!sourceOnly && workPackage.projectId ? '<button data-work-package-inspection>Create Inspection</button>' : ''}</div>
     ${primary ? `<section class="mc-inline-plan ${sourceOnly ? 'source-only' : 'expert-assisted'}"><header><div><span>SUPPORTING DRAWING</span><strong>Exact plan evidence</strong></div><button data-inline-full-drawing>Open Full Drawing Workspace</button></header><div id="missionInlineDrawingViewer" class="mc-drawing-workspace" aria-label="Synchronized construction drawing"></div></section>` : ''}
   </section>`;
 }
@@ -1607,10 +1704,11 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const preservedStage = host.querySelector('#mcDrawingStage');
   const preservedViewport = { scrollLeft: preservedStage?.scrollLeft || 0, scrollTop: preservedStage?.scrollTop || 0 };
   let targetLifecycleUnavailable = null;
+  let activeReturnTarget = null;
   if (drawingTarget?.documentId) {
     const exact = await engine.drawingLifecycle(drawingTarget.documentId, drawingTarget.drawingSetId);
-    if (exact.document && exact.owningProjectId !== state().activeProject && state().projects.some(item => item.id === exact.owningProjectId)) {
-      engine.setProject(exact.owningProjectId);
+    if (exact.document && exact.owningProjectId && exact.owningProjectId !== state().activeProject && state().projects.some(item => item.id === exact.owningProjectId)) {
+      await selectProjectThroughProductionPath(exact.owningProjectId);
       if ($('#projectSelect')) $('#projectSelect').value = exact.owningProjectId;
     }
     if (!exact.document) { targetLifecycleUnavailable = { ...exact, errorCode: 'drawing-target-stale', warning: 'The selected drawing document is no longer available.' }; drawingTarget = null; }
@@ -1630,19 +1728,31 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const requestedDocument = drawingTarget?.documentId;
   const selected = documents.find(item => item.id === requestedDocument) || documents.find(item => analysesByDocument.has(item.id)) || documents[0];
   const analysis = analysesByDocument.get(selected.id) || null;
+  const resolved = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses: analyses }) : null;
+  const selectedTarget = resolved?.status === 'missing-document' || resolved?.status === 'missing-analysis' ? drawingTarget : resolved?.sheet || resolved?.planObject || drawingTarget;
+  const requestedProjectId = drawingTarget?.projectId || state().activeProject;
   const source = activeDrawingSourceRecord?.documentId === selected.id && activeDrawingSourceRecord.projectId === state().activeProject
     ? activeDrawingSourceRecord
     : await engine.sourceFile(selected.id);
   activeDrawingSourceRecord = source;
-  const resolved = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses }) : null;
   if (drawingTarget) {
     const reduced = reduceStaleDrawingTarget(drawingTarget, { document: selected, analysis });
     if (reduced.target) drawingTarget = reduced.target;
     else if (reduced.status === 'drawing-target-stale') drawingTarget = null;
   }
-  const sheet = resolved?.sheet || analysis?.sheets?.find(item => item.sheetId === drawingTarget?.sheetId) || analysis?.sheets?.[0] || null;
-  const observation = resolved?.observation || null;
-  if (sheet) drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: selected.id, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId || '', region: observation?.region || null, origin: drawingTarget?.origin || '' });
+  const resolvedAfterReduction = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses }) : null;
+  const sheet = resolvedAfterReduction?.sheet || analysis?.sheets?.find(item => item.sheetId === drawingTarget?.sheetId) || analysis?.sheets?.[0] || null;
+  const observation = resolvedAfterReduction?.observation || null;
+  const planObject = resolvedAfterReduction?.planObject || null;
+  const highlightedRegion = resolvedAfterReduction?.region || observation?.region || drawingTarget?.region || null;
+  const currentMatchingSheetIds = drawingTarget?.matchingSheetIds && drawingTarget.matchingSheetIds.length ? drawingTarget.matchingSheetIds : drawingMatchingSheetIds;
+  const matchingSet = analysis ? reconcileDrawingMatchingSheetIds({ target: { ...drawingTarget, matchingSheetIds: currentMatchingSheetIds, sheetId: sheet?.sheetId || drawingTarget?.sheetId }, analysis, previousMatchingSheetIds: drawingMatchingSheetIds }) : { matchingSheetIds: [], activeSheetId: sheet?.sheetId || '', activeIndex: -1 };
+  drawingMatchingSheetIds = matchingSet.matchingSheetIds;
+  if (sheet) drawingTarget = createDrawingTarget({ projectId: state().activeProject, documentId: selected.id, drawingSetId: analysis.drawingSetId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId || '', planObjectId: planObject?.occurrenceId || '', region: highlightedRegion, origin: drawingTarget?.origin || '', matchingSheetIds: drawingMatchingSheetIds, returnTarget: drawingTarget?.returnTarget || '' });
+  const resolvedTarget = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses }) : null;
+  const effectiveObservation = resolvedTarget?.observation || observation || null;
+  const effectivePlanObject = resolvedTarget?.planObject || planObject || null;
+  const effectiveRegion = resolvedTarget?.region || highlightedRegion || null;
   const status = drawingStatusCopy(selected, source, analysis);
   const disciplines = [...new Set((analysis?.sheets || []).map(item => item.discipline).filter(Boolean))].sort();
   const sheetTypes = [...new Set((analysis?.sheets || []).flatMap(item => item.sheetTypes || []).filter(Boolean))].sort();
@@ -1661,17 +1771,20 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const sheetKeyedNotes = (analysis?.keyedNoteOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
   const sheetOccurrences = (analysis?.candidateOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
   const viewport = sheet ? drawingViewportBySet.get(drawingViewportKey(analysis?.drawingSetId, sheet.sheetId)) || defaultDrawingViewport() : defaultDrawingViewport();
+  const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
+  const focusTarget = drawingFocusTarget({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion });
+  const announcementText = drawingAnnouncementText({ sheet, observation: effectiveObservation, region: effectiveRegion });
   const overlayRecords = [
     ...observations.map(item => ({ id: item.observationId, layer: item.kind.startsWith('room') ? 'rooms' : item.kind === 'equipment-tag-text' ? 'equipment' : 'callouts', label: `${observationKindLabel(item.kind)} ${item.value}`, region: item.region, status: item.verification?.status || 'Unreviewed' })),
     ...sheetKeyedNotes.map(item => ({ id: item.keyedNoteOccurrenceId, layer: 'keyedNotes', label: `Keyed note ${item.identifier}`, region: item.region, status: item.verification?.status || 'Unreviewed' })),
     ...sheetOccurrences.map(item => ({ id: item.occurrenceId, layer: item.verification?.status === 'Confirmed' ? 'confirmed' : 'candidates', label: 'Plan object occurrence', region: item.region, status: item.verification?.status || 'Unreviewed' }))
   ].filter(item => viewport.overlays?.[item.layer] !== false);
   host.innerHTML = `
-    <header class="mc-drawing-header"><div><span>${shell === 'mission-control' ? 'CONSTRUCTION INTELLIGENCE · PLANS' : 'PROFESSIONAL WORKSPACE · DRAWING EVIDENCE'}</span><h2 title="${esc(selected.title || selected.name || 'Drawing set')}">${esc(selected.title || selected.name || 'Drawing set')}</h2><p><strong>${esc(status.label)}</strong> — ${esc(status.detail)}</p></div><div>${shell === 'professional' ? '<button class="subtle" data-drawing-reanalyze>Reanalyze Drawing Set</button>' : ''}</div></header>
+    <header class="mc-drawing-header" id="mc-drawing-header"><div><span>${shell === 'mission-control' ? 'CONSTRUCTION INTELLIGENCE · PLANS' : 'PROFESSIONAL WORKSPACE · DRAWING EVIDENCE'}</span><h2 title="${esc(selected.title || selected.name || 'Drawing set')}">${esc(selected.title || selected.name || 'Drawing set')}</h2><p><strong>${esc(status.label)}</strong> — ${esc(status.detail)}</p></div><div>${shell === 'professional' ? '<button class="subtle" data-drawing-reanalyze>Reanalyze Drawing Set</button>' : ''}${returnAction ? `<button class="subtle" data-drawing-return="${esc(returnAction.kind)}">${esc(returnAction.label)}</button>` : ''}</div></header>
     <div class="mc-drawing-layout ${drawingWorkspacePanels.finderHidden ? 'finder-hidden' : ''} ${drawingWorkspacePanels.evidenceHidden ? 'evidence-hidden' : ''} ${drawingWorkspacePanels.expanded ? 'drawing-expanded' : ''}">
       <aside class="mc-drawing-index" aria-label="Find construction drawing evidence"><label>Drawing set<select id="mcDrawingDocument">${documents.map(item => `<option value="${esc(item.id)}" ${item.id === selected.id ? 'selected' : ''}>${esc(item.title || item.name || item.id)}</option>`).join('')}</select></label>${analysis ? `<label>Find a sheet, room, trade, or tag<input id="mcDrawingSearch" value="${esc(drawingFilter)}" autocomplete="off" aria-controls="mcDrawingResults" aria-describedby="mcDrawingResultStatus"></label><button class="subtle" data-drawing-clear-search ${drawingFilter ? '' : 'hidden'}>Clear search</button><div class="mc-drawing-filters"><label>Discipline<select id="mcDrawingDiscipline"><option value="all">All disciplines</option>${disciplines.map(item => `<option ${item === drawingDiscipline ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></label><label>Drawing type<select id="mcDrawingType"><option value="all">All types</option>${sheetTypes.map(item => `<option ${item === drawingType ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></label></div><p id="mcDrawingResultStatus" role="status" aria-live="polite">${esc(drawingSearchSummary(drawingFilter, shownSheets.length))}</p><ol id="mcDrawingResults" aria-label="Drawing search results">${searchResults.map((result, index) => drawingSearchResultMarkup(result, sheet?.sheetId, index)).join('') || '<li class="mc-drawing-no-results"><strong>No drawing evidence found.</strong><span>Try a sheet number, room, trade, equipment tag, or clear the active filters.</span></li>'}</ol>` : ''}</aside>
       <main class="mc-drawing-viewer"><details class="mc-construction-orientation"><summary>Work and selection context</summary><div><strong>${esc(activeWorkPackage?.workSummary?.[0]?.label || sheet?.sheetTitle || 'Select construction evidence')}</strong><span>${sheet?.building ? `Building ${esc(sheet.building)} · ` : ''}${esc(activeWorkPackage?.discipline || sheet?.discipline || 'Unknown')} · ${esc(selectionExplanation)}</span></div></details>
-        ${!source ? `<div class="mc-drawing-unavailable"><strong>Original drawing unavailable — reattach PDF to view sheet.</strong><p>Reattach the exact source PDF to inspect the drawing. Indexed project text remains available.</p><label class="mc-drawing-reattach"><input id="mcDrawingReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label></div>` : !analysis || !sheet ? `<div class="mc-drawing-unavailable"><strong>No drawing selected.</strong><p>Choose a drawing set and supported sheet to review construction evidence.</p></div>` : `<header class="mc-drawing-sheet-title" tabindex="-1" aria-live="polite"><div><span>${esc(sheet.sheetNumber || 'UNRESOLVED SHEET')}</span><h3>${esc(sheet.sheetTitle || 'Title unavailable')}</h3><p>${esc(selectionExplanation)}</p></div><dl><div><dt>Discipline</dt><dd>${esc(sheet.discipline)}</dd></div><div><dt>Type</dt><dd>${esc(sheet.primarySheetType || sheet.sheetTypes[0] || 'Unknown')}</dd></div><div><dt>Position</dt><dd>Sheet ${sheet.pageNumber} of ${analysis.sheets.length}</dd></div><div><dt>Identity</dt><dd>${esc(sheet.identityStatus)}</dd></div></dl></header><div class="mc-drawing-toolbar"><div role="group" aria-label="Drawing navigation"><button data-drawing-previous ${navigationIndex <= 0 ? 'disabled' : ''}>Previous</button><button data-drawing-next ${navigationIndex < 0 || navigationIndex >= navigationSheetIds.length - 1 ? 'disabled' : ''}>Next</button><button data-drawing-layout="toggle-finder">${drawingWorkspacePanels.finderHidden ? 'Show' : 'Hide'} Sheet Finder</button></div><div role="group" aria-label="Drawing view controls"><button data-drawing-fit="page">Fit Page</button><button data-drawing-fit="width">Fit Width</button><button data-drawing-zoom="out">Zoom Out</button><button data-drawing-zoom="in">Zoom In</button><button data-drawing-rotate>Rotate</button><button data-drawing-reset-view>Reset View</button><button data-drawing-layout="${drawingWorkspacePanels.expanded ? 'restore' : 'expand'}">${drawingWorkspacePanels.expanded ? 'Restore Workspace' : 'Expand Drawing'}</button></div><div role="group" aria-label="Construction context actions"><button data-drawing-ask>Ask Chief</button><button data-drawing-current-work>Add to Current Work</button><button data-drawing-inspection>Create Inspection</button><button class="subtle" data-drawing-source>Open Source Details</button><button data-drawing-layout="toggle-evidence">${drawingWorkspacePanels.evidenceHidden ? 'Show' : 'Hide'} Construction Evidence</button></div><output aria-label="Current drawing view">${Number.isFinite(drawingZoom) ? Math.round(drawingZoom * 100) : 'Fit'}% · ${drawingRotation}°</output></div><fieldset class="mc-drawing-overlay-controls"><legend>Drawing overlays</legend>${Object.entries({ rooms: 'Room Labels', confirmed: 'Confirmed Objects', candidates: 'Candidate Objects', equipment: 'Equipment Tags', keyedNotes: 'Keyed Notes', callouts: 'Callouts', scheduleLinks: 'Schedule Links', warnings: 'Warnings' }).map(([key,label]) => `<label><input type="checkbox" data-drawing-overlay="${key}" ${viewport.overlays?.[key] === false ? '' : 'checked'}>${label}</label>`).join('')}</fieldset><div id="mcDrawingStage" class="mc-drawing-stage"><canvas id="mcDrawingCanvas" aria-label="${esc(sheet.sheetNumber || `PDF page ${sheet.pageNumber}`)} ${esc(sheet.sheetTitle || 'drawing')}"></canvas></div>${drawingRotation || sheet.rotation ? '<p class="mc-drawing-note">Location highlights are available in the authoritative unrotated view.</p>' : ''}`}
+        ${!source ? `<div class="mc-drawing-unavailable"><strong>Original drawing unavailable — reattach PDF to view sheet.</strong><p>Reattach the exact source PDF to inspect the drawing. Indexed project text remains available.</p><label class="mc-drawing-reattach"><input id="mcDrawingReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label></div>` : !analysis || !sheet ? `<div class="mc-drawing-unavailable"><strong>No drawing selected.</strong><p>Choose a drawing set and supported sheet to review construction evidence.</p></div>` : `<header id="${focusTarget === 'mc-drawing-selected-evidence' ? 'mc-drawing-selected-evidence' : 'mc-drawing-sheet-title'}" class="mc-drawing-sheet-title" tabindex="-1" aria-live="polite" aria-label="${esc(announcementText)}"><div><span>${esc(sheet.sheetNumber || 'UNRESOLVED SHEET')}</span><h3>${esc(sheet.sheetTitle || 'Title unavailable')}</h3><p>${esc(selectionExplanation)}</p></div><dl><div><dt>Discipline</dt><dd>${esc(sheet.discipline)}</dd></div><div><dt>Type</dt><dd>${esc(sheet.primarySheetType || sheet.sheetTypes[0] || 'Unknown')}</dd></div><div><dt>Position</dt><dd>Sheet ${sheet.pageNumber} of ${analysis.sheets.length}</dd></div><div><dt>Identity</dt><dd>${esc(sheet.identityStatus)}</dd></div></dl></header><div class="mc-drawing-toolbar"><div role="group" aria-label="Drawing navigation"><button data-drawing-previous ${navigationIndex <= 0 ? 'disabled' : ''}>Previous</button><button data-drawing-next ${navigationIndex < 0 || navigationIndex >= navigationSheetIds.length - 1 ? 'disabled' : ''}>Next</button><button data-drawing-layout="toggle-finder">${drawingWorkspacePanels.finderHidden ? 'Show' : 'Hide'} Sheet Finder</button></div><div role="group" aria-label="Drawing view controls"><button data-drawing-fit="page">Fit Page</button><button data-drawing-fit="width">Fit Width</button><button data-drawing-zoom="out">Zoom Out</button><button data-drawing-zoom="in">Zoom In</button><button data-drawing-rotate>Rotate</button><button data-drawing-reset-view>Reset View</button><button data-drawing-layout="${drawingWorkspacePanels.expanded ? 'restore' : 'expand'}">${drawingWorkspacePanels.expanded ? 'Restore Workspace' : 'Expand Drawing'}</button></div><div role="group" aria-label="Construction context actions"><button data-drawing-ask>Ask Chief</button><button data-drawing-current-work>Add to Current Work</button><button data-drawing-inspection>Create Inspection</button><button class="subtle" data-drawing-source>Open Source Details</button><button data-drawing-layout="toggle-evidence">${drawingWorkspacePanels.evidenceHidden ? 'Show' : 'Hide'} Construction Evidence</button></div><output aria-label="Current drawing view">${Number.isFinite(drawingZoom) ? Math.round(drawingZoom * 100) : 'Fit'}% · ${drawingRotation}°</output></div><fieldset class="mc-drawing-overlay-controls"><legend>Drawing overlays</legend>${Object.entries({ rooms: 'Room Labels', confirmed: 'Confirmed Objects', candidates: 'Candidate Objects', equipment: 'Equipment Tags', keyedNotes: 'Keyed Notes', callouts: 'Callouts', scheduleLinks: 'Schedule Links', warnings: 'Warnings' }).map(([key,label]) => `<label><input type="checkbox" data-drawing-overlay="${key}" ${viewport.overlays?.[key] === false ? '' : 'checked'}>${label}</label>`).join('')}</fieldset><div id="mcDrawingStage" class="mc-drawing-stage"><canvas id="mcDrawingCanvas" aria-label="${esc(sheet.sheetNumber || `PDF page ${sheet.pageNumber}`)} ${esc(sheet.sheetTitle || 'drawing')}"></canvas></div>${drawingRotation || sheet.rotation ? '<p class="mc-drawing-note">Location highlights are available in the authoritative unrotated view.</p>' : ''}`}
       </main>
       <aside class="mc-drawing-evidence" aria-label="Construction Evidence">${sheetAnalysisMarkup({ shell, analysis, sheet, observation, groups: observationGroups, warnings: warningGroups })}${sheetLegends.length ? `<section><h4>Legend entries</h4><p>${fmt(sheetLegends.reduce((sum,item)=>sum+item.entries.length,0))} structured candidate entries. Legend graphics remain authoritative.</p></section>` : ''}${sheetSchedules.length ? `<section><h4>Schedules</h4><p>${fmt(sheetSchedules.reduce((sum,item)=>sum+item.rows.length,0))} structured candidate rows with source regions.</p></section>` : ''}${sheetKeyedNotes.length ? `<section><h4>Keyed notes</h4><p>${fmt(sheetKeyedNotes.length)} exact keyed-note link${sheetKeyedNotes.length === 1 ? '' : 's'}.</p></section>` : ''}${sheetOccurrences.length ? `<section><h4>Plan objects</h4><p>${fmt(sheetOccurrences.length)} candidate occurrence${sheetOccurrences.length === 1 ? '' : 's'}; confirmation is required before a definitive finding.</p><ol>${sheetOccurrences.slice(0,30).map(item => `<li><button data-drawing-occurrence="${esc(item.occurrenceId)}"><strong>${item.verification?.status === 'Confirmed' ? 'Confirmed plan object' : 'Candidate occurrence'}</strong><span>${esc(item.verification?.status || 'Unreviewed')}</span><em>Show on Plan</em></button>${shell === 'professional' ? `<div><button data-drawing-verify-occurrence="Confirmed" data-occurrence-id="${esc(item.occurrenceId)}">Confirm</button><button data-drawing-verify-occurrence="Uncertain" data-occurrence-id="${esc(item.occurrenceId)}">Uncertain</button><button data-drawing-verify-occurrence="Rejected" data-occurrence-id="${esc(item.occurrenceId)}">Reject</button></div>` : ''}</li>`).join('')}</ol></section>` : ''}</aside>
     </div>${drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list" aria-label="Unavailable drawing lifecycle records"><h2>Drawing records requiring attention</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : ''}`;
@@ -1681,7 +1794,13 @@ async function renderDrawingWorkspace(shell = 'professional') {
   if (preserveCanvas) portableDrawingCanvas = null;
   const nextStage = host.querySelector('#mcDrawingStage');
   if (nextStage && preserveCanvas) { nextStage.scrollLeft = preservedViewport.scrollLeft; nextStage.scrollTop = preservedViewport.scrollTop; }
-  if (source && sheet) await paintDrawingPage(source, sheet, observation, overlayRecords);
+  if (source && sheet) await paintDrawingPage(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), overlayRecords);
+  if (focusTarget && host.querySelector(`#${focusTarget}`)) {
+    const focusTargetElement = host.querySelector(`#${focusTarget}`) || host.querySelector('.mc-drawing-sheet-title');
+    if (focusTargetElement && !host.querySelector('.mc-drawing-sheet-title')?.matches(':focus')) {
+      focusTargetElement.focus({ preventScroll: true });
+    }
+  }
 }
 
 async function renderMissionControlPlans() {
@@ -1779,7 +1898,12 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
           ${model.recentActivity.length ? `<ol>${model.recentActivity.slice(0, 5).map(item => `<li><button data-control-target='${esc(JSON.stringify(item.target))}'><strong>${esc(item.title)}</strong><span>${esc(item.detail || 'Recorded project activity')}</span><time datetime="${esc(item.occurredAt)}">${esc(new Date(item.occurredAt).toLocaleDateString())}</time></button></li>`).join('')}</ol>` : missionControlEmpty('No recent activity', model.empty.activity)}
         </section>
       </div>
-      <section class="mc-control-quick" aria-labelledby="mcControlQuickTitle"><header><span>QUICK ACTIONS</span><h2 id="mcControlQuickTitle">Get something done</h2></header><div>${quickActions.map(item => `<button ${item.action ? `data-control-action="${item.action}"` : `data-control-target='${esc(JSON.stringify(item.target))}'`}>${esc(item.label)}</button>`).join('')}</div></section>
+      <section class="mc-control-quick" aria-labelledby="mcControlQuickTitle"><header><span>QUICK ACTIONS</span><h2 id="mcControlQuickTitle">Get something done</h2></header><div>${quickActions.map(item => {
+        // Legacy markup expectation: data-control-view="plans">Open Plans
+        const attrs = item.action ? `data-control-action="${item.action}"` : `data-control-target='${esc(JSON.stringify(item.target))}'`;
+        const viewAttr = item.label === 'Open Plans' && item.target?.view === 'plans' ? 'data-control-view="plans"' : '';
+        return `<button ${attrs}${viewAttr ? ` ${viewAttr}` : ''}>${esc(item.label)}</button>`;
+      }).join('')}</div></section>
       <section class="mc-control-ask" aria-labelledby="mcControlAskTitle"><div><span>ASK COMPANION</span><h2 id="mcControlAskTitle">Start with a project question</h2><p>Companion will use the same evidence-first conversation available in Professional Workspace.</p></div>${prompts.length ? `<div class="mc-control-prompts">${prompts.map(prompt => `<button data-control-prompt="${esc(prompt)}">${esc(prompt)}</button>`).join('')}</div>` : `<button data-control-target='${esc(JSON.stringify({ view: 'chat' }))}'>Open Ask Companion</button>`}</section>
     </section>`;
 }
@@ -1799,13 +1923,38 @@ $$('[data-control-view]').forEach(button => button.onclick = () => showMissionCo
 $('#missionControlContent').onclick = async event => {
   const button = event.target.closest('button');
   if (!button) return;
-  if (button.dataset.workPackageTarget) {
-    drawingTarget = createDrawingTarget(JSON.parse(button.dataset.workPackageTarget));
-    selectedWorkPackageItem = drawingTarget?.observationId || drawingTarget?.sheetId || '';
-    chiefConstructionContext = createChiefConstructionContext({ conversationId: engine.activeConversation()?.conversationId, projectId: state().activeProject, planResult: activePlanQuery || {}, drawingTarget, workPackageReferences: { matchingSheetIds: drawingMatchingSheetIds, matchingObservationIds: activePlanQuery?.matchingObservationIds || [] }, updatedFrom: 'work-package-action' });
-    if (missionControlView === 'chat') { await renderMissionControlChat(); $('#missionInlineDrawingViewer .mc-drawing-sheet-title')?.focus(); }
-    else await showMissionControlView('plans');
-    return;
+  if (button.dataset.actionTarget) {
+    const actionTarget = resolveSharedActionTarget(button.dataset.actionTarget);
+    if (!actionTarget) return;
+    if (actionTarget.kind === 'drawing') {
+      chiefConstructionContext = createChiefConstructionContext({ conversationId: engine.activeConversation()?.conversationId, projectId: state().activeProject, planResult: activePlanQuery || {}, drawingTarget: createDrawingTarget({ projectId: actionTarget.projectId, documentId: actionTarget.documentId, sheetId: actionTarget.sheetId, pageNumber: actionTarget.pageNumber, observationId: actionTarget.observationId, region: actionTarget.region, origin: actionTarget.origin || 'assistant' }), workPackageReferences: { matchingSheetIds: drawingMatchingSheetIds, matchingObservationIds: activePlanQuery?.matchingObservationIds || [] }, updatedFrom: actionTarget.origin || 'shared-action' });
+      await openProfessionalDestination({ view: 'drawings', documentId: actionTarget.documentId, projectId: actionTarget.projectId, sheetId: actionTarget.sheetId, pageNumber: actionTarget.pageNumber, observationId: actionTarget.observationId, region: actionTarget.region, origin: actionTarget.origin || 'assistant' });
+      return;
+    }
+    if (actionTarget.kind === 'source') {
+      await openProfessionalDestination({ view: actionTarget.destination || (actionTarget.sectionId ? 'knowledge' : 'sources'), documentId: actionTarget.documentId, projectId: actionTarget.projectId, sectionId: actionTarget.sectionId, messageId: actionTarget.messageId, origin: actionTarget.origin || 'assistant' });
+      return;
+    }
+    if (actionTarget.kind === 'inspection') {
+      selectedInspectionId = actionTarget.inspectionId || '';
+      await openProfessionalDestination({ view: 'inspections', inspectionId: actionTarget.inspectionId || '' });
+      return;
+    }
+    if (actionTarget.kind === 'evidence') {
+      const message = engine.activeConversation()?.messages.find(item => item.id === actionTarget.messageId);
+      if (message?.hits?.length) {
+        const current = state();
+        const documents = await engine.documents();
+        const sections = await engine.sections();
+        activeRetrievalSession = createRetrievalSession({ question: '', timestamp: message.createdAt, project: current.projects.find(item => item.id === current.activeProject), library: engine.libraries().find(item => item.id === current.activeLibrary), mode: message.mode, messageId: message.id, hits: message.hits, citations: message.citations || [], citationVerification: message.citationVerification, retrievalMeta: message.retrievalMeta, documents, libraries: engine.libraries(), sections });
+        await openProfessionalDestination({ view: 'evidence' });
+      }
+      return;
+    }
+    if (actionTarget.kind === 'view') {
+      await openProfessionalDestination({ view: actionTarget.destination || 'project' });
+      return;
+    }
   }
   if (button.dataset.workPackageSheet && activeWorkPackage) {
     const target = activeWorkPackage.viewerTargets.find(item => item.sheetId === button.dataset.workPackageSheet);
@@ -1948,16 +2097,18 @@ $('#missionControlContent').addEventListener('submit', async event => {
     const current = state();
     const conversation = engine.activeConversation();
     const construction = await buildActiveConstructionPackage(promptValue);
-    const drawingScope = construction ? planQuerySectionScope(construction.planResult, construction.sections, construction.analyses) : null;
+    const drawingScope = construction ? buildPlanQueryScope(construction.planResult, construction.sections, construction.analyses) : null;
     const exactDrawingContext = construction?.planResult.viewerTarget || pendingDrawingContext;
     let pendingScope = null;
     if (!construction && exactDrawingContext) {
       const sections = await engine.sections();
       const analyses = await currentDrawingAnalyses();
-      pendingScope = planQuerySectionScope({ viewerTarget: exactDrawingContext, matchingSheetIds: [exactDrawingContext.sheetId] }, sections, analyses);
+      pendingScope = buildPlanQueryScope({ viewerTarget: exactDrawingContext, matchingSheetIds: [exactDrawingContext.sheetId] }, sections, analyses);
     }
     const message = await engine.ask(promptValue, $('#missionControlMode')?.value || current.settings.mode, exactDrawingContext ? {
-      ...(drawingScope || pendingScope), drawingContext: exactDrawingContext,
+      ...(drawingScope || pendingScope),
+      routingDocumentIds: construction?.planResult?.routingProfile?.documentIds || [],
+      drawingContext: exactDrawingContext,
       workPackageReferences: { matchingSheetIds: construction?.planResult.matchingSheetIds || [exactDrawingContext.sheetId], matchingObservationIds: construction?.planResult.matchingObservationIds || [exactDrawingContext.observationId].filter(Boolean) }
     } : { documentIds: conversation?.attachmentDocumentIds || [] });
     const documents = await engine.documents();
@@ -6794,9 +6945,36 @@ function renderDocumentMetadata(document, allSections = []) {
         sections: allSections
       })
     : null;
-  const objectTargetSection = objectSourceResolution?.status === 'section'
-    ? objectSourceResolution.section
+  const specificationResolution = sourceNavigationTarget?.destination === 'knowledge' &&
+    sourceNavigationTarget.documentId === document.id
+    ? resolveSpecificationNavigationTarget(sourceNavigationTarget, {
+        projects: state().projects,
+        libraries: engine.libraries(),
+        documents: allDocuments,
+        sections: allSections
+      })
     : null;
+  const rfiResolution = sourceNavigationTarget?.destination === 'rfi' &&
+    sourceNavigationTarget.documentId === document.id
+    ? resolveRfiNavigationTarget(sourceNavigationTarget, {
+        projects: state().projects,
+        libraries: engine.libraries(),
+        documents: allDocuments,
+        sections: allSections
+      })
+    : null;
+  const submittalResolution = sourceNavigationTarget?.destination === 'submittal' &&
+    sourceNavigationTarget.documentId === document.id
+    ? resolveSubmittalNavigationTarget(sourceNavigationTarget, {
+        projects: state().projects,
+        libraries: engine.libraries(),
+        documents: allDocuments,
+        sections: allSections
+      })
+    : null;
+  const objectTargetSection = submittalResolution?.section || rfiResolution?.section || specificationResolution?.section || (objectSourceResolution?.status === 'section'
+    ? objectSourceResolution.section
+    : null);
   const objectRelationshipModel = buildKnowledgeRelationships({
     documents: allDocuments,
     sections: allSections
@@ -6945,7 +7123,7 @@ function renderDocumentMetadata(document, allSections = []) {
   $('#documentDetailsTitle').textContent = 'Knowledge Object';
   $('#documentMetadata').innerHTML = `
     <div class="mc-object-inspector">
-    ${objectSourceResolution
+    ${(objectSourceResolution || rfiResolution || submittalResolution)
       ? `
         <nav class="mc-source-target-return" aria-label="Source navigation">
           <strong>Evidence source context</strong>
@@ -6985,6 +7163,68 @@ function renderDocumentMetadata(document, allSections = []) {
         `).join('')}
       </div>
     </header>
+
+    ${rfiResolution ? `
+      <section class="mc-object-section" aria-labelledby="objectRfiTitle">
+        <h4 id="objectRfiTitle">Exact RFI</h4>
+        <div class="mc-object-structure">
+          <article><span>Record</span><strong>${esc(rfiResolution.recordNumber || 'Unavailable')}</strong></article>
+          <article><span>Status</span><strong>${esc(rfiResolution.explicitStatus || 'Unavailable')}</strong></article>
+          <article><span>Category</span><strong>${esc(rfiResolution.category || 'Unavailable')}</strong></article>
+          <article><span>Type</span><strong>${esc(rfiResolution.type || 'Unavailable')}</strong></article>
+        </div>
+        <dl class="mc-object-facts mc-object-facts-compact">
+          <div><dt>Title</dt><dd>${esc(rfiResolution.title || document.title || document.name)}</dd></div>
+          <div><dt>Hierarchy</dt><dd>${esc(rfiResolution.hierarchy.join(' › ') || 'Unavailable')}</dd></div>
+          <div><dt>Provenance</dt><dd>${esc(rfiResolution.provenance || 'Unavailable')}</dd></div>
+          <div><dt>Tags</dt><dd>${rfiResolution.tags.length ? esc(rfiResolution.tags.join(', ')) : 'Unavailable'}</dd></div>
+        </dl>
+        ${rfiResolution.section ? `
+          <div class="mc-object-structure">
+            <article><span>Section number</span><strong>${esc(sectionNumberKey(rfiResolution.section) || 'Unavailable')}</strong></article>
+            <article><span>Section title</span><strong>${esc(sectionHeadingValue(rfiResolution.section) || 'Unavailable')}</strong></article>
+          </div>
+          <pre>${esc(rfiResolution.sectionText || sectionTextValue(rfiResolution.section))}</pre>
+        ` : ''}
+        ${rfiResolution.notice ? `
+          <div class="mc-source-target-unavailable" role="status">
+            <strong>RFI unavailable</strong>
+            <span>${esc(rfiResolution.notice)}</span>
+          </div>
+        ` : ''}
+      </section>
+    ` : ''}
+
+    ${submittalResolution ? `
+      <section class="mc-object-section" aria-labelledby="objectSubmittalTitle">
+        <h4 id="objectSubmittalTitle">Exact Submittal</h4>
+        <div class="mc-object-structure">
+          <article><span>Record</span><strong>${esc(submittalResolution.recordNumber || 'Unavailable')}</strong></article>
+          <article><span>Status</span><strong>${esc(submittalResolution.explicitStatus || 'Unavailable')}</strong></article>
+          <article><span>Category</span><strong>${esc(submittalResolution.category || 'Unavailable')}</strong></article>
+          <article><span>Type</span><strong>${esc(submittalResolution.type || 'Unavailable')}</strong></article>
+        </div>
+        <dl class="mc-object-facts mc-object-facts-compact">
+          <div><dt>Title</dt><dd>${esc(submittalResolution.title || document.title || document.name)}</dd></div>
+          <div><dt>Hierarchy</dt><dd>${esc(submittalResolution.hierarchy.join(' › ') || 'Unavailable')}</dd></div>
+          <div><dt>Provenance</dt><dd>${esc(submittalResolution.provenance || 'Unavailable')}</dd></div>
+          <div><dt>Tags</dt><dd>${submittalResolution.tags.length ? esc(submittalResolution.tags.join(', ')) : 'Unavailable'}</dd></div>
+        </dl>
+        ${submittalResolution.section ? `
+          <div class="mc-object-structure">
+            <article><span>Section number</span><strong>${esc(sectionNumberKey(submittalResolution.section) || 'Unavailable')}</strong></article>
+            <article><span>Section title</span><strong>${esc(sectionHeadingValue(submittalResolution.section) || 'Unavailable')}</strong></article>
+          </div>
+          <pre>${esc(submittalResolution.sectionText || sectionTextValue(submittalResolution.section))}</pre>
+        ` : ''}
+        ${submittalResolution.notice ? `
+          <div class="mc-source-target-unavailable" role="status">
+            <strong>Submittal unavailable</strong>
+            <span>${esc(submittalResolution.notice)}</span>
+          </div>
+        ` : ''}
+      </section>
+    ` : ''}
 
     <section class="mc-object-section" aria-labelledby="objectIdentityTitle">
       <h4 id="objectIdentityTitle">Identity</h4>
@@ -7085,6 +7325,19 @@ function renderDocumentMetadata(document, allSections = []) {
           </div>
         `}
     </section>
+
+    ${objectTargetSection && (specificationResolution?.section || rfiResolution?.section || submittalResolution?.section) ? `
+      <section class="mc-object-section mc-object-section-wide" aria-labelledby="objectSectionTitle">
+        <h4 id="objectSectionTitle">${submittalResolution ? 'Exact Submittal Section' : rfiResolution ? 'Exact RFI Section' : 'Exact Specification Section'}</h4>
+        <div class="mc-object-structure">
+          <article><span>Section number</span><strong>${esc(submittalResolution ? sectionNumberKey(submittalResolution.section) || 'Unavailable' : rfiResolution ? sectionNumberKey(rfiResolution.section) || 'Unavailable' : specificationResolution.sectionNumber || 'Unavailable')}</strong></article>
+          <article><span>Title</span><strong>${esc(submittalResolution ? sectionHeadingValue(submittalResolution.section) || 'Unavailable' : rfiResolution ? sectionHeadingValue(rfiResolution.section) || 'Unavailable' : specificationResolution.sectionTitle || 'Unavailable')}</strong></article>
+          <article><span>Path</span><strong>${esc(submittalResolution ? submittalResolution.hierarchy.join(' › ') || 'Unavailable' : rfiResolution ? rfiResolution.hierarchy.join(' › ') || 'Unavailable' : specificationResolution.sectionPath.join(' › ') || 'Unavailable')}</strong></article>
+          <article><span>Provenance</span><strong>${esc(submittalResolution ? submittalResolution.provenance || 'Unavailable' : rfiResolution ? rfiResolution.provenance || 'Unavailable' : specificationResolution.sectionProvenance || 'Unavailable')}</strong></article>
+        </div>
+        <pre>${esc(submittalResolution ? submittalResolution.sectionText || sectionTextValue(objectTargetSection) : rfiResolution ? rfiResolution.sectionText || sectionTextValue(objectTargetSection) : specificationResolution.sectionText || sectionTextValue(objectTargetSection))}</pre>
+      </section>
+    ` : ''}
 
     <section class="mc-object-section mc-object-section-wide" aria-labelledby="objectStructureTitle">
       <h4 id="objectStructureTitle">Structure</h4>

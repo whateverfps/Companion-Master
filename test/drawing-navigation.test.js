@@ -1,0 +1,93 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createDrawingTarget, drawingAnnouncementText, drawingFocusTarget, drawingReturnAction, reconcileDrawingMatchingSheetIds, resolveDrawingTarget } from '../src/drawing-navigation.js';
+
+test('resolveDrawingTarget preserves page and region context for exact drawing restoration', () => {
+  const analysis = {
+    documentId: 'doc-1',
+    drawingSetId: 'set-1',
+    projectId: 'project-1',
+    sheets: [{ sheetId: 'sheet-1', pageNumber: 2, sheetNumber: 'S2' }],
+    observations: [{ observationId: 'obs-1', sheetId: 'sheet-1', region: { x: 0.2, y: 0.3, width: 0.4, height: 0.5 } }]
+  };
+  const target = createDrawingTarget({
+    projectId: 'project-1',
+    documentId: 'doc-1',
+    drawingSetId: 'set-1',
+    sheetId: 'sheet-1',
+    pageNumber: 2,
+    region: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }
+  });
+
+  const resolved = resolveDrawingTarget(target, { documents: [{ id: 'doc-1' }], analyses: [analysis] });
+
+  assert.equal(resolved.sheet?.sheetId, 'sheet-1');
+  assert.equal(resolved.sheet?.pageNumber, 2);
+  assert.deepEqual(resolved.region, { x: 0.1, y: 0.2, width: 0.3, height: 0.4 });
+});
+
+test('resolveDrawingTarget prefers exact plan-object and region state over stale observations', () => {
+  const analysis = {
+    documentId: 'doc-2',
+    drawingSetId: 'set-2',
+    projectId: 'project-2',
+    sheets: [{ sheetId: 'sheet-2', pageNumber: 3, sheetNumber: 'S3' }],
+    observations: [{ observationId: 'obs-stale', sheetId: 'sheet-2', region: { x: 0.5, y: 0.5, width: 0.1, height: 0.1 } }],
+    candidateOccurrences: [{ occurrenceId: 'plan-1', sheetId: 'sheet-2', pageNumber: 3, region: { x: 0.2, y: 0.2, width: 0.1, height: 0.1 } }]
+  };
+  const target = createDrawingTarget({
+    projectId: 'project-2',
+    documentId: 'doc-2',
+    drawingSetId: 'set-2',
+    sheetId: 'sheet-2',
+    pageNumber: 3,
+    observationId: 'obs-stale',
+    planObjectId: 'plan-1',
+    region: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 }
+  });
+
+  const resolved = resolveDrawingTarget(target, { documents: [{ id: 'doc-2' }], analyses: [analysis] });
+
+  assert.equal(resolved.kind, 'plan-object');
+  assert.equal(resolved.planObject?.occurrenceId, 'plan-1');
+  assert.deepEqual(resolved.region, { x: 0.2, y: 0.2, width: 0.1, height: 0.1 });
+});
+
+test('createDrawingTarget preserves plan-object, matching-sheet, and return metadata for later restoration', () => {
+  const target = createDrawingTarget({
+    projectId: 'project-2',
+    documentId: 'doc-2',
+    drawingSetId: 'set-2',
+    sheetId: 'sheet-3',
+    pageNumber: 3,
+    planObjectId: 'plan-1',
+    matchingSheetIds: ['sheet-3', 'sheet-4'],
+    returnTarget: 'work-package'
+  });
+
+  assert.equal(target?.planObjectId, 'plan-1');
+  assert.deepEqual(target?.matchingSheetIds, ['sheet-3', 'sheet-4']);
+  assert.equal(target?.returnTarget, 'work-package');
+});
+
+test('matching-sheet reconciliation removes stale ids and preserves order', () => {
+  const analysis = {
+    drawingSetId: 'set-2',
+    sheets: [{ sheetId: 'sheet-2' }, { sheetId: 'sheet-3' }, { sheetId: 'sheet-4' }]
+  };
+  const matched = reconcileDrawingMatchingSheetIds({
+    target: createDrawingTarget({ documentId: 'doc-2', drawingSetId: 'set-2', sheetId: 'sheet-3', matchingSheetIds: ['sheet-4', 'stale', 'sheet-3'] }),
+    analysis,
+    previousMatchingSheetIds: ['sheet-2', 'sheet-3']
+  });
+
+  assert.deepEqual(matched.matchingSheetIds, ['sheet-4', 'sheet-3']);
+  assert.equal(matched.activeSheetId, 'sheet-3');
+});
+
+test('drawing return and focus helpers produce deterministic labels and announcements', () => {
+  assert.equal(drawingReturnAction('chief-answer').label, 'Return to Chief Answer');
+  assert.equal(drawingReturnAction('work-package').label, 'Return to Work Package');
+  assert.equal(drawingFocusTarget({ observation: { observationId: 'obs' } }), 'mc-drawing-selected-evidence');
+  assert.match(drawingAnnouncementText({ sheet: { sheetNumber: 'S-101', sheetTitle: 'Floor Plan' }, observation: { value: 'Room 101' } }), /S-101/);
+});
