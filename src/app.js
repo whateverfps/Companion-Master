@@ -116,6 +116,8 @@ import { buildChiefDrawingEvidence } from './chief-drawing-evidence.js';
 import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent, navigateExactDrawingCommand } from './engineering-locator.js';
 import { inspectDrawingRegistryRuntime } from './drawing-registry-diagnostics.js';
 import { createDrawingViewerEngine } from './drawing-viewer-engine.js';
+import { createDrawingContextService } from './drawing-context.js';
+import { createDrawingWorkspace } from './drawing-workspace.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -196,12 +198,15 @@ let drawingZoom = null;
 let drawingRotation = 0;
 const drawingViewportBySet = new Map();
 const drawingViewerEngine = createDrawingViewerEngine({ viewportStore: drawingViewportBySet });
+const drawingContextService = createDrawingContextService();
+const drawingWorkspace = createDrawingWorkspace({ viewerEngine: drawingViewerEngine, contextService: drawingContextService });
 let drawingViewportDocumentId = '';
 let activeDrawingPdf = null;
 let activeDrawingDocumentId = '';
 let activeDrawingSourceRecord = null;
 let activeDrawingRenderIdentity = null;
 let drawingWorkspaceRenderRequest = 0;
+let drawingPageSelectionRequest = 0;
 let drawingRenderGeneration = 0;
 let portableDrawingCanvas = null;
 let activeDrawingViewerAnalysis = null;
@@ -1923,6 +1928,26 @@ function sheetAnalysisMarkup({ shell, analysis, sheet, observation, groups, warn
     <details class="mc-drawing-analysis-details"><summary>Analysis details</summary><dl><div><dt>Identity method</dt><dd>${esc(sheet.sheetNumberResolutionMethod || 'Unavailable')}</dd></div><div><dt>Title method</dt><dd>${esc(sheet.sheetTitleResolutionMethod || 'Unavailable')}</dd></div><div><dt>Discipline reason</dt><dd>${esc(sheet.disciplineEvidence || 'Unavailable')}</dd></div><div><dt>Evidence confidence</dt><dd>${Math.round(sheet.confidence * 100)}%</dd></div></dl>${sheet.rejectedSheetNumberCandidates?.length ? `<h5>Identity candidates requiring review</h5><ul>${sheet.rejectedSheetNumberCandidates.slice(0, 20).map(item => `<li>${esc(item.value)} — ${esc(item.reason)}</li>`).join('')}</ul>` : ''}${warnings.technical.length ? `<h5>Technical warnings</h5><ul>${warnings.technical.slice(0, 20).map(item => `<li>${esc(item.message)}</li>`).join('')}</ul>` : ''}${shell === 'professional' ? '<button data-drawing-analyze-page>Analyze Page Objects</button>' : ''}</details>`;
 }
 
+function drawingContextMarkup(context) {
+  const records = (items, empty = 'No linked data.') => items?.length
+    ? `<ul>${items.map(item => `<li>${esc(item.label || item.title || item.name || item.id || 'Linked record')}</li>`).join('')}</ul>`
+    : `<p>${esc(empty)}</p>`;
+  const page = context?.page || {};
+  const issues = [...(context?.issues || []), ...(context?.risks || []), ...(context?.questions || [])];
+  return `<div class="mc-drawing-page-context" aria-label="Selected drawing page context">
+    <section><h3>Summary</h3><dl><div><dt>Sheet</dt><dd>${esc(page.sheetNumber || `Page ${page.pdfPageNumber || ''}`)}</dd></div><div><dt>Discipline</dt><dd>${esc(page.discipline || 'Unknown')}</dd></div><div><dt>Drawing type</dt><dd>${esc(page.drawingType || 'Unknown')}</dd></div></dl></section>
+    <section><h3>Specifications</h3>${records(context?.specifications, 'No linked specifications.')}</section>
+    <section><h3>Related Drawings</h3>${records(context?.relatedDrawings, 'No related drawings.')}</section>
+    <section><h3>Inspection Items</h3>${records(context?.inspectionItems)}</section>
+    <section><h3>Equipment</h3>${records(context?.equipment)}</section>
+    <section><h3>Rooms</h3>${records(context?.rooms)}</section>
+    <section><h3>Photos</h3>${records(context?.photos)}</section>
+    <section><h3>Documents</h3>${records(context?.documents)}</section>
+    <section><h3>Issues</h3>${records(issues)}</section>
+    <section><h3>History</h3>${records(context?.history)}</section>
+  </div>`;
+}
+
 function drawingRecoveryMarkup(record = {}) {
   const projectName = state().projects.find(item => item.id === record.owningProjectId)?.name || record.owningProjectId || 'Unavailable';
   const activeName = state().projects.find(item => item.id === state().activeProject)?.name || state().activeProject || 'Unavailable';
@@ -2021,6 +2046,8 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const sheetSchedules = (analysis?.schedules || []).filter(item => item.sheetId === sheet?.sheetId);
   const sheetKeyedNotes = (analysis?.keyedNoteOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
   const sheetOccurrences = (analysis?.candidateOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
+  drawingWorkspace.setPages((analysis?.sheets || []).map(item => ({ ...item, documentId: item.documentId || selected.id, drawingSetId: item.drawingSetId || analysis?.drawingSetId, projectId: item.projectId || analysis?.projectId, pdfPageNumber: item.pdfPageNumber || item.pageNumber })));
+  const pageContext = drawingWorkspace.getContext(sheet ? { ...sheet, documentId: sheet.documentId || selected.id, drawingSetId: sheet.drawingSetId || analysis?.drawingSetId, projectId: sheet.projectId || analysis?.projectId, pdfPageNumber: sheet.pdfPageNumber || sheet.pageNumber } : drawingTarget?.pageNumber || 1);
   if (sheet) drawingViewerEngine.openDocument(selected.id, Math.max(sheet.pageNumber, ...(analysis?.sheets || []).map(item => Number(item.pageNumber) || 0)), sheet.pageNumber);
   const viewport = sheet ? { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) } : defaultDrawingViewport();
   const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
@@ -2039,7 +2066,7 @@ async function renderDrawingWorkspace(shell = 'professional') {
       <main class="mc-drawing-viewer"><details class="mc-construction-orientation"><summary>Work and selection context</summary><div><strong>${esc(activeWorkPackage?.workSummary?.[0]?.label || sheet?.sheetTitle || 'Select construction evidence')}</strong><span>${sheet?.building ? `Building ${esc(sheet.building)} · ` : ''}${esc(activeWorkPackage?.discipline || sheet?.discipline || 'Unknown')} · ${esc(selectionExplanation)}</span></div></details>
         ${!source ? `<div class="mc-drawing-unavailable"><strong>Original drawing unavailable — reattach PDF to view sheet.</strong><p>Reattach the exact source PDF to inspect the drawing. Indexed project text remains available.</p><label class="mc-drawing-reattach"><input id="mcDrawingReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label></div>` : !sheet ? `<div class="mc-drawing-unavailable"><strong>Drawing page unavailable.</strong><p>The retained PDF does not expose a viewable page.</p></div>` : `<header id="${focusTarget === 'mc-drawing-selected-evidence' ? 'mc-drawing-selected-evidence' : 'mc-drawing-sheet-title'}" class="mc-drawing-sheet-title" tabindex="-1" aria-live="polite" aria-label="${esc(announcementText)}"><div><span>${esc(sheet.sheetNumber || `Page ${sheet.pageNumber}`)}</span><h3>${esc(sheet.sheetTitle || `Page ${sheet.pageNumber}`)}</h3><p>${esc(selectionExplanation)}</p></div><dl><div><dt>Discipline</dt><dd>${esc(sheet.discipline)}</dd></div><div><dt>Type</dt><dd>${esc(sheet.primarySheetType || sheet.sheetTypes[0] || 'Unknown')}</dd></div><div><dt>Position</dt><dd>${analysis.viewerFallback ? 'Page' : 'Sheet'} ${sheet.pageNumber} of ${analysis.sheets.length}</dd></div><div><dt>Identity</dt><dd>${esc(sheet.identityStatus)}</dd></div></dl></header><div class="mc-drawing-toolbar"><div role="group" aria-label="Drawing navigation"><button data-drawing-previous ${navigationIndex <= 0 ? 'disabled' : ''}>Previous</button><button data-drawing-next ${navigationIndex < 0 || navigationIndex >= navigationSheetIds.length - 1 ? 'disabled' : ''}>Next</button><button data-drawing-layout="toggle-finder">${drawingWorkspacePanels.finderHidden ? 'Show' : 'Hide'} Sheet Finder</button></div><div role="group" aria-label="Drawing view controls"><button data-drawing-fit="page">Fit Page</button><button data-drawing-fit="width">Fit Width</button><button data-drawing-zoom="out">Zoom Out</button><button data-drawing-zoom="in">Zoom In</button><button data-drawing-rotate>Rotate</button><button data-drawing-reset-view>Reset View</button><button data-drawing-layout="${drawingWorkspacePanels.expanded ? 'restore' : 'expand'}">${drawingWorkspacePanels.expanded ? 'Restore Workspace' : 'Expand Drawing'}</button></div><div role="group" aria-label="Construction context actions">${analysis.viewerFallback ? '' : '<button data-drawing-ask>Ask Chief</button><button data-drawing-current-work>Add to Current Work</button><button data-drawing-inspection>Create Inspection</button>'}<button class="subtle" data-drawing-source>Open Source Details</button><button data-drawing-layout="toggle-evidence">${drawingWorkspacePanels.evidenceHidden ? 'Show' : 'Hide'} Construction Evidence</button></div><output aria-label="Current drawing view">${Number.isFinite(drawingZoom) ? Math.round(drawingZoom * 100) : 'Fit'}% · ${drawingRotation}°</output></div>${analysis.viewerFallback && !analysis.metadataAvailable ? '' : `<fieldset class="mc-drawing-overlay-controls"><legend>Drawing overlays</legend>${Object.entries({ rooms: 'Room Labels', confirmed: 'Confirmed Objects', candidates: 'Candidate Objects', equipment: 'Equipment Tags', keyedNotes: 'Keyed Notes', callouts: 'Callouts', scheduleLinks: 'Schedule Links', warnings: 'Warnings' }).map(([key,label]) => `<label><input type="checkbox" data-drawing-overlay="${key}" ${viewport.overlays?.[key] === false ? '' : 'checked'}>${label}</label>`).join('')}</fieldset>`}<div id="mcDrawingStage" class="mc-drawing-stage"><canvas id="mcDrawingCanvas" aria-label="${esc(sheet.sheetNumber || `PDF page ${sheet.pageNumber}`)} ${esc(sheet.sheetTitle || 'drawing')}"></canvas></div>${drawingRotation || sheet.rotation ? '<p class="mc-drawing-note">Location highlights are available in the authoritative unrotated view.</p>' : ''}`}
       </main>
-      <aside class="mc-drawing-evidence" aria-label="Construction Evidence">${analysis.viewerFallback && !analysis.metadataAvailable ? '<h3>Construction Evidence</h3><p>Drawing analysis is unavailable. Manual PDF page viewing remains available.</p>' : `${sheetAnalysisMarkup({ shell, analysis, sheet, observation, groups: observationGroups, warnings: warningGroups })}${sheetLegends.length ? `<section><h4>Legend entries</h4><p>${fmt(sheetLegends.reduce((sum,item)=>sum+item.entries.length,0))} structured candidate entries. Legend graphics remain authoritative.</p></section>` : ''}${sheetSchedules.length ? `<section><h4>Schedules</h4><p>${fmt(sheetSchedules.reduce((sum,item)=>sum+item.rows.length,0))} structured candidate rows with source regions.</p></section>` : ''}${sheetKeyedNotes.length ? `<section><h4>Keyed notes</h4><p>${fmt(sheetKeyedNotes.length)} exact keyed-note link${sheetKeyedNotes.length === 1 ? '' : 's'}.</p></section>` : ''}${sheetOccurrences.length ? `<section><h4>Plan objects</h4><p>${fmt(sheetOccurrences.length)} candidate occurrence${sheetOccurrences.length === 1 ? '' : 's'}; confirmation is required before a definitive finding.</p><ol>${sheetOccurrences.slice(0,30).map(item => `<li><button data-drawing-occurrence="${esc(item.occurrenceId)}"><strong>${item.verification?.status === 'Confirmed' ? 'Confirmed plan object' : 'Candidate occurrence'}</strong><span>${esc(item.verification?.status || 'Unreviewed')}</span><em>Show on Plan</em></button>${shell === 'professional' ? `<div><button data-drawing-verify-occurrence="Confirmed" data-occurrence-id="${esc(item.occurrenceId)}">Confirm</button><button data-drawing-verify-occurrence="Uncertain" data-occurrence-id="${esc(item.occurrenceId)}">Uncertain</button><button data-drawing-verify-occurrence="Rejected" data-occurrence-id="${esc(item.occurrenceId)}">Reject</button></div>` : ''}</li>`).join('')}</ol></section>` : ''}`}</aside>
+      <aside class="mc-drawing-evidence" aria-label="Construction Evidence">${drawingContextMarkup(pageContext)}${analysis.viewerFallback && !analysis.metadataAvailable ? '<h3>Construction Evidence</h3><p>Drawing analysis is unavailable. Manual PDF page viewing remains available.</p>' : `${sheetAnalysisMarkup({ shell, analysis, sheet, observation, groups: observationGroups, warnings: warningGroups })}${sheetLegends.length ? `<section><h4>Legend entries</h4><p>${fmt(sheetLegends.reduce((sum,item)=>sum+item.entries.length,0))} structured candidate entries. Legend graphics remain authoritative.</p></section>` : ''}${sheetSchedules.length ? `<section><h4>Schedules</h4><p>${fmt(sheetSchedules.reduce((sum,item)=>sum+item.rows.length,0))} structured candidate rows with source regions.</p></section>` : ''}${sheetKeyedNotes.length ? `<section><h4>Keyed notes</h4><p>${fmt(sheetKeyedNotes.length)} exact keyed-note link${sheetKeyedNotes.length === 1 ? '' : 's'}.</p></section>` : ''}${sheetOccurrences.length ? `<section><h4>Plan objects</h4><p>${fmt(sheetOccurrences.length)} candidate occurrence${sheetOccurrences.length === 1 ? '' : 's'}; confirmation is required before a definitive finding.</p><ol>${sheetOccurrences.slice(0,30).map(item => `<li><button data-drawing-occurrence="${esc(item.occurrenceId)}"><strong>${item.verification?.status === 'Confirmed' ? 'Confirmed plan object' : 'Candidate occurrence'}</strong><span>${esc(item.verification?.status || 'Unreviewed')}</span><em>Show on Plan</em></button>${shell === 'professional' ? `<div><button data-drawing-verify-occurrence="Confirmed" data-occurrence-id="${esc(item.occurrenceId)}">Confirm</button><button data-drawing-verify-occurrence="Uncertain" data-occurrence-id="${esc(item.occurrenceId)}">Uncertain</button><button data-drawing-verify-occurrence="Rejected" data-occurrence-id="${esc(item.occurrenceId)}">Reject</button></div>` : ''}</li>`).join('')}</ol></section>` : ''}`}</aside>
     </div>${drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list" aria-label="Unavailable drawing lifecycle records"><h2>Drawing records requiring attention</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : ''}`;
   const placeholderCanvas = host.querySelector('#mcDrawingCanvas');
   const preserveCanvas = Boolean(preservedCanvas && placeholderCanvas && preservedCanvas.dataset.drawingDocument === selected.id);
@@ -2355,7 +2382,10 @@ $('#missionControlContent').addEventListener('submit', async event => {
       engine.appendConversationMessage({ role: 'assistant', content: locationPresentation.status === 'resolved' ? `Located ${locationPresentation.summary.replace(/^Located\s+/i, '')}` : locationPresentation.status === 'ambiguous' ? locationPresentation.summary : `No exact registered ${navigationIntent.kind === 'exact-drawing-navigation' ? 'drawing' : 'specification'} matched that command.`, navigationTarget: locationPresentation.target || null });
       if (resolvedLocationTarget) {
         if (resolvedLocationTarget.projectId && resolvedLocationTarget.projectId !== current.activeProject) await selectProjectThroughProductionPath(resolvedLocationTarget.projectId);
-        drawingTarget = resolvedLocationTarget;
+        const targetAnalysis = analyses.find(item => item.drawingSetId === resolvedLocationTarget.drawingSetId || item.documentId === resolvedLocationTarget.documentId);
+        drawingWorkspace.setPages(targetAnalysis?.sheets || []);
+        const workspaceResolution = drawingWorkspace.open(resolvedLocationTarget, drawingTarget?.pageNumber);
+        drawingTarget = createDrawingTarget({ ...resolvedLocationTarget, pageNumber: workspaceResolution.pageNumber || resolvedLocationTarget.pageNumber });
         pendingDrawingContext = resolvedLocationTarget;
         drawingMatchingSheetIds = [resolvedLocationTarget.sheetId];
         setChiefState('success');
@@ -2484,8 +2514,10 @@ app.addEventListener('click', async event => {
   const button = event.target.closest('button');
   if (!button || !button.closest('.mc-drawing-workspace')) return;
   const shell = experience === 'mission-control' ? 'mission-control' : 'professional';
+  const pageSelectionRequest = button.dataset.drawingSheet || button.hasAttribute('data-drawing-previous') || button.hasAttribute('data-drawing-next') ? ++drawingPageSelectionRequest : 0;
   const persistedAnalysis = drawingTarget?.documentId ? await engine.drawingAnalysis(drawingTarget.documentId) : null;
-  const analysis = persistedAnalysis || (activeDrawingViewerAnalysis?.documentId === drawingTarget?.documentId ? activeDrawingViewerAnalysis : null);
+  if (pageSelectionRequest && pageSelectionRequest !== drawingPageSelectionRequest) return;
+  const analysis = activeDrawingViewerAnalysis?.documentId === drawingTarget?.documentId ? activeDrawingViewerAnalysis : persistedAnalysis;
   if (button.dataset.drawingRecoveryAction) {
     const recoveryAction = button.dataset.drawingRecoveryAction;
     if (recoveryAction === 'open-owning-project' && button.dataset.owningProjectId && state().projects.some(item => item.id === button.dataset.owningProjectId)) {
@@ -2519,6 +2551,7 @@ app.addEventListener('click', async event => {
     const sheet = analysis.sheets.find(item => item.sheetId === button.dataset.drawingSheet);
     if (!sheet) return;
     const observation = button.dataset.drawingSearchObservation ? analysis.observations.find(item => item.observationId === button.dataset.drawingSearchObservation) : null;
+    drawingViewerEngine.selectPage(sheet.pageNumber);
     drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: sheet.drawingId || '', sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
     await renderDrawingWorkspace(shell); return;
   }
@@ -2592,8 +2625,8 @@ app.addEventListener('click', async event => {
     const offset = button.hasAttribute('data-drawing-next') ? 1 : -1;
     const matchingTarget = drawingMatchingSheetIds.length ? drawingMatchingSetTarget(drawingMatchingSheetIds, drawingTarget?.sheetId, offset, analysis) : null;
     const next = analysis.sheets[currentIndex + offset];
-    if (matchingTarget) drawingTarget = matchingTarget;
-    else if (next) drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: next.drawingId, sheetId: next.sheetId, pageNumber: next.pageNumber });
+    if (matchingTarget) { drawingViewerEngine.selectPage(matchingTarget.pageNumber); drawingTarget = matchingTarget; }
+    else if (next) { drawingViewerEngine.selectPage(next.pageNumber); drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: next.drawingId, sheetId: next.sheetId, pageNumber: next.pageNumber }); }
     await renderDrawingWorkspace(shell); return;
   }
   if (button.dataset.drawingZoom) {
@@ -3905,7 +3938,10 @@ async function ask() {
       const navigation = await navigateExactDrawingCommand(prompt, { analyses, documents, sections, returnTarget: 'chief-answer', projectId: state().activeProject }, async target => {
         const exactTarget = createDrawingTarget({ ...target, origin: 'engineering-locator', returnTarget: 'chief-answer' });
         if (exactTarget.projectId && exactTarget.projectId !== state().activeProject) await selectProjectThroughProductionPath(exactTarget.projectId);
-        drawingTarget = exactTarget;
+        const targetAnalysis = analyses.find(item => item.drawingSetId === exactTarget.drawingSetId || item.documentId === exactTarget.documentId);
+        drawingWorkspace.setPages(targetAnalysis?.sheets || []);
+        const workspaceResolution = drawingWorkspace.open(exactTarget, drawingTarget?.pageNumber);
+        drawingTarget = createDrawingTarget({ ...exactTarget, pageNumber: workspaceResolution.pageNumber || exactTarget.pageNumber });
         pendingDrawingContext = exactTarget;
         drawingMatchingSheetIds = [exactTarget.sheetId];
         await showMissionControlView('plans');

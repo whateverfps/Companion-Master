@@ -66,3 +66,22 @@ test('viewport state is isolated by document and PDF page', () => {
   engine.openDocument('doc-1', 2, 1);
   assert.equal(engine.getViewport(1).zoom, 1.5);
 });
+
+test('page navigation sequence keeps selected and rendered PDF pages synchronized', async () => {
+  const engine = createDrawingViewerEngine();
+  engine.openDocument('doc', 70, 1);
+  let canvasPage = 1;
+  let toolbarPage = 1;
+  for (const requestedPage of [2, 10, 37, 5]) {
+    assert.equal(engine.selectPage(requestedPage), requestedPage);
+    const outcome = await engine.renderSelectedPage(pageNumber => ({
+      promise: Promise.resolve().then(() => { canvasPage = pageNumber; toolbarPage = engine.snapshot().selectedPage; }),
+      cancel() {}
+    }));
+    assert.equal(outcome.committed, true);
+    assert.equal(engine.snapshot().selectedPage, requestedPage);
+    assert.equal(outcome.token.pageNumber, requestedPage);
+    assert.equal(canvasPage, requestedPage);
+    assert.equal(toolbarPage, requestedPage);
+  }
+});

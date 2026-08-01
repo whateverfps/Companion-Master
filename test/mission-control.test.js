@@ -411,3 +411,22 @@ test('legacy Command Desk exact drawing commands terminate before Expert-assiste
   assert.match(successfulBranch, /await showMissionControlView\('plans'\)/);
   assert.match(successfulBranch, /return;/);
 });
+
+test('Chief exact drawing navigation delegates page selection to the Drawing Workspace API', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const submitStart = app.indexOf("$('#missionControlContent').addEventListener('submit'");
+  const submit = app.slice(submitStart, app.indexOf('async function ingestMissionControlFiles', submitStart));
+  const navigation = submit.indexOf('drawingWorkspace.open(resolvedLocationTarget');
+  const ai = submit.indexOf('await engine.ask');
+  assert.ok(navigation >= 0 && ai > navigation);
+  assert.match(submit.slice(navigation, ai), /await showMissionControlView\('plans'\)/);
+  assert.match(submit.slice(navigation, ai), /return;/);
+});
+
+test('Drawing Workspace context panel is page-scoped and exposes honest empty sections', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /drawingWorkspace\.setPages\(\(analysis\?\.sheets \|\| \[\]\)\.map/);
+  assert.match(app, /drawingWorkspace\.getContext\(sheet \?/);
+  for (const heading of ['Summary', 'Specifications', 'Related Drawings', 'Inspection Items', 'Equipment', 'Rooms', 'Photos', 'Documents', 'Issues', 'History']) assert.match(app, new RegExp(`<h3>${heading}<\\/h3>`));
+  assert.match(app, /No linked data\./);
+});

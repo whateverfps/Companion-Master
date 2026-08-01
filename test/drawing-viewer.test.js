@@ -158,3 +158,14 @@ test('drawing workspace uses retained PDF pages when analysis is missing or stal
   assert.doesNotMatch(app, /<strong>No drawing selected\.<\/strong>/);
   assert.doesNotMatch(app, /sheetNumber:\s*['"](?:UNRESOLVED|UNKNOWN)/);
 });
+
+test('page clicks prefer the rendered retained-PDF page model and select the engine page before repaint', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const clickStart = app.indexOf("app.addEventListener('click', async event =>");
+  const click = app.slice(clickStart, app.indexOf("app.addEventListener('wheel'", clickStart));
+  assert.match(click, /const analysis = activeDrawingViewerAnalysis\?\.documentId === drawingTarget\?\.documentId \? activeDrawingViewerAnalysis : persistedAnalysis/);
+  assert.match(click, /pageSelectionRequest !== drawingPageSelectionRequest/);
+  const sheetBranch = click.slice(click.indexOf("if (button.dataset.drawingSheet"), click.indexOf("if (button.hasAttribute('data-drawing-reanalyze')"));
+  assert.match(sheetBranch, /drawingViewerEngine\.selectPage\(sheet\.pageNumber\)/);
+  assert.ok(sheetBranch.indexOf('drawingViewerEngine.selectPage') < sheetBranch.indexOf('await renderDrawingWorkspace'));
+});
