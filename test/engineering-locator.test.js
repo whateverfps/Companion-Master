@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveEngineeringLocation } from '../src/engineering-locator.js';
+import { buildChiefLocationPresentation, resolveEngineeringLocation } from '../src/engineering-locator.js';
 
 test('resolves an exact room query into a drawing target with observation metadata', () => {
   const result = resolveEngineeringLocation('Show room 101', {
@@ -95,6 +95,60 @@ test('returns an ambiguous result when multiple exact matches exist', () => {
   assert.equal(result.status, 'ambiguous');
   assert.equal(result.kind, 'room');
   assert.equal(result.candidates.length, 2);
+});
+
+test('builds a Chief location presentation for an exact room match', () => {
+  const presentation = buildChiefLocationPresentation({ id: 'message-7', role: 'assistant', content: 'Show me room 127B' }, {
+    analyses: [{
+      documentId: 'doc-7',
+      drawingSetId: 'set-7',
+      projectId: 'project-7',
+      sheets: [{ sheetId: 'sheet-7', sheetNumber: 'E401', sheetTitle: 'Mechanical Plan', pageNumber: 4, discipline: 'Mechanical', primarySheetType: 'Plan' }],
+      observations: [{ observationId: 'obs-127b', sheetId: 'sheet-7', kind: 'room-number-text', value: '127B', region: { x: 0.2, y: 0.2, width: 0.1, height: 0.1 } }]
+    }],
+    documents: [{ id: 'doc-7', title: 'Mechanical Plans' }],
+    sections: []
+  });
+
+  assert.ok(presentation);
+  assert.equal(presentation.status, 'resolved');
+  assert.equal(presentation.mode, 'drawing');
+  assert.equal(presentation.actionLabel, 'Open in Drawings');
+  assert.match(presentation.summary, /127B/);
+});
+
+test('builds a Chief location presentation for specification matches', () => {
+  const presentation = buildChiefLocationPresentation({ id: 'message-8', role: 'assistant', content: 'Show specification 11 23 33' }, {
+    analyses: [],
+    documents: [{ id: 'doc-spec', title: 'Specifications' }],
+    sections: [{ id: 'sec-112333', documentId: 'doc-spec', number: '11 23 33', title: 'Facility Fueling' }]
+  });
+
+  assert.ok(presentation);
+  assert.equal(presentation.status, 'resolved');
+  assert.equal(presentation.mode, 'specification');
+  assert.equal(presentation.actionLabel, 'Open Specification');
+});
+
+test('builds an ambiguous Chief location presentation without guessing', () => {
+  const presentation = buildChiefLocationPresentation({ id: 'message-9', role: 'assistant', content: 'Show room 101' }, {
+    analyses: [{
+      documentId: 'doc-8',
+      drawingSetId: 'set-8',
+      projectId: 'project-8',
+      sheets: [{ sheetId: 'sheet-8', sheetNumber: 'A101' }, { sheetId: 'sheet-9', sheetNumber: 'A102' }],
+      observations: [
+        { observationId: 'obs-a', sheetId: 'sheet-8', kind: 'room-number-text', value: '101' },
+        { observationId: 'obs-b', sheetId: 'sheet-9', kind: 'room-number-text', value: '101' }
+      ]
+    }],
+    documents: [{ id: 'doc-8', title: 'Plans' }],
+    sections: []
+  });
+
+  assert.equal(presentation.status, 'ambiguous');
+  assert.equal(presentation.candidates.length, 2);
+  assert.equal(presentation.actionLabel, 'Choose a matching location');
 });
 
 test('returns no match when nothing can be resolved from the query', () => {

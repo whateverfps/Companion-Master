@@ -61,6 +61,55 @@ function inferSpecCandidates(sections = []) {
   }));
 }
 
+export function buildChiefLocationPresentation(question = '', options = {}) {
+  const normalizedQuestion = typeof question === 'string' ? question : question?.content || '';
+  const resolvedOptions = typeof question === 'string' ? options : (options || {});
+  const { analyses = [], documents = [], sections = [], returnTarget = '' } = resolvedOptions;
+  const result = resolveEngineeringLocation(normalizedQuestion, { analyses, documents, sections, returnTarget });
+  if (result.status === 'resolved') {
+    const summary = result.kind === 'spec-section'
+      ? `Resolved ${result.label} as a specification section.`
+      : `Located ${result.label} in the project drawings.`;
+    return {
+      status: 'resolved',
+      mode: result.kind === 'spec-section' ? 'specification' : 'drawing',
+      title: 'Location resolved',
+      summary,
+      detail: result.kind === 'spec-section'
+        ? 'Open the exact specification section in the project library.'
+        : 'Open the exact drawing target and review the matched location.',
+      actionLabel: result.kind === 'spec-section' ? 'Open Specification' : 'Open in Drawings',
+      actionTarget: result.target,
+      candidates: result.candidates,
+      target: result.target
+    };
+  }
+  if (result.status === 'ambiguous') {
+    return {
+      status: 'ambiguous',
+      mode: 'ambiguous',
+      title: 'Multiple locations match',
+      summary: `Multiple possible locations match ${result.label || 'your request'}.`,
+      detail: 'Choose the exact match you want to open from the options below.',
+      actionLabel: 'Choose a matching location',
+      actionTarget: null,
+      candidates: result.candidates,
+      target: null
+    };
+  }
+  return {
+    status: 'none',
+    mode: 'none',
+    title: 'No location matched',
+    summary: 'No exact location could be resolved from that question.',
+    detail: 'Try a room number, room name, equipment tag, sheet, or specification section.',
+    actionLabel: 'Try a room, sheet, or section',
+    actionTarget: null,
+    candidates: [],
+    target: null
+  };
+}
+
 export function resolveEngineeringLocation(query = '', {
   analyses = [],
   documents = [],
@@ -76,7 +125,7 @@ export function resolveEngineeringLocation(query = '', {
   const namedRoomQuery = rawQuery.match(/\b(?:show|open|find|go to|where is)\s+(?:the\s+)?([a-z][a-z0-9\s&/-]{1,40})\b/i);
   const equipmentQuery = rawQuery.match(/(?:show|display|locate|find|identify|where is)\s+(?:the\s+)?([a-z0-9._/-]+)\b/i)?.[1];
   const sheetQuery = rawQuery.match(/\bsheet\s+([a-z0-9.-]+)\b/i);
-  const specQuery = rawQuery.match(/\bsection\s+([0-9a-z]+(?:\s+[0-9a-z]+){0,3})\b/i);
+  const specQuery = rawQuery.match(/\b(?:section|specification|spec)\s+([0-9a-z]+(?:\s+[0-9a-z]+){0,3})\b/i);
 
   const roomCandidates = inferRoomCandidates(analyses).filter(candidate => {
     const token = roomQuery ? normalize(roomQuery[1]) : '';

@@ -113,6 +113,7 @@ import { buildPlanQuery, buildPlanQueryScope, createChiefConstructionContext, dr
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
 import { drawingUpgradeKey, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
 import { buildChiefDrawingEvidence } from './chief-drawing-evidence.js';
+import { buildChiefLocationPresentation } from './engineering-locator.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -215,6 +216,7 @@ const drawingUpgradeFailures = new Set();
 let drawingLifecycleUnavailable = [];
 let drawingWorkspacePanels = drawingWorkspaceLayout();
 let drawingWorkspaceBeforeExpand = null;
+let activeChiefLocationPresentation = null;
 
 app.innerHTML = `
 <a id="skipLink" class="mc-skip-link" href="#missionControlMain">Skip to workspace</a>
@@ -1412,6 +1414,24 @@ function chiefDrawingEvidenceMarkup(message, projectDocuments = [], analyses = [
   </section>`;
 }
 
+function chiefLocationPresentationMarkup(presentation = null) {
+  if (!presentation) return '';
+  const actions = presentation.actionTarget ? `<button type="button" class="subtle" data-action-target='${esc(JSON.stringify(presentation.actionTarget))}'>${esc(presentation.actionLabel)}</button>` : '';
+  const candidates = presentation.candidates?.length ? `<ul>${presentation.candidates.slice(0, 4).map(item => `<li>${esc(item.label || item.kind || 'Location')}</li>`).join('')}</ul>` : '';
+  return `<section class="mc-chief-location-card" aria-label="Chief location result">
+    <header>
+      <span>LOCATION</span>
+      <strong>${esc(presentation.title || 'Location result')}</strong>
+    </header>
+    <div class="mc-chief-location-card-body">
+      <p>${esc(presentation.summary || '')}</p>
+      ${presentation.detail ? `<p>${esc(presentation.detail)}</p>` : ''}
+      ${candidates}
+    </div>
+    ${actions}
+  </section>`;
+}
+
 function missionControlMessageActions(message, drawingSourceIds = new Set()) {
   if (message.role !== 'assistant' || !Array.isArray(message.hits) || !message.hits.length) return '';
   if (message.workPackageReferences) return '';
@@ -1517,6 +1537,7 @@ async function renderChiefWorkspace({ historyVisible = false } = {}) {
             </div>
           </div>
           <div class="mc-control-messages" role="log" aria-live="polite" aria-label="Chief conversation messages">
+            ${chiefLocationPresentationMarkup(activeChiefLocationPresentation)}
             ${messages.length ? (await Promise.all(messages.map(async message => `<article class="mc-control-message ${message.role}" id="mc-message-${esc(message.id)}"><header><strong>${message.role === 'assistant' ? 'Chief' : 'You'}</strong>${message.role === 'assistant' ? `<span>${esc(missionControlResponseModeLabel(message.mode))}</span>` : ''}</header>${constructionWorkPackageMarkup(message)}${message.role === 'assistant' ? chiefDrawingEvidenceMarkup(message, projectDocuments, drawingAnalyses) : ''}<div class="mc-control-message-content">${esc(message.content).replace(/\n/g, '<br>')}</div>${missionControlMessageActions(message, drawingSourceIds)}</article>`))).join('') : `<div class="mc-control-chat-empty"><strong>Start a conversation</strong><p>Ask about the active project or attach supported documents. Answers remain linked to exact source records.</p></div>`}
           </div>
           ${historyVisible ? `<section class="mc-chief-history" aria-labelledby="mcChiefHistoryTitle"><div class="mc-chief-history-header"><div><span>CONVERSATION HISTORY</span><h2 id="mcChiefHistoryTitle">Recent threads</h2></div></div><div class="mc-chief-history-list">${historyItems.length ? historyItems.map(item => `<button type="button" class="mc-chief-history-item" data-conversation-id="${esc(item.conversationId)}"><strong>${esc(item.title || 'Conversation')}</strong><span>${esc(item.updatedAt ? new Date(item.updatedAt).toLocaleString() : 'Not updated')}</span></button>`).join('') : '<p class="mc-chief-history-empty">No history yet.</p>'}</div></section>` : ''}
@@ -2140,7 +2161,7 @@ $('#missionControlContent').onclick = async event => {
     }
     activeRetrievalSession = null;
     missionControlAttachments = [];
-    chiefConstructionContext = null; activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = '';
+    chiefConstructionContext = null; activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = ''; activeChiefLocationPresentation = null;
     await showMissionControlView('chat');
     $('#missionControlTitle')?.focus();
     return;
@@ -2184,7 +2205,7 @@ $('#missionControlContent').onclick = async event => {
     activeRetrievalSession = null;
     chiefHistoryVisible = false;
     missionControlAttachments = [];
-    activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = ''; chiefConstructionContext = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = '';
+    activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = ''; chiefConstructionContext = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = ''; activeChiefLocationPresentation = null;
     await showMissionControlView('home');
     $('#missionControlPrompt')?.focus();
     return;
@@ -2226,9 +2247,16 @@ $('#missionControlContent').addEventListener('submit', async event => {
   try {
     const current = state();
     const conversation = engine.activeConversation();
+    const [analyses, documents, sections] = await Promise.all([currentDrawingAnalyses(), engine.documents(), engine.sections()]);
+    const locationPresentation = buildChiefLocationPresentation(promptValue, { analyses, documents, sections, returnTarget: 'chief-answer' });
+    activeChiefLocationPresentation = locationPresentation && locationPresentation.status !== 'none' ? locationPresentation : null;
+    const resolvedLocationTarget = locationPresentation.status === 'resolved' && locationPresentation.target?.kind === 'drawing'
+      ? createDrawingTarget({ projectId: current.activeProject, documentId: locationPresentation.target.documentId, drawingSetId: locationPresentation.target.drawingSetId, sheetId: locationPresentation.target.sheetId, pageNumber: locationPresentation.target.pageNumber, observationId: locationPresentation.target.observationId, region: locationPresentation.target.region, origin: 'engineering-locator', returnTarget: 'chief-answer' })
+      : null;
+    if (resolvedLocationTarget) pendingDrawingContext = resolvedLocationTarget;
     const construction = await buildActiveConstructionPackage(promptValue);
     const drawingScope = construction ? buildPlanQueryScope(construction.planResult, construction.sections, construction.analyses) : null;
-    const exactDrawingContext = construction?.planResult.viewerTarget || pendingDrawingContext;
+    const exactDrawingContext = construction?.planResult.viewerTarget || pendingDrawingContext || resolvedLocationTarget;
     let pendingScope = null;
     if (!construction && exactDrawingContext) {
       const sections = await engine.sections();
@@ -2241,8 +2269,6 @@ $('#missionControlContent').addEventListener('submit', async event => {
       drawingContext: exactDrawingContext,
       workPackageReferences: { matchingSheetIds: construction?.planResult.matchingSheetIds || [exactDrawingContext.sheetId], matchingObservationIds: construction?.planResult.matchingObservationIds || [exactDrawingContext.observationId].filter(Boolean) }
     } : { documentIds: conversation?.attachmentDocumentIds || [] });
-    const documents = await engine.documents();
-    const sections = await engine.sections();
     const project = current.projects.find(item => item.id === current.activeProject);
     const libraries = engine.libraries();
     activeRetrievalSession = createRetrievalSession({ question: promptValue, timestamp: message.createdAt, project, library: libraries.find(item => item.id === current.activeLibrary), mode: message.mode, messageId: message.id, hits: message.hits, citations: message.citations, citationVerification: message.citationVerification, retrievalMeta: message.retrievalMeta, documents, libraries, sections });
@@ -3053,7 +3079,7 @@ function clearDemonstrationTransientState() {
   drawingType = 'all'; drawingSearchActiveIndex = -1;
   drawingZoom = null;
   drawingRotation = 0;
-  activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = ''; chiefConstructionContext = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = ''; pendingDrawingContext = null;
+  activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = ''; chiefConstructionContext = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = ''; pendingDrawingContext = null; activeChiefLocationPresentation = null;
   releaseDrawingSource();
   engineeringTarget = null;
   workflowTarget = null;
