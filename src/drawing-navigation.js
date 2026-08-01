@@ -8,12 +8,12 @@ export function drawingAnchorId(kind, identifier) {
   return `mc-drawing-${safe(kind).toLowerCase()}-${safe(identifier)}`;
 }
 
-export function createDrawingTarget({ projectId, documentId, drawingSetId, drawingId, sheetId, pageNumber, sheetNumber, observationId, planObjectId, region, origin = 'drawings', matchingSheetIds = [], returnTarget = '' } = {}) {
+export function createDrawingTarget({ projectId, documentId, drawingSetId, pageId, drawingId, sheetId, pageNumber, sheetNumber, observationId, planObjectId, region, origin = 'drawings', matchingSheetIds = [], returnTarget = '' } = {}) {
   if (!text(documentId)) return null;
   const page = Number.isInteger(Number(pageNumber)) && Number(pageNumber) > 0 ? Number(pageNumber) : null;
   const normalizedMatchingSheetIds = Array.isArray(matchingSheetIds) ? matchingSheetIds.map(item => text(item)).filter(Boolean) : [];
   return {
-    projectId: text(projectId), documentId: text(documentId), drawingSetId: text(drawingSetId), drawingId: text(drawingId),
+    projectId: text(projectId), documentId: text(documentId), drawingSetId: text(drawingSetId), pageId: text(pageId), drawingId: text(drawingId),
     sheetId: text(sheetId), pageNumber: page, sheetNumber: text(sheetNumber),
     observationId: text(observationId), planObjectId: text(planObjectId), region: region ? normalizeRegion(region) : null, origin: text(origin),
     matchingSheetIds: normalizedMatchingSheetIds, returnTarget: text(returnTarget)
@@ -21,39 +21,42 @@ export function createDrawingTarget({ projectId, documentId, drawingSetId, drawi
 }
 
 export function resolveDrawingPageNavigation(target = {}, pages = [], currentPageNumber = null) {
+  const pageId = text(target.pageId);
   const normalizedSheetNumber = text(target.normalizedSheetNumber || target.sheetNumber).toUpperCase().replace(/[^A-Z0-9]+/g, '');
   const drawingId = text(target.drawingId);
   const requestedPage = Number(target.pdfPageNumber || target.pageNumber);
-  const page = drawingId
-    ? pages.find(item => text(item.drawingId) === drawingId)
+  const page = pageId
+    ? pages.find(item => text(item.pageId) === pageId)
+    : drawingId
+      ? pages.find(item => text(item.drawingId) === drawingId)
     : normalizedSheetNumber
       ? pages.find(item => text(item.normalizedSheetNumber || item.sheetNumber).toUpperCase().replace(/[^A-Z0-9]+/g, '') === normalizedSheetNumber)
       : Number.isInteger(requestedPage) && requestedPage > 0
         ? pages.find(item => Number(item.pdfPageNumber || item.pageNumber) === requestedPage)
         : null;
   return page
-    ? { resolved: true, pageNumber: Number(page.pdfPageNumber || page.pageNumber), page, reason: drawingId ? 'drawing-id' : normalizedSheetNumber ? 'sheet-number' : 'pdf-page' }
+    ? { resolved: true, pageNumber: Number(page.pdfPageNumber || page.pageNumber), page, reason: pageId ? 'page-id' : drawingId ? 'drawing-id' : normalizedSheetNumber ? 'sheet-number' : 'pdf-page' }
     : { resolved: false, pageNumber: Number(currentPageNumber) || null, page: null, reason: 'unresolved' };
 }
 
-export function createPdfPageViewerAnalysis({ documentId, projectId, pageCount, selectedPage = 1, pageWidth = 1, pageHeight = 1, rotation = 0, metadataAnalysis = null } = {}) {
+export function createPdfPageViewerAnalysis({ documentId, projectId, pageCount, selectedPage = 1, pageWidth = 1, pageHeight = 1, rotation = 0, metadataAnalysis = null, catalogRecords = [] } = {}) {
   const count = Math.max(0, Math.trunc(Number(pageCount) || 0));
   const activePage = Math.max(1, Math.min(count || 1, Math.trunc(Number(selectedPage) || 1)));
   const drawingSetId = text(metadataAnalysis?.drawingSetId) || `pdf-viewer-${safe(documentId)}`;
-  const pages = buildDrawingPageModel({ documentId, projectId, drawingSetId, pageCount: count, registryRecords: metadataAnalysis?.drawingRegistry, partialSheets: metadataAnalysis?.sheets, storedPageMetadata: metadataAnalysis?.pageMetadata });
+  const pages = buildDrawingPageModel({ documentId, projectId, drawingSetId, pageCount: count, catalogRecords, registryRecords: metadataAnalysis?.drawingRegistry, partialSheets: metadataAnalysis?.sheets, storedPageMetadata: metadataAnalysis?.pageMetadata });
   const sheets = pages.map(page => {
     const partial = page.partialRecord || {};
     const registered = page.authoritativeRecord || {};
     const sheetTypes = [...new Set([page.drawingType, ...(registered.sheetTypes || []), ...(partial.sheetTypes || [])].map(text).filter(Boolean))];
     return {
       ...partial, ...registered, viewerFallback: true, metadataAvailable: page.identityStatus !== 'fallback',
-      sheetId: page.sheetId || `${drawingSetId}-page-${page.pdfPageNumber}`, drawingId: page.drawingId, documentId: text(documentId), projectId: text(projectId), drawingSetId,
+      pageId: page.pageId, sheetId: page.sheetId || `${drawingSetId}-page-${page.pdfPageNumber}`, drawingId: page.drawingId, documentId: text(documentId), projectId: text(projectId), drawingSetId,
       sheetNumber: page.sheetNumber, normalizedSheetNumber: page.normalizedSheetNumber, sheetTitle: page.sheetTitle, normalizedTitle: page.sheetTitle.toLowerCase(), discipline: page.discipline,
       primarySheetType: page.drawingType, sheetTypes: sheetTypes.length ? sheetTypes : ['Unknown'], building: page.building, pageNumber: page.pdfPageNumber, pdfPage: page.pdfPageNumber,
       pageWidth: page.pdfPageNumber === activePage ? Number(pageWidth) || Number(partial.pageWidth) || 1 : Number(partial.pageWidth) || 1,
       pageHeight: page.pdfPageNumber === activePage ? Number(pageHeight) || Number(partial.pageHeight) || 1 : Number(partial.pageHeight) || 1,
       rotation: page.pdfPageNumber === activePage ? Number(rotation) || Number(partial.rotation) || 0 : Number(partial.rotation) || 0,
-      identityStatus: page.identityStatus === 'authoritative' ? 'Authoritative' : page.identityStatus === 'partial' ? 'Partial metadata' : 'Unavailable',
+      identityStatus: page.identityStatus === 'authoritative' ? 'Authoritative' : page.identityStatus === 'manual' ? 'Manual' : page.identityStatus === 'parser' ? 'Parser' : 'Unavailable',
       confidence: Number(registered.confidence ?? partial.confidence) || 0, warnings: [...(partial.warnings || []), ...(registered.warnings || [])],
       textItems: [...(partial.textItems || []), { text: page.searchableText, region: null }]
     };

@@ -169,3 +169,13 @@ test('page clicks prefer the rendered retained-PDF page model and select the eng
   assert.match(sheetBranch, /drawingViewerEngine\.selectPage\(sheet\.pageNumber\)/);
   assert.ok(sheetBranch.indexOf('drawingViewerEngine.selectPage') < sheetBranch.indexOf('await renderDrawingWorkspace'));
 });
+
+test('catalog editor exposes apply, reset, compare, and default restoration without touching PDF rendering', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /data-drawing-edit-metadata>Edit Page Metadata/);
+  assert.match(app, /drawingCatalog\.applyToCatalog/);
+  assert.match(app, /drawingCatalog\.resetToParser/);
+  assert.match(app, /drawingCatalog\.compare/);
+  assert.match(app, /drawingCatalog\.restoreDefaults/);
+  assert.match(app, /data-drawing-page-id/);
+});

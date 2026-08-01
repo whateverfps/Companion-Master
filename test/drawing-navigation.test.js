@@ -112,3 +112,11 @@ test('navigation contract resolves drawing ID, sheet number, then PDF page witho
   assert.equal(resolveDrawingPageNavigation({ pdfPageNumber: 2 }, pages).pageNumber, 2);
   assert.deepEqual(resolveDrawingPageNavigation({ sheetNumber: 'missing' }, pages, 10), { resolved: false, pageNumber: 10, page: null, reason: 'unresolved' });
 });
+
+test('catalog page ID is the stable first-priority navigation identity', () => {
+  const pages = [{ pageId: 'drawing-page:doc:4', drawingId: 'legacy-drawing', sheetNumber: '61M-101', pdfPageNumber: 4 }];
+  const resolved = resolveDrawingPageNavigation({ pageId: 'drawing-page:doc:4', drawingId: 'wrong', sheetNumber: 'WRONG', pdfPageNumber: 1 }, pages);
+  assert.equal(resolved.resolved, true);
+  assert.equal(resolved.reason, 'page-id');
+  assert.equal(resolved.pageNumber, 4);
+});
