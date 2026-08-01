@@ -90,6 +90,22 @@ test('runtime-shaped split-column index recovers all 70 rows including wrapped t
   assert.equal(analysis.registryHealth.unresolvedPages, 0);
 });
 
+test('Bedford sequence reconciliation expands 18 title-block anchors to 70 authoritative records', () => {
+  const source = runtimePages();
+  for (let index = 18; index < source.length; index += 1) {
+    const block = titleBlock(entries[index][0], entries[index][1]);
+    source[index].textItems = source[index].textItems.filter(entry => !block.some(blockItem => blockItem.text === entry.text && blockItem.region.x === entry.region.x && blockItem.region.y === entry.region.y));
+    source[index].textItems.push(item(index % 2 ? 'FX500' : 'FX001', .2, .2));
+  }
+  const analysis = buildDrawingAnalysis({ documentId: 'runtime-sequence', projectId: 'general', pages: source, analyzedAt: 'now' });
+  assert.equal(analysis.indexEntries.length, 70);
+  assert.equal(analysis.sheets.filter(sheet => sheet.bedfordTitleBlock?.drawingNumber).length, 18);
+  assert.equal(analysis.drawingRegistry.length, 70);
+  assert.equal(analysis.registryHealth.unresolvedPages, 0);
+  assert.equal(analysis.drawingRegistry.some(record => ['FX500', 'FX001'].includes(record.sheetNumber)), false);
+  assert.equal(analysis.sheets.filter(sheet => sheet.identityMethod === 'drawing-index-page-order').length, 52);
+});
+
 test('Bedford analysis builds a stable owned direct page registry and tolerates one missing page', () => {
   const source = pages();
   const first = buildDrawingAnalysis({ documentId: 'bedford-61', projectId: 'bedford-project', pages: source, analyzedAt: 'now' });

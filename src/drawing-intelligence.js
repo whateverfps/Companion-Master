@@ -356,22 +356,25 @@ export function reconcileDrawingIndex(indexEntries = [], sheets = []) {
   return warnings.sort((a, b) => a.type.localeCompare(b.type) || text(a.sheetNumber).localeCompare(text(b.sheetNumber)));
 }
 
-function mapDrawingIndexToSheets(indexEntries, sheets) {
+function mapDrawingIndexToSheets(indexEntries, sheets, { bedford = false } = {}) {
   const uniqueEntries = list(indexEntries).filter((entry, index, source) => source.filter(item => item.sheetNumber === entry.sheetNumber).length === 1);
   const result = new Map();
   const byNumber = new Map(uniqueEntries.map(entry => [entry.sheetNumber, entry]));
+  const identityNumbers = sheet => bedford
+    ? [sheet.bedfordTitleBlock?.drawingNumber].filter(Boolean)
+    : [...new Set(list(sheet.sheetNumberCandidates).map(item => item.value))];
   for (const sheet of sheets) {
-    const numbers = [...new Set(list(sheet.sheetNumberCandidates).map(item => item.value))];
+    const numbers = identityNumbers(sheet);
     const matches = numbers.map(number => byNumber.get(number)).filter(Boolean);
     if (numbers.length === 1 && matches.length === 1) result.set(sheet.sheetId, { entry: matches[0], method: 'index-title-block-reconciliation' });
   }
   const anchors = sheets.flatMap((sheet, pageIndex) => {
-    const candidates = [...new Set(list(sheet.sheetNumberCandidates).map(item => item.value))].filter(number => byNumber.has(number));
+    const candidates = identityNumbers(sheet).filter(number => byNumber.has(number));
     return candidates.length === 1 ? [{ pageIndex, index: uniqueEntries.findIndex(entry => entry.sheetNumber === candidates[0]), number: candidates[0] }] : [];
   });
   const anchorSafe = anchors.length >= 2 && anchors.every(anchor => anchor.index === anchor.pageIndex);
   const exactOrderSafe = uniqueEntries.length === sheets.length && anchorSafe && sheets.every((sheet, index) => {
-    const candidates = [...new Set(list(sheet.sheetNumberCandidates).map(item => item.value))];
+    const candidates = identityNumbers(sheet);
     return !candidates.length || candidates.includes(uniqueEntries[index]?.sheetNumber);
   });
   if (exactOrderSafe) sheets.forEach((sheet, index) => { if (!result.has(sheet.sheetId)) result.set(sheet.sheetId, { entry: uniqueEntries[index], method: 'drawing-index-page-order', anchorEvidence: anchors.map(anchor => anchor.number) }); });
@@ -435,7 +438,7 @@ export function buildDrawingAnalysis({ documentId, projectId, pages = [], analyz
     if (!indexByNumber.has(entry.sheetNumber)) indexByNumber.set(entry.sheetNumber, []);
     indexByNumber.get(entry.sheetNumber).push(entry);
   }
-  const indexMappings = mapDrawingIndexToSheets(indexEntries, sheets);
+  const indexMappings = mapDrawingIndexToSheets(indexEntries, sheets, { bedford: profile.selected });
   sheets = sheets.map(sheet => {
     const candidateNumbers = [...new Set(sheet.sheetNumberCandidates.map(item => item.value))];
     const reconciled = candidateNumbers.flatMap(number => indexByNumber.get(number) || []);
