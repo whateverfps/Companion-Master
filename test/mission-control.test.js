@@ -160,6 +160,41 @@ test('Mission Control retains the shared dark visual system without white surfac
   assert.doesNotMatch(refinement, /background(?:-color)?:#fff(?:fff)?(?:[;}]|$)/i);
 });
 
+test('Mission Control uses Dashboard, Chief, Drawings, and Professional Workspace as the primary shell navigation', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /data-control-view="dashboard">Dashboard<\/button>/);
+  assert.match(app, /data-control-home[^>]*>Chief<\/button>/);
+  assert.match(app, /data-control-view="plans">Drawings<\/button>/);
+  assert.match(app, /data-control-experience="professional-workspace">Professional Workspace<\/button>/);
+  assert.doesNotMatch(app, /data-control-more-tools/);
+  assert.doesNotMatch(app, /aria-label="More Tools"/);
+});
+
+test('Professional Workspace exposes compact workspace tools and drawings return to Chief', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /Workspace Tools/);
+  assert.match(app, /Project Workspace/);
+  assert.match(app, /Knowledge Workspace/);
+  assert.match(app, /Inspection Records/);
+  assert.match(app, /Settings/);
+  assert.match(app, /Diagnostics/);
+  assert.match(app, /data-drawing-return/);
+  assert.match(app, /showMissionControlView\('home'\)/);
+});
+
+test('Mission Control embeds the hosted PMIS dashboard with dedicated actions and a safe iframe', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /missionPmisDashboardUrl/);
+  assert.match(app, /https:\/\/whateverfps.github.io\/Mission-PMIS\//);
+  assert.match(app, /renderMissionControlDashboard/);
+  assert.match(app, /title="Mission PMIS Dashboard"/);
+  assert.match(app, /sandbox="allow-forms allow-popups allow-scripts allow-same-origin"/);
+  assert.match(app, /data-control-action="refresh-dashboard"/);
+  assert.match(app, /data-control-action="open-dashboard-window"/);
+  assert.match(app, /window\.open\(missionPmisDashboardUrl/);
+  assert.match(app, /Loading Mission PMIS/);
+});
+
 test('Mission Control presents synchronized deterministic work packages without dead graphical claims', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
@@ -260,8 +295,8 @@ test('Phase 24B makes Chief construction-first with one synchronized drawing sta
 test('Mission Control hides built-in demo entry points and opens to Chief by default', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.match(app, /data-control-home[^>]*>Chief<\/button>/);
-  assert.match(app, /<button data-control-view="plans">Drawings<\/button>/);
-  assert.match(app, /<button data-control-view="chat">Command Desk<\/button>/);
+  assert.match(app, /<button[^>]*data-control-view="plans">Drawings<\/button>/);
+  assert.match(app, /<button[^>]*data-control-experience="professional-workspace">Professional Workspace<\/button>/);
   assert.doesNotMatch(app, /Explore Demonstration Project/);
   assert.doesNotMatch(app, /Load Demonstration Project/);
   assert.doesNotMatch(app, /Open Demonstration Project/);
@@ -269,18 +304,14 @@ test('Mission Control hides built-in demo entry points and opens to Chief by def
   assert.doesNotMatch(app, /Reset Demonstration Project/);
 });
 
-test('Mission Control uses a four-item primary navigation and a More Tools drawer', () => {
+test('Mission Control uses a four-item primary navigation without the compatibility drawer', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /data-control-view="dashboard">Dashboard<\/button>/);
   assert.match(app, /data-control-home[^>]*>Chief<\/button>/);
   assert.match(app, /<button[^>]*data-control-view="plans">Drawings<\/button>/);
-  assert.match(app, /<button[^>]*data-control-view="chat">Command Desk<\/button>/);
-  assert.match(app, /<button[^>]*data-control-more-tools[^>]*>More Tools<\/button>/);
-  assert.doesNotMatch(app, /data-control-projects/);
-  assert.match(app, /aria-label="More Tools"/);
-  assert.match(app, /Projects<\/button>/);
-  assert.match(app, /Inspection Records<\/button>/);
-  assert.match(app, /Knowledge Validation<\/button>/);
-  assert.match(app, /Import\s\/\sExport/);
+  assert.match(app, /<button[^>]*data-control-experience="professional-workspace">Professional Workspace<\/button>/);
+  assert.doesNotMatch(app, /<button[^>]*data-control-more-tools[^>]*>More Tools<\/button>/);
+  assert.doesNotMatch(app, /aria-label="More Tools"/);
 });
 
 test('stopping the demonstration clears transient state without deleting the fixture or restoring a project', () => {

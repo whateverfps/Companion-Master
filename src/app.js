@@ -127,6 +127,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
   "'": '&#39;'
 }[c]));
 const fmt = n => new Intl.NumberFormat().format(n || 0);
+const missionPmisDashboardUrl = 'https://whateverfps.github.io/Mission-PMIS/';
 const chiefAssets = {
   idle: './src/assets/chief/chief-idle.png',
   busy: './src/assets/chief/chief-concept.png',
@@ -224,53 +225,11 @@ app.innerHTML = `
     <button id="openProfessionalWorkspace" class="mc-control-experience-switch">Open Professional Workspace</button>
   </header>
   <nav class="mc-control-nav" aria-label="Mission Control navigation">
+    <button data-control-view="dashboard">Dashboard</button>
     <button data-control-home aria-current="page">Chief</button>
     <button data-control-view="plans">Drawings</button>
-    <button data-control-view="chat">Command Desk</button>
-    <button id="moreToolsTrigger" data-control-more-tools aria-expanded="false" aria-controls="missionControlMoreTools">More Tools</button>
+    <button data-control-experience="professional-workspace">Professional Workspace</button>
   </nav>
-  <div id="missionControlMoreTools" class="mc-more-tools-panel" role="dialog" aria-label="More Tools" aria-modal="false" hidden>
-    <div class="mc-more-tools-panel-header">
-      <div>
-        <span>MORE TOOLS</span>
-        <h2>Workspace shortcuts</h2>
-      </div>
-      <button type="button" class="subtle mc-more-tools-close" data-control-more-tools-close>Close</button>
-    </div>
-    <div class="mc-more-tools-groups">
-      <section class="mc-more-tools-group">
-        <h3>Project content</h3>
-        <div class="mc-more-tools-list">
-          <button type="button" data-more-tools-action="projects">Projects<span>Open your current project set and create or import work.</span></button>
-          <button type="button" data-more-tools-action="documents">Documents<span>Review the current project document library.</span></button>
-          <button type="button" data-more-tools-action="specifications">Specifications<span>Open the project specifications and supporting requirements.</span></button>
-          <button type="button" data-more-tools-action="rfis-submittals">RFIs and Submittals<span>Review related requests and approvals in one place.</span></button>
-          <button type="button" data-more-tools-action="evidence">Evidence<span>Inspect the project evidence behind recent answers.</span></button>
-          <button type="button" data-more-tools-action="inspection-records">Inspection Records<span>Review field inspections and project follow-up.</span></button>
-        </div>
-      </section>
-      <section class="mc-more-tools-group">
-        <h3>Engineering tools</h3>
-        <div class="mc-more-tools-list">
-          <button type="button" data-more-tools-action="engineering-context">Engineering Context<span>Open the exact project context behind the current task.</span></button>
-          <button type="button" data-more-tools-action="workflows">Workflows<span>Move exact project knowledge through structured workflows.</span></button>
-          <button type="button" data-more-tools-action="relationships">Relationships<span>Inspect linked project knowledge and references.</span></button>
-          <button type="button" data-more-tools-action="versions">Versions<span>Review document lineage and version history.</span></button>
-          <button type="button" data-more-tools-action="revision-review">Revision Review<span>Compare explicit revisions without guesswork.</span></button>
-          <button type="button" data-more-tools-action="source-inspector">Source Inspector<span>Review the indexed project sources directly.</span></button>
-          <button type="button" data-more-tools-action="knowledge-validation">Knowledge Validation<span>Check project knowledge readiness and coverage.</span></button>
-        </div>
-      </section>
-      <section class="mc-more-tools-group">
-        <h3>Administration</h3>
-        <div class="mc-more-tools-list">
-          <button type="button" data-more-tools-action="import-export">Import / Export<span>Move projects and data between workspaces.</span></button>
-          <button type="button" data-more-tools-action="settings">Settings<span>Adjust the workspace and project preferences.</span></button>
-          <button type="button" data-more-tools-action="diagnostics">Diagnostics<span>Inspect health checks and application status.</span></button>
-        </div>
-      </section>
-    </div>
-  </div>
   <main id="missionControlMain" tabindex="-1">
     <div id="missionControlContent" aria-live="polite"></div>
   </main>
@@ -286,22 +245,37 @@ app.innerHTML = `
     </div>
 
     <nav aria-label="Primary navigation">
-      <span class="mc-nav-group-label">Core</span>
-      <button data-view="project">Project Workspace</button>
-      <button data-view="chat" class="active" aria-current="page">Command Desk</button>
-      <button data-view="drawings">Drawing Set Inspector</button>
-      <span class="mc-nav-group-label">More Tools</span>
-      <button data-view="knowledge">Knowledge Workspace</button>
-      <button data-view="engineering">Engineering Workspace</button>
-      <button data-view="workflow">Workflow Workspace</button>
-      <button data-view="inspections">Inspection Records</button>
-      <button data-view="sources">Source Inspector</button>
-      <button data-view="evidence">Evidence Explorer</button>
-      <button data-view="relationships">Relationship Explorer</button>
-      <button data-view="versions">Version Explorer</button>
-      <button data-view="evaluate">Knowledge Validation</button>
-      <button data-view="settings">Settings</button>
-      <button data-view="diagnostics">Diagnostics</button>
+      <button type="button" class="mc-workspace-tools-toggle" aria-expanded="false" aria-controls="professionalWorkspaceTools" data-workspace-tools-toggle>Workspace Tools</button>
+      <div id="professionalWorkspaceTools" class="mc-workspace-tools-panel" hidden>
+        <div class="mc-workspace-tools-group">
+          <h3>Project content</h3>
+          <div class="mc-workspace-tools-list">
+            <button type="button" data-view="project">Project Workspace</button>
+            <button type="button" data-view="chat">Command Desk</button>
+            <button type="button" data-view="knowledge">Knowledge Workspace</button>
+            <button type="button" data-view="inspections">Inspection Records</button>
+            <button type="button" data-view="sources">Source Inspector</button>
+            <button type="button" data-view="evidence">Evidence Explorer</button>
+          </div>
+        </div>
+        <div class="mc-workspace-tools-group">
+          <h3>Engineering</h3>
+          <div class="mc-workspace-tools-list">
+            <button type="button" data-view="engineering">Engineering Workspace</button>
+            <button type="button" data-view="workflow">Workflow Workspace</button>
+            <button type="button" data-view="relationships">Relationship Explorer</button>
+            <button type="button" data-view="versions">Version Explorer</button>
+            <button type="button" data-view="evaluate">Knowledge Validation</button>
+          </div>
+        </div>
+        <div class="mc-workspace-tools-group">
+          <h3>Administration</h3>
+          <div class="mc-workspace-tools-list">
+            <button type="button" data-view="settings">Settings</button>
+            <button type="button" data-view="diagnostics">Diagnostics</button>
+          </div>
+        </div>
+      </div>
     </nav>
 
     <div class="project-block">
@@ -325,7 +299,7 @@ app.innerHTML = `
       </div>
 
       <div class="mode-wrap">
-        <button id="returnMissionControl" class="subtle mc-control-return">Return to Mission Control</button>
+        <button id="returnMissionControl" class="subtle mc-control-return">Return to Chief</button>
         <label>ANSWER MODE</label>
         <select id="mode">
           <option value="offline">Offline evidence</option>
@@ -1223,9 +1197,23 @@ $$('.rail nav button[data-view]').forEach(button => {
       void openEngineeringWorkspace({ source: CONTEXT_ACTIVATION_SOURCES.engineeringWorkspace });
       return;
     }
+    const panel = $('#professionalWorkspaceTools');
+    if (panel) {
+      panel.hidden = true;
+      $('[data-workspace-tools-toggle]')?.setAttribute('aria-expanded', 'false');
+    }
     show(button.dataset.view);
   };
   button.dataset.bound = 'true';
+});
+
+$('[data-workspace-tools-toggle]')?.addEventListener('click', () => {
+  const panel = $('#professionalWorkspaceTools');
+  const trigger = $('[data-workspace-tools-toggle]');
+  if (!panel || !trigger) return;
+  const expanded = panel.hidden;
+  panel.hidden = !expanded;
+  trigger.setAttribute('aria-expanded', String(expanded));
 });
 
 registerModule('Navigation', 'ready', {
@@ -1839,6 +1827,51 @@ async function renderDrawingWorkspace(shell = 'professional') {
   }
 }
 
+async function renderMissionControlDashboard() {
+  $('#missionControlContent').innerHTML = `
+    <section class="mc-dashboard-shell" aria-labelledby="missionControlTitle">
+      <header class="mc-dashboard-toolbar">
+        <div>
+          <span class="mc-dashboard-eyebrow">MISSION PMIS</span>
+          <h1 id="missionControlTitle" tabindex="-1">Dashboard</h1>
+        </div>
+        <div class="mc-dashboard-actions">
+          <button type="button" data-control-action="refresh-dashboard">Refresh Dashboard</button>
+          <button type="button" data-control-action="open-dashboard-window">Open in New Window</button>
+        </div>
+      </header>
+      <section class="mc-dashboard-surface" aria-label="Mission PMIS Dashboard">
+        <div id="missionDashboardStatus" class="mc-dashboard-status" role="status" aria-live="polite">Loading Mission PMIS…</div>
+        <iframe id="missionPmisDashboardFrame" class="mc-dashboard-frame" title="Mission PMIS Dashboard" src="${missionPmisDashboardUrl}" sandbox="allow-forms allow-popups allow-scripts allow-same-origin"></iframe>
+      </section>
+    </section>`;
+  const frame = $('#missionPmisDashboardFrame');
+  const status = $('#missionDashboardStatus');
+  if (!frame || !status) return;
+  let settled = false;
+  const markReady = () => {
+    if (settled) return;
+    settled = true;
+    status.classList.add('ready');
+    status.textContent = 'Mission PMIS ready';
+    frame.hidden = false;
+  };
+  const markUnavailable = () => {
+    if (settled) return;
+    settled = true;
+    status.classList.remove('ready');
+    status.classList.add('error');
+    status.textContent = 'Mission PMIS is currently unavailable. Open in New Window to continue in the hosted app.';
+    frame.hidden = true;
+  };
+  frame.addEventListener('load', () => markReady(), { once: true });
+  frame.addEventListener('error', () => markUnavailable(), { once: true });
+  window.setTimeout(() => {
+    if (!settled) markUnavailable();
+  }, 9000);
+  frame.hidden = true;
+}
+
 async function renderMissionControlPlans() {
   $('#missionControlContent').innerHTML = '<section class="mc-drawing-control" aria-labelledby="missionControlTitle"><h1 id="missionControlTitle" tabindex="-1">Plans</h1><div id="missionDrawingViewer" class="mc-drawing-workspace"></div></section>';
   await renderDrawingWorkspace('mission-control');
@@ -1854,6 +1887,7 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
   if (missionControlView === 'library') { await renderMissionControlLibrary(); return; }
   if (missionControlView === 'inspections') { await renderMissionControlInspections(); return; }
   if (missionControlView === 'plans') { await renderMissionControlPlans(); return; }
+  if (missionControlView === 'dashboard') { await renderMissionControlDashboard(); return; }
   const currentState = state();
   const project = currentState.activeProject === 'general'
     ? null
@@ -1970,120 +2004,24 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
 }
 
 $('#openProfessionalWorkspace').onclick = () => switchExperience('professional-workspace', { destination: view });
+$('[data-control-experience]')?.addEventListener('click', () => {
+  void switchExperience('professional-workspace', { destination: view });
+});
 $('#returnMissionControl').onclick = () => switchExperience('mission-control');
 
-function setMoreToolsOpenState(isOpen) {
-  const trigger = $('#moreToolsTrigger');
-  const panel = $('#missionControlMoreTools');
-  if (!trigger || !panel) return;
-  trigger.setAttribute('aria-expanded', String(isOpen));
-  panel.hidden = !isOpen;
-  if (!isOpen) return;
-  updateMoreToolsSelection();
-  const focusTarget = panel.querySelector('button:not([data-control-more-tools-close])');
-  focusTarget?.focus();
-}
-
-function updateMoreToolsSelection() {
-  const panel = $('#missionControlMoreTools');
-  if (!panel) return;
-  const currentDestination = missionControlView === 'projects'
-    ? 'projects'
-    : view === 'knowledge'
-      ? 'documents'
-      : view === 'evidence'
-        ? 'evidence'
-        : view === 'engineering'
-          ? 'engineering-context'
-          : view === 'workflow'
-            ? 'workflows'
-            : view === 'relationships'
-              ? 'relationships'
-              : view === 'versions'
-                ? 'versions'
-                : view === 'revisions'
-                  ? 'revision-review'
-                  : view === 'sources'
-                    ? 'source-inspector'
-                    : view === 'evaluate'
-                      ? 'knowledge-validation'
-                      : view === 'inspections'
-                        ? 'inspection-records'
-                        : view === 'settings'
-                          ? 'settings'
-                          : view === 'diagnostics'
-                            ? 'diagnostics'
-                            : missionControlView === 'chat'
-                              ? 'command-desk'
-                              : null;
-  panel.querySelectorAll('[data-more-tools-action]').forEach(button => {
-    const active = button.dataset.moreToolsAction === currentDestination;
+function showMissionControlView(name = 'home') {
+  if (!['plans', 'chat', 'dashboard'].includes(name)) releaseDrawingSource();
+  missionControlView = ['projects', 'chat', 'history', 'library', 'inspections', 'plans', 'dashboard'].includes(name) ? name : 'home';
+  const homeButton = $('[data-control-home]');
+  homeButton?.toggleAttribute('aria-current', missionControlView === 'home');
+  $$('.mc-control-nav button[data-control-view]').forEach(button => {
+    const active = button.dataset.controlView === missionControlView;
     button.toggleAttribute('aria-current', active);
   });
-}
-
-function openMoreToolsDrawer() {
-  setMoreToolsOpenState(true);
-}
-
-function closeMoreToolsDrawer({ restoreFocus = true } = {}) {
-  setMoreToolsOpenState(false);
-  if (restoreFocus) $('#moreToolsTrigger')?.focus();
-}
-
-function showMissionControlView(name = 'home') {
-  if (!['plans', 'chat'].includes(name)) releaseDrawingSource();
-  missionControlView = ['projects', 'chat', 'history', 'library', 'inspections', 'plans'].includes(name) ? name : 'home';
-  $('[data-control-home]').toggleAttribute('aria-current', missionControlView === 'home');
-  closeMoreToolsDrawer({ restoreFocus: false });
   return renderMissionControl().then(() => $('#missionControlTitle')?.focus());
 }
 $('[data-control-home]').onclick = () => showMissionControlView('home');
 $$('[data-control-view]').forEach(button => button.onclick = () => showMissionControlView(button.dataset.controlView));
-$('#moreToolsTrigger').onclick = () => {
-  if ($('#missionControlMoreTools').hidden) openMoreToolsDrawer();
-  else closeMoreToolsDrawer();
-};
-$('#missionControlMoreTools').addEventListener('click', async event => {
-  const button = event.target.closest('button');
-  if (!button) return;
-  if (button.dataset.controlMoreToolsClose) {
-    closeMoreToolsDrawer();
-    return;
-  }
-  if (button.dataset.moreToolsAction === 'projects') {
-    await showMissionControlView('projects');
-    return;
-  }
-  const actionMap = {
-    documents: { view: 'knowledge' },
-    specifications: { view: 'knowledge' },
-    'rfis-submittals': { view: 'project' },
-    evidence: { view: 'evidence' },
-    'inspection-records': { view: 'inspections' },
-    'engineering-context': { view: 'engineering' },
-    workflows: { view: 'workflow' },
-    relationships: { view: 'relationships' },
-    versions: { view: 'versions' },
-    'revision-review': { view: 'revisions' },
-    'source-inspector': { view: 'sources' },
-    'knowledge-validation': { view: 'evaluate' },
-    'import-export': { view: 'project' },
-    settings: { view: 'settings' },
-    diagnostics: { view: 'diagnostics' }
-  };
-  const destination = actionMap[button.dataset.moreToolsAction];
-  if (destination) {
-    await openProfessionalDestination(destination);
-    closeMoreToolsDrawer({ restoreFocus: false });
-  }
-});
-$('#missionControlMoreTools').addEventListener('keydown', event => {
-  if (event.key === 'Escape') {
-    event.stopPropagation();
-    closeMoreToolsDrawer();
-  }
-});
 $('#missionControlContent').onclick = async event => {
   const button = event.target.closest('button');
   if (!button) return;
@@ -2152,6 +2090,14 @@ $('#missionControlContent').onclick = async event => {
     return;
   }
   if (button.dataset.controlView) return showMissionControlView(button.dataset.controlView);
+  if (button.dataset.controlAction === 'refresh-dashboard') {
+    await showMissionControlView('dashboard');
+    return;
+  }
+  if (button.dataset.controlAction === 'open-dashboard-window') {
+    window.open(missionPmisDashboardUrl, '_blank', 'noopener,noreferrer');
+    return;
+  }
   if (button.dataset.controlTarget) {
     const target = JSON.parse(button.dataset.controlTarget);
     if (target.view === 'chat') return showMissionControlView('chat');
@@ -2407,6 +2353,10 @@ app.addEventListener('click', async event => {
     }
     if (recoveryAction === 'reimport-drawing') { $('#files')?.click(); return; }
     if (recoveryAction === 'view-technical-details') { const details = button.closest('.mc-drawing-recovery')?.querySelector('details'); if (details) details.open = true; return; }
+  }
+  if (button.hasAttribute('data-drawing-return')) {
+    await showMissionControlView('home');
+    return;
   }
   if (button.dataset.drawingSheet && analysis) {
     captureDrawingViewport();
