@@ -1321,7 +1321,8 @@ async function applyActionTargetState(target = {}, navigationTarget = null) {
       pageNumber: actionTarget.pageNumber || null,
       observationId: actionTarget.observationId || '',
       region: actionTarget.region || null,
-      origin: actionTarget.origin || 'assistant'
+      origin: actionTarget.origin || 'assistant',
+      returnTarget: actionTarget.returnTarget || ''
     });
     selectedWorkPackageItem = drawingTarget?.observationId || drawingTarget?.sheetId || '';
     return;
@@ -1407,7 +1408,7 @@ function chiefDrawingEvidenceMarkup(message, projectDocuments = [], analyses = [
         ${sheetMeta ? `<div><dt>Details</dt><dd>${esc(sheetMeta)}</dd></div>` : ''}
       </dl>
     </div>
-    <button type="button" class="subtle" data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'drawing', projectId: state().activeProject || '', documentId: evidence.documentId, drawingSetId: evidence.drawingSetId, sheetId: evidence.sheetId, pageNumber: evidence.pageNumber, origin: 'chief-preview' })))}'>Open exact drawing</button>
+    <button type="button" class="subtle" data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'drawing', projectId: state().activeProject || '', documentId: evidence.documentId, drawingSetId: evidence.drawingSetId, sheetId: evidence.sheetId, sheetNumber: evidence.sheetNumber, pageNumber: evidence.pageNumber, observationId: evidence.observationId, region: evidence.region, origin: 'chief-preview', messageId: message.id, returnTarget: 'chief-answer' })))}'>Open exact drawing</button>
   </section>`;
 }
 
