@@ -108,13 +108,14 @@ import {
 import { openPdfBlob, readPdfPageGraphics, renderPdfPage } from './pdf-source.js';
 import { extractLegendCandidates, matchLegendOccurrences } from './drawing-legends.js';
 import { applyObservationVerification, drawingAnalysisRequiresUpgrade, drawingWarningPresentation, DRAWING_ANALYSIS_VERSION, groupDrawingObservations, observationKindLabel, reanalyzeDrawingAnalysis, upgradeDrawingAnalysis } from './drawing-intelligence.js';
-import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingViewportKey, drawingWheelZoom, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
+import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingWheelZoom, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
 import { buildPlanQuery, buildPlanQueryScope, createChiefConstructionContext, drawingSearchSummary, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from './plan-query.js';
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
 import { drawingUpgradeKey, loadAuthoritativeDrawingRegistry, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
 import { buildChiefDrawingEvidence } from './chief-drawing-evidence.js';
 import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent, navigateExactDrawingCommand } from './engineering-locator.js';
 import { inspectDrawingRegistryRuntime } from './drawing-registry-diagnostics.js';
+import { createDrawingViewerEngine } from './drawing-viewer-engine.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -194,12 +195,13 @@ let drawingSearchActiveIndex = -1;
 let drawingZoom = null;
 let drawingRotation = 0;
 const drawingViewportBySet = new Map();
+const drawingViewerEngine = createDrawingViewerEngine({ viewportStore: drawingViewportBySet });
 let drawingViewportDocumentId = '';
-let activeDrawingRender = null;
 let activeDrawingPdf = null;
 let activeDrawingDocumentId = '';
 let activeDrawingSourceRecord = null;
 let activeDrawingRenderIdentity = null;
+let drawingWorkspaceRenderRequest = 0;
 let drawingRenderGeneration = 0;
 let portableDrawingCanvas = null;
 let activeDrawingViewerAnalysis = null;
@@ -1727,9 +1729,7 @@ function groupedRoomEvidenceMarkup(roomObservations, sheet) {
 }
 
 function releaseDrawingSource() {
-  activeDrawingRender?.cancel?.();
-  activeDrawingRender?.release?.();
-  activeDrawingRender = null;
+  drawingViewerEngine.cancelRender();
   activeDrawingPdf?.cleanup?.();
   activeDrawingPdf?.destroy?.();
   activeDrawingPdf = null;
@@ -1741,9 +1741,10 @@ function releaseDrawingSource() {
   activeDrawingRenderIdentity = null;
   portableDrawingCanvas = null;
   activeDrawingViewerAnalysis = null;
+  drawingViewerEngine.openDocument('', 0);
 }
 
-async function createRetainedPdfViewerAnalysis(documentRecord, source, requestedPage = 1) {
+async function createRetainedPdfViewerAnalysis(documentRecord, source, requestedPage = 1, metadataAnalysis = null) {
   if (!source?.sourceBlob || !documentRecord?.id) return null;
   if (!activeDrawingPdf || activeDrawingDocumentId !== source.documentId) {
     activeDrawingPdf?.cleanup?.();
@@ -1756,19 +1757,19 @@ async function createRetainedPdfViewerAnalysis(documentRecord, source, requested
   const pageCount = Math.max(0, Number(activeDrawingPdf.numPages) || 0);
   if (!pageCount) return null;
   const pageNumber = Math.max(1, Math.min(pageCount, Math.trunc(Number(requestedPage) || 1)));
+  drawingViewerEngine.openDocument(documentRecord.id, pageCount, pageNumber);
   const page = await activeDrawingPdf.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 1, rotation: 0 });
-  const analysis = createPdfPageViewerAnalysis({ documentId: documentRecord.id, projectId: documentRecord.projectId || state().activeProject, pageCount, selectedPage: pageNumber, pageWidth: viewport.width, pageHeight: viewport.height, rotation: page.rotate || viewport.rotation || 0 });
+  const analysis = createPdfPageViewerAnalysis({ documentId: documentRecord.id, projectId: documentRecord.projectId || state().activeProject, pageCount, selectedPage: pageNumber, pageWidth: viewport.width, pageHeight: viewport.height, rotation: page.rotate || viewport.rotation || 0, metadataAnalysis });
   page.cleanup?.();
   return analysis;
 }
 
 function captureDrawingViewport(overrides = {}) {
-  if (!drawingTarget?.drawingSetId || !drawingTarget?.sheetId) return;
-  const key = drawingViewportKey(drawingTarget.drawingSetId, drawingTarget.sheetId);
-  const current = drawingViewportBySet.get(key) || defaultDrawingViewport();
+  if (!drawingTarget?.documentId || !drawingTarget?.pageNumber) return;
+  const current = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(drawingTarget.pageNumber) };
   const stage = $('#mcDrawingStage');
-  drawingViewportBySet.set(key, { ...current, zoom: drawingZoom, rotation: drawingRotation, scrollLeft: stage?.scrollLeft || current.scrollLeft || 0, scrollTop: stage?.scrollTop || current.scrollTop || 0, selectedObservationId: drawingTarget.observationId || current.selectedObservationId, highlightedRegion: drawingTarget.region || current.highlightedRegion, ...overrides, overlays: { ...current.overlays, ...(overrides.overlays || {}) } });
+  drawingViewerEngine.restoreViewport(drawingTarget.pageNumber, { ...current, zoom: drawingZoom, rotation: drawingRotation, scrollLeft: stage?.scrollLeft || current.scrollLeft || 0, scrollTop: stage?.scrollTop || current.scrollTop || 0, selectedObservationId: drawingTarget.observationId || current.selectedObservationId, highlightedRegion: drawingTarget.region || current.highlightedRegion, ...overrides, overlays: { ...current.overlays, ...(overrides.overlays || {}) } });
 }
 
 function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
@@ -1799,10 +1800,6 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
   const stage = $('#mcDrawingStage');
   if (!canvas || !stage || !source || !sheet) return;
   try {
-    const viewportKey = drawingViewportKey(drawingTarget?.drawingSetId, sheet.sheetId);
-    const restored = drawingViewportBySet.get(viewportKey) || defaultDrawingViewport();
-    drawingZoom = restored.zoom;
-    drawingRotation = restored.rotation;
     drawingViewportDocumentId = source.documentId;
     if (!activeDrawingPdf || activeDrawingDocumentId !== source.documentId) {
       activeDrawingPdf?.cleanup?.();
@@ -1811,6 +1808,10 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       activeDrawingDocumentId = source.documentId;
       drawingRenderGeneration += 1;
     }
+    drawingViewerEngine.openDocument(source.documentId, activeDrawingPdf.numPages, sheet.pageNumber);
+    const restored = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) };
+    drawingZoom = restored.zoom;
+    drawingRotation = restored.rotation;
     if (!Number.isFinite(drawingZoom) || restored.mode === 'fit-page' || restored.mode === 'fit-width') {
       let fit = calculateDrawingFit({ containerWidth: stage.clientWidth, containerHeight: stage.clientHeight, pageWidth: sheet.pageWidth, pageHeight: sheet.pageHeight, rotation: (sheet.rotation + drawingRotation) % 360, padding: 18, mode: restored.mode });
       for (let attempt = 0; !fit.ready && attempt < 12; attempt += 1) {
@@ -1824,13 +1825,12 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
     const nextIdentity = createDrawingRenderIdentity({ documentId: source.documentId, drawingSetId: drawingTarget?.drawingSetId, pageNumber: sheet.pageNumber, scale: boundedScale, rotation: (sheet.rotation + drawingRotation) % 360, sourceAvailable: true, generation: drawingRenderGeneration });
     const decision = drawingRenderDecision({ previousIdentity: activeDrawingRenderIdentity, nextIdentity, canvas });
     if (decision.repaint) {
-      activeDrawingRender?.cancel?.();
-      activeDrawingRender?.release?.();
-      activeDrawingRender = null;
       const renderCanvas = document.createElement('canvas');
-      const pendingRender = await renderPdfPage(activeDrawingPdf, sheet.pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation });
-      activeDrawingRender = pendingRender;
-      await pendingRender.promise;
+      const renderOutcome = await drawingViewerEngine.renderSelectedPage(pageNumber => renderPdfPage(activeDrawingPdf, pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation }));
+      if (!renderOutcome.committed || !canvas.isConnected || drawingTarget?.pageNumber !== sheet.pageNumber) {
+        renderOutcome.task?.release?.();
+        return;
+      }
       canvas.width = renderCanvas.width;
       canvas.height = renderCanvas.height;
       const context = canvas.getContext('2d');
@@ -1844,7 +1844,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
     }
     stage.scrollLeft = restored.scrollLeft || 0;
     stage.scrollTop = restored.scrollTop || 0;
-    drawingViewportBySet.set(viewportKey, { ...restored, zoom: drawingZoom, rotation: drawingRotation, selectedObservationId: observation?.observationId || restored.selectedObservationId, highlightedRegion: observation?.region || restored.highlightedRegion });
+    drawingViewerEngine.restoreViewport(sheet.pageNumber, { ...restored, zoom: drawingZoom, rotation: drawingRotation, selectedObservationId: observation?.observationId || restored.selectedObservationId, highlightedRegion: observation?.region || restored.highlightedRegion });
     stage.onscroll = () => captureDrawingViewport();
     stage.onwheel = event => {
       const bounds = stage.getBoundingClientRect();
@@ -1868,19 +1868,20 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
     if (globalThis.ResizeObserver && activeDrawingResizeStage !== stage) {
       activeDrawingResizeObserver?.disconnect();
       activeDrawingResizeObserver = new ResizeObserver(() => {
-        const current = drawingViewportBySet.get(viewportKey) || defaultDrawingViewport();
+        const current = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) };
         if (current.mode === 'fit-page' || current.mode === 'fit-width') void paintDrawingPage(source, sheet, observation, overlayRecords);
       });
       activeDrawingResizeObserver.observe(stage);
       activeDrawingResizeStage = stage;
     }
   } catch (error) {
+    if (drawingTarget?.pageNumber !== sheet.pageNumber) return;
     canvas.insertAdjacentHTML('afterend', `<div class="mc-drawing-render-error" role="status"><strong>Drawing page could not be updated.</strong><p>${esc(error.message)}</p><small>The previously rendered sheet remains available when possible.</small></div>`);
   }
 }
 
 function drawingSearchResultMarkup(result, selectedSheetId, index) {
-  if (result.sheet.viewerFallback) return `<li><button data-drawing-sheet="${esc(result.sheetId)}" data-drawing-result-index="${index}" class="${result.sheetId === selectedSheetId ? 'active' : ''} ${index === drawingSearchActiveIndex ? 'keyboard-active' : ''}" ${index === drawingSearchActiveIndex ? 'aria-current="true"' : ''}><strong>Page ${result.pageNumber}</strong><span>Retained PDF page</span></button></li>`;
+  if (result.sheet.viewerFallback) return `<li><button data-drawing-sheet="${esc(result.sheetId)}" data-drawing-result-index="${index}" class="${result.sheetId === selectedSheetId ? 'active' : ''} ${index === drawingSearchActiveIndex ? 'keyboard-active' : ''}" ${index === drawingSearchActiveIndex ? 'aria-current="true"' : ''}><strong>${esc(result.sheet.sheetNumber || `Page ${result.pageNumber}`)}</strong><span>${esc(result.sheet.sheetTitle || 'Retained PDF page')}</span><small><i data-discipline="${esc(result.sheet.discipline || 'Unknown')}"></i>${esc(result.sheet.discipline || 'Unknown')} · ${esc(result.primarySheetType || 'Unknown')} · PDF page ${result.pageNumber}</small><small>${result.sheet.metadataAvailable ? 'Partial metadata' : 'Page metadata unavailable'}</small>${result.matchedReason ? `<em>${esc(result.matchedReason)}</em>` : ''}</button></li>`;
   const warnings = result.sheet.warnings?.length ? `${result.sheet.warnings.length} identity warning${result.sheet.warnings.length === 1 ? '' : 's'}` : 'Identity supported';
   return `<li><button data-drawing-sheet="${esc(result.sheetId)}" data-drawing-search-observation="${esc(result.observationId)}" data-drawing-result-index="${index}" class="${result.sheetId === selectedSheetId ? 'active' : ''} ${index === drawingSearchActiveIndex ? 'keyboard-active' : ''}" ${index === drawingSearchActiveIndex ? 'aria-current="true"' : ''}><strong>${esc(result.sheet.sheetNumber || 'Identity requires review')}</strong><span>${esc(result.sheet.sheetTitle || 'Title requires review')}</span><small><i data-discipline="${esc(result.sheet.discipline)}"></i>${esc(result.sheet.discipline)} · ${esc(result.primarySheetType)} · ${result.sheet.building ? `Building ${esc(result.sheet.building)} · ` : ''}Page ${result.pageNumber}</small><small>${Math.round((result.sheet.confidence || 0) * 100)}% identity confidence · ${esc(warnings)}</small>${result.matchedReason ? `<em>${esc(result.matchedReason)}</em>` : ''}</button></li>`;
 }
@@ -1888,7 +1889,7 @@ function drawingSearchResultMarkup(result, selectedSheetId, index) {
 async function updateDrawingSearchResults() {
   const revision = ++drawingSearchRevision;
   const persistedAnalysis = drawingTarget?.documentId ? await engine.drawingAnalysis(drawingTarget.documentId) : null;
-  const analysis = persistedAnalysis || (activeDrawingViewerAnalysis?.documentId === drawingTarget?.documentId ? activeDrawingViewerAnalysis : null);
+  const analysis = activeDrawingViewerAnalysis?.documentId === drawingTarget?.documentId ? activeDrawingViewerAnalysis : persistedAnalysis;
   const resultsHost = $('#mcDrawingResults');
   const status = $('#mcDrawingResultStatus');
   if (revision !== drawingSearchRevision || !analysis || !resultsHost || !status) return;
@@ -1939,6 +1940,7 @@ function drawingRecoveryMarkup(record = {}) {
 }
 
 async function renderDrawingWorkspace(shell = 'professional') {
+  const workspaceRenderRequest = ++drawingWorkspaceRenderRequest;
   const host = shell === 'mission-control' ? ($('#missionInlineDrawingViewer') || $('#missionDrawingViewer')) : $('#drawingInspector');
   if (!host) return;
   const preservedCanvas = host.querySelector('#mcDrawingCanvas') || portableDrawingCanvas;
@@ -1955,26 +1957,29 @@ async function renderDrawingWorkspace(shell = 'professional') {
     if (!exact.document) { targetLifecycleUnavailable = { ...exact, errorCode: 'drawing-target-stale', warning: 'The selected drawing document is no longer available.' }; drawingTarget = null; }
   }
   const documents = (await engine.documents()).filter(isPdfDocument);
+  const retainedAnalyses = await engine.drawingAnalyses();
   const analyses = await currentDrawingAnalyses();
   const orphanDiagnostics = await engine.drawingLifecycleDiagnostics();
   const lifecycleRecords = [...drawingLifecycleUnavailable, ...orphanDiagnostics];
   drawingLifecycleUnavailable = [...new Map(lifecycleRecords.map(item => [`${item.errorCode}:${item.analysis?.drawingSetId || item.sourceFile?.documentId || item.document?.id || ''}`, item])).values()];
   if (targetLifecycleUnavailable) drawingLifecycleUnavailable = [targetLifecycleUnavailable, ...drawingLifecycleUnavailable];
   const analysesByDocument = new Map(analyses.map(item => [item.documentId, item]));
+  const retainedAnalysesByDocument = new Map(retainedAnalyses.map(item => [item.documentId, item]));
   if (!documents.length) {
     releaseDrawingSource();
     host.innerHTML = drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list"><h2>Drawing Sets</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : `<div class="mc-drawing-empty"><strong>No drawing set is available for this project.</strong><p>Import a drawing package or return to Chief to continue the project review.</p><div class="mc-drawing-empty-actions"><button type="button" data-drawing-empty-action="import">Import Drawing</button><button type="button" class="subtle" data-drawing-empty-action="chief">Return to Chief</button></div></div>`;
     return;
   }
   const requestedDocument = drawingTarget?.documentId;
-  const selected = documents.find(item => item.id === requestedDocument) || documents.find(item => analysesByDocument.has(item.id)) || documents[0];
-  const persistedAnalysis = analysesByDocument.get(selected.id) || null;
-  let analysis = persistedAnalysis;
+  const selected = documents.find(item => item.id === requestedDocument) || documents.find(item => analysesByDocument.has(item.id) || retainedAnalysesByDocument.has(item.id)) || documents[0];
+  const persistedAnalysis = retainedAnalysesByDocument.get(selected.id) || analysesByDocument.get(selected.id) || null;
+  let analysis = analysesByDocument.get(selected.id) || null;
   const source = activeDrawingSourceRecord?.documentId === selected.id && activeDrawingSourceRecord.projectId === state().activeProject
     ? activeDrawingSourceRecord
     : await engine.sourceFile(selected.id);
   activeDrawingSourceRecord = source;
-  if (!analysis && source) analysis = await createRetainedPdfViewerAnalysis(selected, source, drawingTarget?.pageNumber || 1);
+  if (!analysis && source) analysis = await createRetainedPdfViewerAnalysis(selected, source, drawingTarget?.pageNumber || 1, persistedAnalysis);
+  if (workspaceRenderRequest !== drawingWorkspaceRenderRequest) return;
   activeDrawingViewerAnalysis = analysis?.viewerFallback ? analysis : null;
   if (analysis?.viewerFallback && drawingTarget?.documentId === selected.id) {
     const page = Math.max(1, Math.min(analysis.sheets.length, Number(drawingTarget.pageNumber) || 1));
@@ -1985,7 +1990,8 @@ async function renderDrawingWorkspace(shell = 'professional') {
     if (reduced.target) drawingTarget = reduced.target;
     else if (reduced.status === 'drawing-target-stale') drawingTarget = null;
   }
-  const resolvedAfterReduction = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses }) : null;
+  const viewerAnalyses = analysis && !analyses.includes(analysis) ? [analysis, ...analyses] : analyses;
+  const resolvedAfterReduction = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses: viewerAnalyses }) : null;
   const sheet = resolvedAfterReduction?.sheet || analysis?.sheets?.find(item => item.sheetId === drawingTarget?.sheetId) || analysis?.sheets?.[0] || null;
   const observation = resolvedAfterReduction?.observation || null;
   const planObject = resolvedAfterReduction?.planObject || null;
@@ -1994,7 +2000,7 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const matchingSet = analysis ? reconcileDrawingMatchingSheetIds({ target: { ...drawingTarget, matchingSheetIds: currentMatchingSheetIds, sheetId: sheet?.sheetId || drawingTarget?.sheetId }, analysis, previousMatchingSheetIds: drawingMatchingSheetIds }) : { matchingSheetIds: [], activeSheetId: sheet?.sheetId || '', activeIndex: -1 };
   drawingMatchingSheetIds = analysis?.viewerFallback ? analysis.sheets.map(item => item.sheetId) : matchingSet.matchingSheetIds;
   if (sheet) drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: selected.id, drawingSetId: analysis.drawingSetId, drawingId: sheet.drawingId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId || '', planObjectId: planObject?.occurrenceId || '', region: highlightedRegion, origin: drawingTarget?.origin || '', matchingSheetIds: drawingMatchingSheetIds, returnTarget: drawingTarget?.returnTarget || '' });
-  const resolvedTarget = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses }) : null;
+  const resolvedTarget = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses: viewerAnalyses }) : null;
   const effectiveObservation = resolvedTarget?.observation || observation || null;
   const effectivePlanObject = resolvedTarget?.planObject || planObject || null;
   const effectiveRegion = resolvedTarget?.region || highlightedRegion || null;
@@ -2010,12 +2016,13 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const observationGroups = groupDrawingObservations(observations);
   const warningGroups = drawingWarningPresentation([...(sheet?.warnings || []).map(message => ({ type: 'sheet-warning', message })), ...(analysis?.warnings || [])]);
   const selectedResult = searchResults.find(result => result.sheetId === sheet?.sheetId);
-  const selectionExplanation = analysis?.viewerFallback ? 'Showing the retained PDF page without drawing-analysis metadata.' : selectedResult?.matchedReason || (drawingTarget?.origin === 'plan-query' ? 'Chief selected this as the highest-ranked exact plan evidence.' : drawingTarget?.observationId ? 'Opened from an exact drawing observation.' : 'Selected from this drawing set.');
+  const selectionExplanation = analysis?.viewerFallback ? (sheet?.metadataAvailable ? 'Showing the retained PDF page with available drawing metadata.' : 'Showing the retained PDF page without drawing-analysis metadata.') : selectedResult?.matchedReason || (drawingTarget?.origin === 'plan-query' ? 'Chief selected this as the highest-ranked exact plan evidence.' : drawingTarget?.observationId ? 'Opened from an exact drawing observation.' : 'Selected from this drawing set.');
   const sheetLegends = (analysis?.legends || []).filter(item => item.sheetId === sheet?.sheetId);
   const sheetSchedules = (analysis?.schedules || []).filter(item => item.sheetId === sheet?.sheetId);
   const sheetKeyedNotes = (analysis?.keyedNoteOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
   const sheetOccurrences = (analysis?.candidateOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
-  const viewport = sheet ? drawingViewportBySet.get(drawingViewportKey(analysis?.drawingSetId, sheet.sheetId)) || defaultDrawingViewport() : defaultDrawingViewport();
+  if (sheet) drawingViewerEngine.openDocument(selected.id, Math.max(sheet.pageNumber, ...(analysis?.sheets || []).map(item => Number(item.pageNumber) || 0)), sheet.pageNumber);
+  const viewport = sheet ? { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) } : defaultDrawingViewport();
   const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
   const returnLabel = shell === 'professional' && returnAction?.kind === 'mission-control' ? 'Return to Chief' : returnAction?.label;
   const focusTarget = drawingFocusTarget({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion });
@@ -2030,9 +2037,9 @@ async function renderDrawingWorkspace(shell = 'professional') {
     <div class="mc-drawing-layout ${drawingWorkspacePanels.finderHidden ? 'finder-hidden' : ''} ${drawingWorkspacePanels.evidenceHidden ? 'evidence-hidden' : ''} ${drawingWorkspacePanels.expanded ? 'drawing-expanded' : ''}">
       <aside class="mc-drawing-index" aria-label="Find construction drawing evidence"><label>Drawing set<select id="mcDrawingDocument">${documents.map(item => `<option value="${esc(item.id)}" ${item.id === selected.id ? 'selected' : ''}>${esc(item.title || item.name || item.id)}</option>`).join('')}</select></label>${analysis ? `<label>Find a sheet, room, trade, or tag<input id="mcDrawingSearch" value="${esc(drawingFilter)}" autocomplete="off" aria-controls="mcDrawingResults" aria-describedby="mcDrawingResultStatus"></label><button class="subtle" data-drawing-clear-search ${drawingFilter ? '' : 'hidden'}>Clear search</button><div class="mc-drawing-filters"><label>Discipline<select id="mcDrawingDiscipline"><option value="all">All disciplines</option>${disciplines.map(item => `<option ${item === drawingDiscipline ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></label><label>Drawing type<select id="mcDrawingType"><option value="all">All types</option>${sheetTypes.map(item => `<option ${item === drawingType ? 'selected' : ''}>${esc(item)}</option>`).join('')}</select></label></div><p id="mcDrawingResultStatus" role="status" aria-live="polite">${esc(drawingSearchSummary(drawingFilter, shownSheets.length))}</p><ol id="mcDrawingResults" aria-label="Drawing search results">${searchResults.map((result, index) => drawingSearchResultMarkup(result, sheet?.sheetId, index)).join('') || '<li class="mc-drawing-no-results"><strong>No drawing evidence found.</strong><span>Try a sheet number, room, trade, equipment tag, or clear the active filters.</span></li>'}</ol>` : ''}</aside>
       <main class="mc-drawing-viewer"><details class="mc-construction-orientation"><summary>Work and selection context</summary><div><strong>${esc(activeWorkPackage?.workSummary?.[0]?.label || sheet?.sheetTitle || 'Select construction evidence')}</strong><span>${sheet?.building ? `Building ${esc(sheet.building)} · ` : ''}${esc(activeWorkPackage?.discipline || sheet?.discipline || 'Unknown')} · ${esc(selectionExplanation)}</span></div></details>
-        ${!source ? `<div class="mc-drawing-unavailable"><strong>Original drawing unavailable — reattach PDF to view sheet.</strong><p>Reattach the exact source PDF to inspect the drawing. Indexed project text remains available.</p><label class="mc-drawing-reattach"><input id="mcDrawingReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label></div>` : !sheet ? `<div class="mc-drawing-unavailable"><strong>Drawing page unavailable.</strong><p>The retained PDF does not expose a viewable page.</p></div>` : `<header id="${focusTarget === 'mc-drawing-selected-evidence' ? 'mc-drawing-selected-evidence' : 'mc-drawing-sheet-title'}" class="mc-drawing-sheet-title" tabindex="-1" aria-live="polite" aria-label="${esc(announcementText)}"><div><span>${esc(sheet.sheetNumber || `Page ${sheet.pageNumber}`)}</span><h3>${esc(sheet.sheetTitle || `Page ${sheet.pageNumber}`)}</h3><p>${esc(selectionExplanation)}</p></div><dl><div><dt>Discipline</dt><dd>${esc(sheet.discipline)}</dd></div><div><dt>Type</dt><dd>${esc(sheet.primarySheetType || sheet.sheetTypes[0] || 'Unknown')}</dd></div><div><dt>Position</dt><dd>${analysis.viewerFallback ? 'Page' : 'Sheet'} ${sheet.pageNumber} of ${analysis.sheets.length}</dd></div><div><dt>Identity</dt><dd>${esc(sheet.identityStatus)}</dd></div></dl></header><div class="mc-drawing-toolbar"><div role="group" aria-label="Drawing navigation"><button data-drawing-previous ${navigationIndex <= 0 ? 'disabled' : ''}>Previous</button><button data-drawing-next ${navigationIndex < 0 || navigationIndex >= navigationSheetIds.length - 1 ? 'disabled' : ''}>Next</button><button data-drawing-layout="toggle-finder">${drawingWorkspacePanels.finderHidden ? 'Show' : 'Hide'} Sheet Finder</button></div><div role="group" aria-label="Drawing view controls"><button data-drawing-fit="page">Fit Page</button><button data-drawing-fit="width">Fit Width</button><button data-drawing-zoom="out">Zoom Out</button><button data-drawing-zoom="in">Zoom In</button><button data-drawing-rotate>Rotate</button><button data-drawing-reset-view>Reset View</button><button data-drawing-layout="${drawingWorkspacePanels.expanded ? 'restore' : 'expand'}">${drawingWorkspacePanels.expanded ? 'Restore Workspace' : 'Expand Drawing'}</button></div><div role="group" aria-label="Construction context actions">${analysis.viewerFallback ? '' : '<button data-drawing-ask>Ask Chief</button><button data-drawing-current-work>Add to Current Work</button><button data-drawing-inspection>Create Inspection</button>'}<button class="subtle" data-drawing-source>Open Source Details</button><button data-drawing-layout="toggle-evidence">${drawingWorkspacePanels.evidenceHidden ? 'Show' : 'Hide'} Construction Evidence</button></div><output aria-label="Current drawing view">${Number.isFinite(drawingZoom) ? Math.round(drawingZoom * 100) : 'Fit'}% · ${drawingRotation}°</output></div>${analysis.viewerFallback ? '' : `<fieldset class="mc-drawing-overlay-controls"><legend>Drawing overlays</legend>${Object.entries({ rooms: 'Room Labels', confirmed: 'Confirmed Objects', candidates: 'Candidate Objects', equipment: 'Equipment Tags', keyedNotes: 'Keyed Notes', callouts: 'Callouts', scheduleLinks: 'Schedule Links', warnings: 'Warnings' }).map(([key,label]) => `<label><input type="checkbox" data-drawing-overlay="${key}" ${viewport.overlays?.[key] === false ? '' : 'checked'}>${label}</label>`).join('')}</fieldset>`}<div id="mcDrawingStage" class="mc-drawing-stage"><canvas id="mcDrawingCanvas" aria-label="${esc(sheet.sheetNumber || `PDF page ${sheet.pageNumber}`)} ${esc(sheet.sheetTitle || 'drawing')}"></canvas></div>${drawingRotation || sheet.rotation ? '<p class="mc-drawing-note">Location highlights are available in the authoritative unrotated view.</p>' : ''}`}
+        ${!source ? `<div class="mc-drawing-unavailable"><strong>Original drawing unavailable — reattach PDF to view sheet.</strong><p>Reattach the exact source PDF to inspect the drawing. Indexed project text remains available.</p><label class="mc-drawing-reattach"><input id="mcDrawingReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label></div>` : !sheet ? `<div class="mc-drawing-unavailable"><strong>Drawing page unavailable.</strong><p>The retained PDF does not expose a viewable page.</p></div>` : `<header id="${focusTarget === 'mc-drawing-selected-evidence' ? 'mc-drawing-selected-evidence' : 'mc-drawing-sheet-title'}" class="mc-drawing-sheet-title" tabindex="-1" aria-live="polite" aria-label="${esc(announcementText)}"><div><span>${esc(sheet.sheetNumber || `Page ${sheet.pageNumber}`)}</span><h3>${esc(sheet.sheetTitle || `Page ${sheet.pageNumber}`)}</h3><p>${esc(selectionExplanation)}</p></div><dl><div><dt>Discipline</dt><dd>${esc(sheet.discipline)}</dd></div><div><dt>Type</dt><dd>${esc(sheet.primarySheetType || sheet.sheetTypes[0] || 'Unknown')}</dd></div><div><dt>Position</dt><dd>${analysis.viewerFallback ? 'Page' : 'Sheet'} ${sheet.pageNumber} of ${analysis.sheets.length}</dd></div><div><dt>Identity</dt><dd>${esc(sheet.identityStatus)}</dd></div></dl></header><div class="mc-drawing-toolbar"><div role="group" aria-label="Drawing navigation"><button data-drawing-previous ${navigationIndex <= 0 ? 'disabled' : ''}>Previous</button><button data-drawing-next ${navigationIndex < 0 || navigationIndex >= navigationSheetIds.length - 1 ? 'disabled' : ''}>Next</button><button data-drawing-layout="toggle-finder">${drawingWorkspacePanels.finderHidden ? 'Show' : 'Hide'} Sheet Finder</button></div><div role="group" aria-label="Drawing view controls"><button data-drawing-fit="page">Fit Page</button><button data-drawing-fit="width">Fit Width</button><button data-drawing-zoom="out">Zoom Out</button><button data-drawing-zoom="in">Zoom In</button><button data-drawing-rotate>Rotate</button><button data-drawing-reset-view>Reset View</button><button data-drawing-layout="${drawingWorkspacePanels.expanded ? 'restore' : 'expand'}">${drawingWorkspacePanels.expanded ? 'Restore Workspace' : 'Expand Drawing'}</button></div><div role="group" aria-label="Construction context actions">${analysis.viewerFallback ? '' : '<button data-drawing-ask>Ask Chief</button><button data-drawing-current-work>Add to Current Work</button><button data-drawing-inspection>Create Inspection</button>'}<button class="subtle" data-drawing-source>Open Source Details</button><button data-drawing-layout="toggle-evidence">${drawingWorkspacePanels.evidenceHidden ? 'Show' : 'Hide'} Construction Evidence</button></div><output aria-label="Current drawing view">${Number.isFinite(drawingZoom) ? Math.round(drawingZoom * 100) : 'Fit'}% · ${drawingRotation}°</output></div>${analysis.viewerFallback && !analysis.metadataAvailable ? '' : `<fieldset class="mc-drawing-overlay-controls"><legend>Drawing overlays</legend>${Object.entries({ rooms: 'Room Labels', confirmed: 'Confirmed Objects', candidates: 'Candidate Objects', equipment: 'Equipment Tags', keyedNotes: 'Keyed Notes', callouts: 'Callouts', scheduleLinks: 'Schedule Links', warnings: 'Warnings' }).map(([key,label]) => `<label><input type="checkbox" data-drawing-overlay="${key}" ${viewport.overlays?.[key] === false ? '' : 'checked'}>${label}</label>`).join('')}</fieldset>`}<div id="mcDrawingStage" class="mc-drawing-stage"><canvas id="mcDrawingCanvas" aria-label="${esc(sheet.sheetNumber || `PDF page ${sheet.pageNumber}`)} ${esc(sheet.sheetTitle || 'drawing')}"></canvas></div>${drawingRotation || sheet.rotation ? '<p class="mc-drawing-note">Location highlights are available in the authoritative unrotated view.</p>' : ''}`}
       </main>
-      <aside class="mc-drawing-evidence" aria-label="Construction Evidence">${analysis.viewerFallback ? '<h3>Construction Evidence</h3><p>Drawing analysis is unavailable. Manual PDF page viewing remains available.</p>' : `${sheetAnalysisMarkup({ shell, analysis, sheet, observation, groups: observationGroups, warnings: warningGroups })}${sheetLegends.length ? `<section><h4>Legend entries</h4><p>${fmt(sheetLegends.reduce((sum,item)=>sum+item.entries.length,0))} structured candidate entries. Legend graphics remain authoritative.</p></section>` : ''}${sheetSchedules.length ? `<section><h4>Schedules</h4><p>${fmt(sheetSchedules.reduce((sum,item)=>sum+item.rows.length,0))} structured candidate rows with source regions.</p></section>` : ''}${sheetKeyedNotes.length ? `<section><h4>Keyed notes</h4><p>${fmt(sheetKeyedNotes.length)} exact keyed-note link${sheetKeyedNotes.length === 1 ? '' : 's'}.</p></section>` : ''}${sheetOccurrences.length ? `<section><h4>Plan objects</h4><p>${fmt(sheetOccurrences.length)} candidate occurrence${sheetOccurrences.length === 1 ? '' : 's'}; confirmation is required before a definitive finding.</p><ol>${sheetOccurrences.slice(0,30).map(item => `<li><button data-drawing-occurrence="${esc(item.occurrenceId)}"><strong>${item.verification?.status === 'Confirmed' ? 'Confirmed plan object' : 'Candidate occurrence'}</strong><span>${esc(item.verification?.status || 'Unreviewed')}</span><em>Show on Plan</em></button>${shell === 'professional' ? `<div><button data-drawing-verify-occurrence="Confirmed" data-occurrence-id="${esc(item.occurrenceId)}">Confirm</button><button data-drawing-verify-occurrence="Uncertain" data-occurrence-id="${esc(item.occurrenceId)}">Uncertain</button><button data-drawing-verify-occurrence="Rejected" data-occurrence-id="${esc(item.occurrenceId)}">Reject</button></div>` : ''}</li>`).join('')}</ol></section>` : ''}`}</aside>
+      <aside class="mc-drawing-evidence" aria-label="Construction Evidence">${analysis.viewerFallback && !analysis.metadataAvailable ? '<h3>Construction Evidence</h3><p>Drawing analysis is unavailable. Manual PDF page viewing remains available.</p>' : `${sheetAnalysisMarkup({ shell, analysis, sheet, observation, groups: observationGroups, warnings: warningGroups })}${sheetLegends.length ? `<section><h4>Legend entries</h4><p>${fmt(sheetLegends.reduce((sum,item)=>sum+item.entries.length,0))} structured candidate entries. Legend graphics remain authoritative.</p></section>` : ''}${sheetSchedules.length ? `<section><h4>Schedules</h4><p>${fmt(sheetSchedules.reduce((sum,item)=>sum+item.rows.length,0))} structured candidate rows with source regions.</p></section>` : ''}${sheetKeyedNotes.length ? `<section><h4>Keyed notes</h4><p>${fmt(sheetKeyedNotes.length)} exact keyed-note link${sheetKeyedNotes.length === 1 ? '' : 's'}.</p></section>` : ''}${sheetOccurrences.length ? `<section><h4>Plan objects</h4><p>${fmt(sheetOccurrences.length)} candidate occurrence${sheetOccurrences.length === 1 ? '' : 's'}; confirmation is required before a definitive finding.</p><ol>${sheetOccurrences.slice(0,30).map(item => `<li><button data-drawing-occurrence="${esc(item.occurrenceId)}"><strong>${item.verification?.status === 'Confirmed' ? 'Confirmed plan object' : 'Candidate occurrence'}</strong><span>${esc(item.verification?.status || 'Unreviewed')}</span><em>Show on Plan</em></button>${shell === 'professional' ? `<div><button data-drawing-verify-occurrence="Confirmed" data-occurrence-id="${esc(item.occurrenceId)}">Confirm</button><button data-drawing-verify-occurrence="Uncertain" data-occurrence-id="${esc(item.occurrenceId)}">Uncertain</button><button data-drawing-verify-occurrence="Rejected" data-occurrence-id="${esc(item.occurrenceId)}">Reject</button></div>` : ''}</li>`).join('')}</ol></section>` : ''}`}</aside>
     </div>${drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list" aria-label="Unavailable drawing lifecycle records"><h2>Drawing records requiring attention</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : ''}`;
   const placeholderCanvas = host.querySelector('#mcDrawingCanvas');
   const preserveCanvas = Boolean(preservedCanvas && placeholderCanvas && preservedCanvas.dataset.drawingDocument === selected.id);
@@ -2457,7 +2464,7 @@ app.addEventListener('change', async event => {
   }
   if (event.target.dataset.drawingOverlay) {
     const layer = event.target.dataset.drawingOverlay;
-    const current = drawingViewportBySet.get(drawingViewportKey(drawingTarget?.drawingSetId, drawingTarget?.sheetId)) || defaultDrawingViewport();
+    const current = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(drawingTarget?.pageNumber) };
     captureDrawingViewport({ overlays: { ...current.overlays, [layer]: event.target.checked } });
     $$(`[data-overlay-layer="${layer}"]`).forEach(item => { item.hidden = !event.target.checked; });
   }
@@ -2510,8 +2517,9 @@ app.addEventListener('click', async event => {
   if (button.dataset.drawingSheet && analysis) {
     captureDrawingViewport();
     const sheet = analysis.sheets.find(item => item.sheetId === button.dataset.drawingSheet);
+    if (!sheet) return;
     const observation = button.dataset.drawingSearchObservation ? analysis.observations.find(item => item.observationId === button.dataset.drawingSearchObservation) : null;
-    drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: sheet.drawingId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
+    drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: sheet.drawingId || '', sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
     await renderDrawingWorkspace(shell); return;
   }
   if (button.hasAttribute('data-drawing-reanalyze') && analysis && shell === 'professional') {

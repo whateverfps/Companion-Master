@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { calculateDrawingFit, createDrawingRenderIdentity, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingRenderDecision, drawingWheelZoom, sameDrawingRenderIdentity, drawingWorkspaceLayout, restoreDrawingViewport, saveDrawingViewport } from '../src/drawing-navigation.js';
+import { calculateDrawingFit, createDrawingRenderIdentity, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingRenderDecision, drawingRenderRequestIsCurrent, drawingWheelZoom, sameDrawingRenderIdentity, drawingWorkspaceLayout, restoreDrawingViewport, saveDrawingViewport } from '../src/drawing-navigation.js';
+import { searchDrawingSheets } from '../src/plan-query.js';
 
 test('true Fit Page waits for size and accounts for rotation', () => {
   assert.equal(calculateDrawingFit({ containerWidth: 0, containerHeight: 500, pageWidth: 1000, pageHeight: 700 }).ready, false);
@@ -96,10 +97,51 @@ test('retained PDF fallback enumerates pages without fabricating drawing identit
   const fallback = createPdfPageViewerAnalysis({ documentId: 'pdf-1', projectId: 'general', pageCount: 70, selectedPage: 2, pageWidth: 1000, pageHeight: 700 });
   assert.equal(fallback.viewerFallback, true);
   assert.equal(fallback.sheets.length, 70);
-  assert.equal(fallback.sheets[0].sheetTitle, 'Page 1');
+  assert.equal(fallback.sheets[0].sheetTitle, '');
   assert.equal(fallback.sheets[1].pageWidth, 1000);
   assert.equal(fallback.sheets.every(sheet => sheet.sheetNumber === '' && sheet.drawingId === ''), true);
   assert.deepEqual(fallback.drawingRegistry, []);
+});
+
+test('retained PDF fallback merges authoritative and partial page metadata without hiding unknown pages', () => {
+  const fallback = createPdfPageViewerAnalysis({
+    documentId: 'pdf-1', projectId: 'general', pageCount: 4, selectedPage: 1,
+    metadataAnalysis: {
+      drawingSetId: 'set-1',
+      drawingRegistry: [{ drawingId: 'drawing-a', sheetId: 'sheet-a', pageNumber: 2, sheetNumber: '61A-001', sheetTitle: 'ARCHITECTURAL SYMBOLS & GENERAL NOTES', discipline: 'Architectural', primarySheetType: 'General Notes' }],
+      sheets: [
+        { sheetId: 'partial-2', pageNumber: 2, sheetNumber: '61 A001', sheetTitle: 'Partial title', discipline: 'Unknown', sheetTypes: ['Unknown'] },
+        { sheetId: 'partial-3', pageNumber: 3, sheetNumber: '61M-101', sheetTitle: 'MECHANICAL PLAN - FIRST LEVEL - OVERALL', discipline: 'Mechanical', primarySheetType: 'Plan', sheetTypes: ['Plan'] },
+        { sheetId: 'false-4', pageNumber: 4, sheetNumber: 'FX500', sheetTitle: '', discipline: 'Unknown', sheetTypes: ['Unknown'] }
+      ], observations: []
+    }
+  });
+  assert.equal(fallback.sheets.length, 4);
+  assert.equal(fallback.sheets[1].sheetNumber, '61A-001');
+  assert.equal(fallback.sheets[1].sheetTitle, 'ARCHITECTURAL SYMBOLS & GENERAL NOTES');
+  assert.equal(fallback.sheets[1].discipline, 'Architectural');
+  assert.equal(fallback.sheets[1].primarySheetType, 'General Notes');
+  assert.equal(fallback.sheets[2].sheetNumber, '61M-101');
+  assert.equal(fallback.sheets[3].sheetNumber, '');
+  assert.equal(fallback.sheets[0].metadataAvailable, false);
+});
+
+test('mixed fallback metadata supports discipline, type, sheet, and page search', () => {
+  const analysis = createPdfPageViewerAnalysis({ documentId: 'pdf-1', projectId: 'general', pageCount: 3, metadataAnalysis: {
+    sheets: [{ sheetId: 'm101', pageNumber: 2, sheetNumber: '61M-101', sheetTitle: 'Mechanical Plan', discipline: 'Mechanical', primarySheetType: 'Plan', sheetTypes: ['Plan'] }]
+  } });
+  assert.deepEqual(searchDrawingSheets({ analysis, discipline: 'Mechanical' }).map(item => item.pageNumber), [2]);
+  assert.deepEqual(searchDrawingSheets({ analysis, sheetType: 'Plan' }).map(item => item.pageNumber), [2]);
+  assert.deepEqual(searchDrawingSheets({ analysis, query: '61M-101' }).map(item => item.pageNumber), [2]);
+  assert.deepEqual(searchDrawingSheets({ analysis, query: 'Page 3' }).map(item => item.pageNumber), [3]);
+  assert.equal(new Set(analysis.sheets.map(sheet => sheet.discipline)).has('Unknown'), true);
+  assert.equal(new Set(analysis.sheets.flatMap(sheet => sheet.sheetTypes)).has('Unknown'), true);
+});
+
+test('rapid page selections allow only the newest PDF render to commit', () => {
+  assert.equal(drawingRenderRequestIsCurrent({ requestId: 1, activeRequestId: 3, requestedPage: 1, activePage: 10 }), false);
+  assert.equal(drawingRenderRequestIsCurrent({ requestId: 2, activeRequestId: 3, requestedPage: 2, activePage: 10 }), false);
+  assert.equal(drawingRenderRequestIsCurrent({ requestId: 3, activeRequestId: 3, requestedPage: 10, activePage: 10 }), true);
 });
 
 test('drawing workspace uses retained PDF pages when analysis is missing or stale', () => {
@@ -108,6 +150,10 @@ test('drawing workspace uses retained PDF pages when analysis is missing or stal
   assert.match(app, /createRetainedPdfViewerAnalysis\(selected, source/);
   assert.match(app, /activeDrawingViewerAnalysis/);
   assert.match(app, /analysis\?\.viewerFallback \? analysis\.sheets\.map/);
+  assert.match(app, /metadataAnalysis: persistedAnalysis|persistedAnalysis\)/);
+  assert.match(app, /if \(!sheet\) return/);
+  assert.match(app, /drawingViewerEngine\.renderSelectedPage/);
+  assert.match(app, /const analysis = activeDrawingViewerAnalysis\?\.documentId === drawingTarget\?\.documentId \? activeDrawingViewerAnalysis : persistedAnalysis/);
   assert.match(app, /Manual PDF page viewing remains available/);
   assert.doesNotMatch(app, /<strong>No drawing selected\.<\/strong>/);
   assert.doesNotMatch(app, /sheetNumber:\s*['"](?:UNRESOLVED|UNKNOWN)/);

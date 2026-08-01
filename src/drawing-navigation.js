@@ -1,4 +1,5 @@
 import { normalizeRegion } from './pdf-source.js';
+import { buildDrawingPageModel } from './drawing-page-model.js';
 
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const safe = value => [...text(value)].map(character => /^[a-zA-Z0-9_-]$/.test(character) ? character : `_${character.codePointAt(0).toString(16)}_`).join('') || 'unavailable';
@@ -19,20 +20,50 @@ export function createDrawingTarget({ projectId, documentId, drawingSetId, drawi
   };
 }
 
-export function createPdfPageViewerAnalysis({ documentId, projectId, pageCount, selectedPage = 1, pageWidth = 1, pageHeight = 1, rotation = 0 } = {}) {
+export function resolveDrawingPageNavigation(target = {}, pages = [], currentPageNumber = null) {
+  const normalizedSheetNumber = text(target.normalizedSheetNumber || target.sheetNumber).toUpperCase().replace(/[^A-Z0-9]+/g, '');
+  const drawingId = text(target.drawingId);
+  const requestedPage = Number(target.pdfPageNumber || target.pageNumber);
+  const page = drawingId
+    ? pages.find(item => text(item.drawingId) === drawingId)
+    : normalizedSheetNumber
+      ? pages.find(item => text(item.normalizedSheetNumber || item.sheetNumber).toUpperCase().replace(/[^A-Z0-9]+/g, '') === normalizedSheetNumber)
+      : Number.isInteger(requestedPage) && requestedPage > 0
+        ? pages.find(item => Number(item.pdfPageNumber || item.pageNumber) === requestedPage)
+        : null;
+  return page
+    ? { resolved: true, pageNumber: Number(page.pdfPageNumber || page.pageNumber), page, reason: drawingId ? 'drawing-id' : normalizedSheetNumber ? 'sheet-number' : 'pdf-page' }
+    : { resolved: false, pageNumber: Number(currentPageNumber) || null, page: null, reason: 'unresolved' };
+}
+
+export function createPdfPageViewerAnalysis({ documentId, projectId, pageCount, selectedPage = 1, pageWidth = 1, pageHeight = 1, rotation = 0, metadataAnalysis = null } = {}) {
   const count = Math.max(0, Math.trunc(Number(pageCount) || 0));
   const activePage = Math.max(1, Math.min(count || 1, Math.trunc(Number(selectedPage) || 1)));
-  const drawingSetId = `pdf-viewer-${safe(documentId)}`;
-  const sheets = Array.from({ length: count }, (_, index) => {
-    const pageNumber = index + 1;
+  const drawingSetId = text(metadataAnalysis?.drawingSetId) || `pdf-viewer-${safe(documentId)}`;
+  const pages = buildDrawingPageModel({ documentId, projectId, drawingSetId, pageCount: count, registryRecords: metadataAnalysis?.drawingRegistry, partialSheets: metadataAnalysis?.sheets, storedPageMetadata: metadataAnalysis?.pageMetadata });
+  const sheets = pages.map(page => {
+    const partial = page.partialRecord || {};
+    const registered = page.authoritativeRecord || {};
+    const sheetTypes = [...new Set([page.drawingType, ...(registered.sheetTypes || []), ...(partial.sheetTypes || [])].map(text).filter(Boolean))];
     return {
-      viewerFallback: true, sheetId: `${drawingSetId}-page-${pageNumber}`, drawingId: '', documentId: text(documentId), projectId: text(projectId), drawingSetId,
-      sheetNumber: '', sheetTitle: `Page ${pageNumber}`, normalizedTitle: `page ${pageNumber}`, discipline: 'Unknown', primarySheetType: 'Unknown', sheetTypes: ['Unknown'],
-      building: '', pageNumber, pdfPage: pageNumber, pageWidth: pageNumber === activePage ? Number(pageWidth) || 1 : 1, pageHeight: pageNumber === activePage ? Number(pageHeight) || 1 : 1,
-      rotation: pageNumber === activePage ? Number(rotation) || 0 : 0, identityStatus: 'Unavailable', confidence: 0, warnings: [], textItems: []
+      ...partial, ...registered, viewerFallback: true, metadataAvailable: page.identityStatus !== 'fallback',
+      sheetId: page.sheetId || `${drawingSetId}-page-${page.pdfPageNumber}`, drawingId: page.drawingId, documentId: text(documentId), projectId: text(projectId), drawingSetId,
+      sheetNumber: page.sheetNumber, normalizedSheetNumber: page.normalizedSheetNumber, sheetTitle: page.sheetTitle, normalizedTitle: page.sheetTitle.toLowerCase(), discipline: page.discipline,
+      primarySheetType: page.drawingType, sheetTypes: sheetTypes.length ? sheetTypes : ['Unknown'], building: page.building, pageNumber: page.pdfPageNumber, pdfPage: page.pdfPageNumber,
+      pageWidth: page.pdfPageNumber === activePage ? Number(pageWidth) || Number(partial.pageWidth) || 1 : Number(partial.pageWidth) || 1,
+      pageHeight: page.pdfPageNumber === activePage ? Number(pageHeight) || Number(partial.pageHeight) || 1 : Number(partial.pageHeight) || 1,
+      rotation: page.pdfPageNumber === activePage ? Number(rotation) || Number(partial.rotation) || 0 : Number(partial.rotation) || 0,
+      identityStatus: page.identityStatus === 'authoritative' ? 'Authoritative' : page.identityStatus === 'partial' ? 'Partial metadata' : 'Unavailable',
+      confidence: Number(registered.confidence ?? partial.confidence) || 0, warnings: [...(partial.warnings || []), ...(registered.warnings || [])],
+      textItems: [...(partial.textItems || []), { text: page.searchableText, region: null }]
     };
   });
-  return { viewerFallback: true, documentId: text(documentId), projectId: text(projectId), drawingSetId, sheets, drawingRegistry: [], observations: [], legends: [], schedules: [], keyedNoteOccurrences: [], candidateOccurrences: [], warnings: [] };
+  return {
+    viewerFallback: true, metadataAvailable: sheets.some(sheet => sheet.metadataAvailable), documentId: text(documentId), projectId: text(projectId), drawingSetId, sheets,
+    drawingRegistry: [...(metadataAnalysis?.drawingRegistry || [])], observations: [...(metadataAnalysis?.observations || [])], legends: [...(metadataAnalysis?.legends || [])],
+    schedules: [...(metadataAnalysis?.schedules || [])], keyedNoteOccurrences: [...(metadataAnalysis?.keyedNoteOccurrences || [])], candidateOccurrences: [...(metadataAnalysis?.candidateOccurrences || [])],
+    warnings: [...(metadataAnalysis?.warnings || [])]
+  };
 }
 
 export function resolveDrawingTarget(target, { documents = [], analyses = [] } = {}) {
@@ -235,4 +266,8 @@ export function drawingRenderDecision({ previousIdentity, nextIdentity, canvas, 
   if (fittedScaleChanged) return { repaint: true, reason: 'fitted-scale-changed' };
   if (!sameDrawingRenderIdentity(previousIdentity, nextIdentity)) return { repaint: true, reason: 'render-input-changed' };
   return { repaint: false, reason: 'unchanged-render-inputs' };
+}
+
+export function drawingRenderRequestIsCurrent({ requestId, activeRequestId, requestedPage, activePage, canvasConnected = true } = {}) {
+  return Boolean(canvasConnected) && Number(requestId) === Number(activeRequestId) && Number(requestedPage) === Number(activePage);
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDrawingTarget, drawingAnnouncementText, drawingFocusTarget, drawingReturnAction, reconcileDrawingMatchingSheetIds, resolveDrawingTarget } from '../src/drawing-navigation.js';
+import { createDrawingTarget, drawingAnnouncementText, drawingFocusTarget, drawingReturnAction, reconcileDrawingMatchingSheetIds, resolveDrawingPageNavigation, resolveDrawingTarget } from '../src/drawing-navigation.js';
 
 test('resolveDrawingTarget preserves page and region context for exact drawing restoration', () => {
   const analysis = {
@@ -103,4 +103,12 @@ test('drawing return and focus helpers produce deterministic labels and announce
   assert.match(drawingAnnouncementText({ sheet: { sheetNumber: 'S-101', sheetTitle: 'Floor Plan' }, observation: { value: 'Room 101' } }), /S-101/);
   assert.equal(drawingAnnouncementText({ sheet: null }), 'No drawing selected');
   assert.equal(drawingAnnouncementText(), 'No drawing selected');
+});
+
+test('navigation contract resolves drawing ID, sheet number, then PDF page without side effects', () => {
+  const pages = [{ drawingId: 'drawing-1', normalizedSheetNumber: '61G001', pdfPageNumber: 2 }, { drawingId: 'drawing-2', normalizedSheetNumber: '61M101', pdfPageNumber: 26 }];
+  assert.equal(resolveDrawingPageNavigation({ drawingId: 'drawing-2', pdfPageNumber: 2 }, pages).pageNumber, 26);
+  assert.equal(resolveDrawingPageNavigation({ sheetNumber: '61M-101' }, pages).pageNumber, 26);
+  assert.equal(resolveDrawingPageNavigation({ pdfPageNumber: 2 }, pages).pageNumber, 2);
+  assert.deepEqual(resolveDrawingPageNavigation({ sheetNumber: 'missing' }, pages, 10), { resolved: false, pageNumber: 10, page: null, reason: 'unresolved' });
 });
