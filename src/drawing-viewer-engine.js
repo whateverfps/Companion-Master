@@ -1,6 +1,14 @@
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, Number(value) || minimum));
 const key = (documentId, pageNumber) => `${String(documentId || '')}:${Number(pageNumber) || 0}`;
 
+export function drawingResizeRenderIsCurrent({ observedStage, activeStage, observedPage, selectedPage } = {}) {
+  return Boolean(
+    observedStage?.isConnected &&
+    observedStage === activeStage &&
+    Number(observedPage) === Number(selectedPage)
+  );
+}
+
 export function createDrawingRenderCache({ maxEntries = 6, onMetric = () => {} } = {}) {
   const entries = new Map();
   return {
@@ -74,6 +82,7 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
         if (!api.canCommit(token)) return { committed: false, cancelled: true, token, task };
         throw error;
       }
+      if (activeRender === task) activeRender = null;
       const committed = api.canCommit(token);
       onMetric({ operation: 'page-render', durationMs: Math.max(0, clock() - startedAt), pageNumber: token.pageNumber, committed });
       return { committed, cancelled: !committed, token, task };

@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDrawingRenderCache, createDrawingViewerEngine } from '../src/drawing-viewer-engine.js';
+import { createDrawingRenderCache, createDrawingViewerEngine, drawingResizeRenderIsCurrent } from '../src/drawing-viewer-engine.js';
+
+test('detached or superseded resize observers cannot reset the selected PDF page', () => {
+  const pageOneStage = { isConnected: false };
+  const pageTwoStage = { isConnected: true };
+  assert.equal(drawingResizeRenderIsCurrent({ observedStage: pageOneStage, activeStage: pageOneStage, observedPage: 1, selectedPage: 2 }), false);
+  assert.equal(drawingResizeRenderIsCurrent({ observedStage: pageOneStage, activeStage: pageTwoStage, observedPage: 1, selectedPage: 2 }), false);
+  assert.equal(drawingResizeRenderIsCurrent({ observedStage: pageTwoStage, activeStage: pageTwoStage, observedPage: 1, selectedPage: 2 }), false);
+  assert.equal(drawingResizeRenderIsCurrent({ observedStage: pageTwoStage, activeStage: pageTwoStage, observedPage: 2, selectedPage: 2 }), true);
+});
 
 test('viewer engine opens retained documents and selects any bounded page', () => {
   const engine = createDrawingViewerEngine();
@@ -37,6 +46,18 @@ test('renderSelectedPage owns the render task and reports a committed selected p
   assert.deepEqual(rendered, [2]);
   assert.equal(outcome.committed, true);
   engine.cancelRender();
+});
+
+test('completed render tasks are not released when a later page starts rendering', async () => {
+  const engine = createDrawingViewerEngine();
+  engine.openDocument('doc', 3, 1);
+  let released = 0;
+  const first = await engine.renderSelectedPage(() => ({ promise: Promise.resolve(), cancel() {}, release() { released += 1; } }));
+  assert.equal(first.committed, true);
+  engine.selectPage(2);
+  const second = engine.beginRender();
+  assert.equal(second.pageNumber, 2);
+  assert.equal(released, 0);
 });
 
 test('viewer engine preserves viewport, zoom bounds, pointer anchoring, and rotation', () => {

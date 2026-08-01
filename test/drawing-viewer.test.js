@@ -13,6 +13,11 @@ test('true Fit Page waits for size and accounts for rotation', () => {
   assert.ok(rotated.scale < normal.scale);
 });
 
+test('fitted rendering can use its calculated scale below the manual zoom minimum', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /\['fit-page', 'fit-width'\]\.includes\(restored\.mode\)\s*\? Math\.max\(\.05, Math\.min\(3, drawingZoom\)\)\s*:\s*Math\.max\(\.35, Math\.min\(3, drawingZoom\)\)/);
+});
+
 test('per-sheet viewport restores custom zoom, scroll, selection, and overlays', () => {
   let viewports = {};
   viewports = saveDrawingViewport(viewports, 'set', 'sheet', { mode: 'custom', zoom: 1.4, scrollLeft: 22, scrollTop: 44, selectedObservationId: 'o1', overlays: { candidates: false } });
@@ -51,6 +56,7 @@ test('drawing stage gesture handling reuses the existing zoom controls and viewp
   assert.match(app, /stage\.onwheel = event =>/);
   assert.match(app, /if \(!next\.recognized\) return;\s*event\.preventDefault\(\)/);
   assert.match(app, /captureDrawingViewport\(\{ mode: 'custom', zoom: next\.zoom, scrollLeft: next\.scrollLeft, scrollTop: next\.scrollTop \}\)/);
+  assert.match(app, /viewOutput\.textContent = `\$\{Math\.round\(boundedScale \* 100\)\}% · \$\{drawingRotation\}°`/);
   assert.match(app, /button\.dataset\.drawingZoom/);
   assert.equal((app.match(/const drawingViewportBySet = new Map\(\);/g) || []).length, 1);
 });
@@ -149,7 +155,7 @@ test('drawing workspace uses retained PDF pages when analysis is missing or stal
   assert.match(app, /const announcementText = sheet \? drawingAnnouncementText/);
   assert.match(app, /createRetainedPdfViewerAnalysis\(selected, source/);
   assert.match(app, /activeDrawingViewerAnalysis/);
-  assert.match(app, /analysis\?\.viewerFallback \? analysis\.sheets\.map/);
+  assert.match(app, /analysis\?\.viewerFallback \|\| sheet\?\.viewerFallback\s*\? analysis\.sheets\.map/);
   assert.match(app, /metadataAnalysis: persistedAnalysis|persistedAnalysis\)/);
   assert.match(app, /if \(!sheet\) return/);
   assert.match(app, /drawingViewerEngine\.renderSelectedPage/);
@@ -157,6 +163,13 @@ test('drawing workspace uses retained PDF pages when analysis is missing or stal
   assert.match(app, /Manual PDF page viewing remains available/);
   assert.doesNotMatch(app, /<strong>No drawing selected\.<\/strong>/);
   assert.doesNotMatch(app, /sheetNumber:\s*['"](?:UNRESOLVED|UNKNOWN)/);
+});
+
+test('retained page-model navigation keeps the complete PDF page set available to Previous and Next', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /drawingMatchingSheetIds = analysis\?\.viewerFallback \|\| sheet\?\.viewerFallback/);
+  assert.match(app, /analysis\.sheets\.map\(item => item\.sheetId\)/);
+  assert.match(app, /drawingMatchingSetTarget\(drawingMatchingSheetIds, drawingTarget\?\.sheetId, offset, analysis\)/);
 });
 
 test('page clicks prefer the rendered retained-PDF page model and select the engine page before repaint', () => {
@@ -205,4 +218,5 @@ test('production hardening preserves focus and browser scroll while reporting ca
   assert.match(app, /operation: 'search'/);
   assert.match(app, /operation: 'navigation'/);
   assert.match(app, /Drawing viewer metadata source/);
+  assert.match(app, /drawingResizeRenderIsCurrent\(\{ observedStage: stage, activeStage: activeDrawingResizeStage, observedPage: sheet\.pageNumber, selectedPage: drawingTarget\?\.pageNumber \}\)/);
 });

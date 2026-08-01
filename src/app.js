@@ -115,7 +115,7 @@ import { drawingUpgradeKey, loadAuthoritativeDrawingRegistry, reduceStaleDrawing
 import { buildChiefDrawingEvidence } from './chief-drawing-evidence.js';
 import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent, navigateExactDrawingCommand } from './engineering-locator.js';
 import { inspectDrawingRegistryRuntime } from './drawing-registry-diagnostics.js';
-import { createDrawingRenderCache, createDrawingViewerEngine } from './drawing-viewer-engine.js';
+import { createDrawingRenderCache, createDrawingViewerEngine, drawingResizeRenderIsCurrent } from './drawing-viewer-engine.js';
 import { createDrawingContextService } from './drawing-context.js';
 import { createDrawingWorkspace } from './drawing-workspace.js';
 import { createDrawingCatalog } from './drawing-catalog.js';
@@ -1834,7 +1834,11 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       if (!fit.ready) throw new Error('Drawing viewer is waiting for a measurable layout.');
       drawingZoom = fit.scale;
     }
-    const boundedScale = Math.max(.35, Math.min(3, drawingZoom));
+    const boundedScale = ['fit-page', 'fit-width'].includes(restored.mode)
+      ? Math.max(.05, Math.min(3, drawingZoom))
+      : Math.max(.35, Math.min(3, drawingZoom));
+    const viewOutput = stage.closest('.mc-drawing-viewer')?.querySelector('.mc-drawing-toolbar output');
+    if (viewOutput) viewOutput.textContent = `${Math.round(boundedScale * 100)}% · ${drawingRotation}°`;
     const nextIdentity = createDrawingRenderIdentity({ documentId: source.documentId, drawingSetId: drawingTarget?.drawingSetId, pageNumber: sheet.pageNumber, scale: boundedScale, rotation: (sheet.rotation + drawingRotation) % 360, sourceAvailable: true, generation: drawingRenderGeneration });
     const decision = drawingRenderDecision({ previousIdentity: activeDrawingRenderIdentity, nextIdentity, canvas });
     if (decision.repaint) {
@@ -1925,6 +1929,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
     if (globalThis.ResizeObserver && activeDrawingResizeStage !== stage) {
       activeDrawingResizeObserver?.disconnect();
       activeDrawingResizeObserver = new ResizeObserver(() => {
+        if (!drawingResizeRenderIsCurrent({ observedStage: stage, activeStage: activeDrawingResizeStage, observedPage: sheet.pageNumber, selectedPage: drawingTarget?.pageNumber })) return;
         const current = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) };
         if (current.mode === 'fit-page' || current.mode === 'fit-width') void paintDrawingPage(source, sheet, observation, overlayRecords);
       });
@@ -2084,7 +2089,9 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const highlightedRegion = resolvedAfterReduction?.region || observation?.region || drawingTarget?.region || null;
   const currentMatchingSheetIds = drawingTarget?.matchingSheetIds && drawingTarget.matchingSheetIds.length ? drawingTarget.matchingSheetIds : drawingMatchingSheetIds;
   const matchingSet = analysis ? reconcileDrawingMatchingSheetIds({ target: { ...drawingTarget, matchingSheetIds: currentMatchingSheetIds, sheetId: sheet?.sheetId || drawingTarget?.sheetId }, analysis, previousMatchingSheetIds: drawingMatchingSheetIds }) : { matchingSheetIds: [], activeSheetId: sheet?.sheetId || '', activeIndex: -1 };
-  drawingMatchingSheetIds = analysis?.viewerFallback ? analysis.sheets.map(item => item.sheetId) : matchingSet.matchingSheetIds;
+  drawingMatchingSheetIds = analysis?.viewerFallback || sheet?.viewerFallback
+    ? analysis.sheets.map(item => item.sheetId)
+    : matchingSet.matchingSheetIds;
   if (sheet) drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: selected.id, drawingSetId: analysis.drawingSetId, pageId: sheet.pageId, drawingId: sheet.drawingId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId || '', planObjectId: planObject?.occurrenceId || '', region: highlightedRegion, origin: drawingTarget?.origin || '', matchingSheetIds: drawingMatchingSheetIds, returnTarget: drawingTarget?.returnTarget || '' });
   const resolvedTarget = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses: viewerAnalyses }) : null;
   const effectiveObservation = resolvedTarget?.observation || observation || null;
