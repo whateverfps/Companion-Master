@@ -62,7 +62,8 @@ test('authoritative registry reload replaces a stale in-memory analysis during t
     requiresUpgrade,
     validateOwnership: async () => ({ ok: true }),
     rebuild: async () => structuredClone(complete),
-    save: async rebuilt => { saves += 1; persisted = structuredClone(rebuilt); return { ok: true, status: 'saved', analysis: structuredClone(rebuilt) }; }
+    save: async rebuilt => { saves += 1; persisted = structuredClone(rebuilt); return { ok: true, status: 'saved', analysis: structuredClone(rebuilt) }; },
+    reloadSaved: async () => structuredClone(persisted)
   });
   assert.equal(saves, 1);
   assert.equal(result.initial[0].drawingRegistry.length, 18);
@@ -79,4 +80,22 @@ test('an incomplete rebuild is not saved or returned as authoritative', async ()
   const result = await loadAuthoritativeDrawingRegistry({ loadAnalyses: async () => [structuredClone(stale)], requiresUpgrade: item => item.registryHealth.unresolvedPages > 0, validateOwnership: async () => ({ ok: true }), rebuild: async () => structuredClone(stale), save: async () => { saved = true; return { ok: true }; } });
   assert.equal(saved, false);
   assert.equal(result.results[0].errorCode, 'drawing-upgrade-incomplete');
+});
+
+test('one unavailable analysis does not discard a separately refreshed registry', async () => {
+  const staleA = { ...analysis, drawingSetId: 'missing-set', documentId: 'missing', drawingRegistry: [], indexEntries: [{}], registryHealth: { unresolvedPages: 1 } };
+  const staleB = { ...analysis, drawingSetId: 'valid-set', drawingRegistry: [], indexEntries: [{}], registryHealth: { unresolvedPages: 1 } };
+  const completeB = { ...staleB, drawingRegistry: [{ drawingId: '61m101', sheetNumber: '61M-101', normalizedSheetNumber: '61M101' }], registryHealth: { unresolvedPages: 0 } };
+  let persisted = [structuredClone(staleA), structuredClone(staleB)];
+  const requiresUpgrade = item => item.registryHealth.unresolvedPages > 0;
+  const result = await loadAuthoritativeDrawingRegistry({
+    loadAnalyses: async () => structuredClone(persisted), requiresUpgrade,
+    validateOwnership: async item => item.documentId === 'missing' ? { ok: false, errorCode: 'drawing-document-missing', analysis: item } : { ok: true },
+    rebuild: async item => item.drawingSetId === 'valid-set' ? structuredClone(completeB) : item,
+    save: async rebuilt => { persisted = persisted.map(item => item.drawingSetId === rebuilt.drawingSetId ? structuredClone(rebuilt) : item); return { ok: true, analysis: rebuilt }; },
+    reloadSaved: async rebuilt => structuredClone(persisted.find(item => item.drawingSetId === rebuilt.drawingSetId))
+  });
+  assert.equal(result.results[0].errorCode, 'drawing-document-missing');
+  assert.equal(result.results[1].ok, true);
+  assert.ok(result.analyses.find(item => item.drawingSetId === 'valid-set').drawingRegistry.some(item => item.normalizedSheetNumber === '61M101'));
 });

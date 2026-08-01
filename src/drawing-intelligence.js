@@ -358,11 +358,12 @@ export function reconcileDrawingIndex(indexEntries = [], sheets = []) {
 }
 
 function mapDrawingIndexToSheets(indexEntries, sheets, { bedford = false } = {}) {
-  const uniqueEntries = list(indexEntries).filter((entry, index, source) => source.filter(item => item.sheetNumber === entry.sheetNumber).length === 1);
+  const identityKey = value => bedford ? normalizeBedfordSheetNumber(value) : text(value);
+  const uniqueEntries = list(indexEntries).filter((entry, index, source) => source.filter(item => identityKey(item.sheetNumber) === identityKey(entry.sheetNumber)).length === 1);
   const result = new Map();
-  const byNumber = new Map(uniqueEntries.map(entry => [entry.sheetNumber, entry]));
+  const byNumber = new Map(uniqueEntries.map(entry => [identityKey(entry.sheetNumber), entry]));
   const identityNumbers = sheet => bedford
-    ? [sheet.bedfordTitleBlock?.drawingNumber].filter(Boolean)
+    ? [sheet.bedfordTitleBlock?.drawingNumber].map(identityKey).filter(Boolean)
     : [...new Set(list(sheet.sheetNumberCandidates).map(item => item.value))];
   for (const sheet of sheets) {
     const numbers = identityNumbers(sheet);
@@ -371,12 +372,12 @@ function mapDrawingIndexToSheets(indexEntries, sheets, { bedford = false } = {})
   }
   const anchors = sheets.flatMap((sheet, pageIndex) => {
     const candidates = identityNumbers(sheet).filter(number => byNumber.has(number));
-    return candidates.length === 1 ? [{ pageIndex, index: uniqueEntries.findIndex(entry => entry.sheetNumber === candidates[0]), number: candidates[0] }] : [];
+    return candidates.length === 1 ? [{ pageIndex, index: uniqueEntries.findIndex(entry => identityKey(entry.sheetNumber) === candidates[0]), number: candidates[0] }] : [];
   });
   const anchorSafe = anchors.length >= 2 && anchors.every(anchor => anchor.index === anchor.pageIndex);
   const exactOrderSafe = uniqueEntries.length === sheets.length && anchorSafe && sheets.every((sheet, index) => {
     const candidates = identityNumbers(sheet);
-    return !candidates.length || candidates.includes(uniqueEntries[index]?.sheetNumber);
+    return !candidates.length || candidates.includes(identityKey(uniqueEntries[index]?.sheetNumber));
   });
   if (exactOrderSafe) sheets.forEach((sheet, index) => { if (!result.has(sheet.sheetId)) result.set(sheet.sheetId, { entry: uniqueEntries[index], method: 'drawing-index-page-order', anchorEvidence: anchors.map(anchor => anchor.number) }); });
   if (!exactOrderSafe) {
@@ -548,7 +549,7 @@ export function drawingAnalysisRequiresUpgrade(analysis = {}) {
   const expected = list(analysis.indexEntries);
   const registryKeys = new Set(registry.map(item => normalizeSheetNumber(item.normalizedSheetNumber || item.sheetNumber)).filter(Boolean));
   const expectedKeys = expected.map(item => normalizeSheetNumber(item.normalizedSheetNumber || item.sheetNumber)).filter(Boolean);
-  return registry.some(item => !text(item.sheetNumber) || !text(item.normalizedSheetNumber)) || registry.length < expected.length || expectedKeys.some(key => !registryKeys.has(key)) || Number(analysis.registryHealth?.unresolvedPages || 0) > 0;
+  return expected.length !== pages.length || registry.some(item => !text(item.sheetNumber) || !text(item.normalizedSheetNumber)) || registry.length !== expected.length || expectedKeys.some(key => !registryKeys.has(key)) || Number(analysis.registryHealth?.unresolvedPages || 0) > 0;
 }
 
 export const observationKindLabel = kind => ({

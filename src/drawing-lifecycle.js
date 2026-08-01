@@ -19,6 +19,7 @@ export async function loadAuthoritativeDrawingRegistry({
   validateOwnership,
   rebuild,
   save,
+  reloadSaved,
   upgradeWork = new Map()
 } = {}) {
   const initial = list(await loadAnalyses());
@@ -32,7 +33,10 @@ export async function loadAuthoritativeDrawingRegistry({
       const rebuilt = await rebuild(analysis);
       if (!rebuilt || requiresUpgrade(rebuilt)) return { ok: false, status: 'failed', errorCode: 'drawing-upgrade-incomplete', analysis: rebuilt || analysis, warning: 'Drawing registry rebuild did not satisfy its authoritative quality gate.' };
       const saved = await save(rebuilt);
-      return saved?.ok ? { ...saved, analysis: saved.analysis || rebuilt } : saved;
+      if (!saved?.ok) return saved;
+      const persisted = reloadSaved ? await reloadSaved(rebuilt) : saved.analysis || rebuilt;
+      if (!persisted || requiresUpgrade(persisted)) return { ok: false, status: 'failed', errorCode: 'drawing-upgrade-persistence-failed', analysis: persisted || analysis, warning: 'The persisted drawing registry did not satisfy its authoritative quality gate.' };
+      return { ...saved, analysis: persisted };
     })().finally(() => upgradeWork.delete(key)));
     results.push(await upgradeWork.get(key));
   }

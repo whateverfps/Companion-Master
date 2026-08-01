@@ -67,19 +67,36 @@ export function parseBedfordDrawingIndex(page = null) {
   if (!page) return [];
   const items = normalizedItems(page.textItems).sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x);
   const tableItems = items.filter(item => Number(item.region.y) < BEDFORD_TITLE_BLOCK_REGION.y);
-  const sheetItems = tableItems.filter(item => SHEET.test(item.text));
+  const sheetItems = [];
+  for (let index = 0; index < tableItems.length; index += 1) {
+    const item = tableItems[index];
+    const direct = normalizeBedfordSheetNumber(item.text);
+    if (SHEET.test(item.text) || SHEET.test(direct)) sheetItems.push({ ...item, text: SHEET.test(item.text) ? item.text : direct, sourceOrders: [item.order] });
+    for (let count = 2; count <= 3; count += 1) {
+      const parts = tableItems.slice(index, index + count);
+      if (parts.length !== count || parts.some(part => Math.abs(Number(part.region.y) - Number(item.region.y)) > .006)) continue;
+      const ordered = parts.slice().sort((a, b) => a.region.x - b.region.x);
+      if (ordered.some((part, partIndex) => partIndex && Number(part.region.x) - (Number(ordered[partIndex - 1].region.x) + Number(ordered[partIndex - 1].region.width || 0)) > .025)) continue;
+      const combined = normalizeBedfordSheetNumber(ordered.map(part => part.text).join(''));
+      if (!SHEET.test(combined)) continue;
+      const left = Math.min(...ordered.map(part => Number(part.region.x)));
+      const right = Math.max(...ordered.map(part => Number(part.region.x) + Number(part.region.width || 0)));
+      sheetItems.push({ text: combined, order: Math.min(...ordered.map(part => part.order)), sourceOrders: ordered.map(part => part.order), region: { x: left, y: Math.min(...ordered.map(part => Number(part.region.y))), width: right - left, height: Math.max(...ordered.map(part => Number(part.region.height || 0))) } });
+    }
+  }
+  const uniqueSheetItems = sheetItems.filter((item, index, source) => source.findIndex(other => normalizeBedfordSheetNumber(other.text) === normalizeBedfordSheetNumber(item.text) && Math.abs(Number(other.region.x) - Number(item.region.x)) < .006 && Math.abs(Number(other.region.y) - Number(item.region.y)) < .006) === index);
   const columnStarts = [];
-  for (const item of sheetItems.slice().sort((a, b) => a.region.x - b.region.x)) {
+  for (const item of uniqueSheetItems.slice().sort((a, b) => a.region.x - b.region.x)) {
     if (!columnStarts.some(value => Math.abs(value - item.region.x) <= .04)) columnStarts.push(Number(item.region.x));
   }
   const rows = [];
-  for (const item of sheetItems.sort((a, b) => a.order - b.order || a.region.y - b.region.y || a.region.x - b.region.x)) {
+  for (const item of uniqueSheetItems.sort((a, b) => a.order - b.order || a.region.y - b.region.y || a.region.x - b.region.x)) {
     const columnIndex = columnStarts.findIndex(value => Math.abs(value - item.region.x) <= .04);
     const columnLeft = columnStarts[columnIndex] ?? Number(item.region.x);
     const columnRight = columnStarts[columnIndex + 1] === undefined ? 1 : columnStarts[columnIndex + 1] - .01;
-    const nextRow = sheetItems.filter(other => other !== item && Math.abs(other.region.x - columnLeft) <= .04 && other.region.y > item.region.y + .001).sort((a, b) => a.region.y - b.region.y)[0];
+    const nextRow = uniqueSheetItems.filter(other => other !== item && Math.abs(other.region.x - columnLeft) <= .04 && other.region.y > item.region.y + .001).sort((a, b) => a.region.y - b.region.y)[0];
     const rowBottom = Math.min(Number(item.region.y) + .018, nextRow ? Number(nextRow.region.y) - .001 : Number(item.region.y) + .018);
-    const row = tableItems.filter(other => other !== item && other.region.x > item.region.x + item.region.width * .5 && other.region.x < columnRight && other.region.y >= item.region.y - .003 && other.region.y <= rowBottom).sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x);
+    const row = tableItems.filter(other => other !== item && !item.sourceOrders?.includes(other.order) && other.region.x > item.region.x + item.region.width * .5 && other.region.x < columnRight && other.region.y >= item.region.y - .003 && other.region.y <= rowBottom).sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x);
     const headingItem = tableItems.filter(other => DISCIPLINES[other.text.toUpperCase()] && other.region.x >= columnLeft - .04 && other.region.x < columnRight && other.region.y <= item.region.y).sort((a, b) => b.region.y - a.region.y)[0];
     const discipline = DISCIPLINES[headingItem?.text.toUpperCase()] || 'Unknown';
     const status = row.find(other => /^(?:YES|NO|N\/A|INCLUDED|ISSUED)$/i.test(other.text));
@@ -87,5 +104,5 @@ export function parseBedfordDrawingIndex(page = null) {
     if (!title || /^(?:SHEET (?:NAME|TITLE))$/i.test(title)) continue;
     rows.push({ buildingNumber: normalizeBedfordSheetNumber(item.text).match(/^(\d+)/)?.[1] || '', discipline, sheetNumber: item.text.toUpperCase(), normalizedSheetNumber: normalizeBedfordSheetNumber(item.text), sheetTitle: title, normalizedTitle: normalizeBedfordTitle(title), expectedOrder: rows.length, inventoryOrder: rows.length, includedStatus: status?.text || '', sourcePage: page.pageNumber, sourceRegion: { x: item.region.x, y: item.region.y, width: Math.max(...row.map(other => other.region.x + other.region.width), item.region.x + item.region.width) - item.region.x, height: Math.max(item.region.height || 0, ...row.map(other => other.region.height || 0)) }, extractionMethod: 'bedford-va-index-profile' });
   }
-  return rows;
+  return rows.filter((row, index, source) => source.findIndex(other => other.normalizedSheetNumber === row.normalizedSheetNumber) === index).map((row, index) => ({ ...row, expectedOrder: index, inventoryOrder: index }));
 }

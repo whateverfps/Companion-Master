@@ -1638,6 +1638,7 @@ async function currentGlobalDrawingRegistryAnalyses(query = '') {
     validateOwnership: analysis => engine.drawingLifecycle(analysis.documentId, analysis.drawingSetId),
     rebuild: analysis => upgradeDrawingAnalysis(analysis),
     save: analysis => engine.saveDrawingAnalysis(analysis),
+    reloadSaved: async analysis => (await engine.drawingLifecycle(analysis.documentId, analysis.drawingSetId)).analysis,
     upgradeWork: drawingUpgradeWork
   });
   refreshed.results.forEach((result, index) => {

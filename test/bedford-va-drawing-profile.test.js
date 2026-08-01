@@ -41,7 +41,11 @@ function runtimeIndexItems() {
       const y = .065 + index * .008;
       if (discipline !== current) { output.push(item(discipline, numberX, y - .003, .1)); current = discipline; }
       const words = title.split(' '), split = Math.max(1, Math.ceil(words.length / 2));
-      output.push(item(number, numberX, y, .08), item(words.slice(0, split).join(' '), titleX, y, .18), item(words.slice(split).join(' '), titleX, y + .0035, .18), item('YES', titleX + .29, y, .03));
+      if (columnIndex) {
+        const parts = number.match(/^(.+-)(\d+[A-Z]?)$/);
+        output.push(item(parts[1], numberX, y, .045), item(parts[2], numberX + .047, y, .035));
+      } else output.push(item(number, numberX, y, .08));
+      output.push(item(words.slice(0, split).join(' '), titleX, y, .18), item(words.slice(split).join(' '), titleX, y + .0035, .18), item('YES', titleX + .29, y, .03));
     });
   });
   return output;
@@ -85,6 +89,7 @@ test('runtime-shaped split-column index recovers all 70 rows including wrapped t
   assert.equal(rows.length, 70);
   assert.equal(rows.find(row => row.normalizedSheetNumber === '61M101').sheetTitle, 'MECHANICAL PLAN - FIRST LEVEL - OVERALL');
   assert.equal(rows.some(row => row.normalizedSheetNumber === '61T402'), true);
+  assert.deepEqual(rows.slice(56).map(row => row.normalizedSheetNumber), entries.slice(56).map(([number]) => number.replace(/[^A-Z0-9]/gi, '')));
   const analysis = buildDrawingAnalysis({ documentId: 'runtime-general', projectId: 'general', pages: source, analyzedAt: 'now' });
   assert.equal(analysis.drawingRegistry.length, 70);
   assert.equal(analysis.registryHealth.unresolvedPages, 0);
