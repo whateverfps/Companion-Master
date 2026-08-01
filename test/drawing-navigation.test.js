@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDrawingTarget, drawingAnnouncementText, drawingFocusTarget, drawingReturnAction, reconcileDrawingMatchingSheetIds, resolveDrawingPageNavigation, resolveDrawingTarget } from '../src/drawing-navigation.js';
+import { assertDrawingPageConsistency, createDrawingTarget, drawingAnnouncementText, drawingFocusTarget, drawingReturnAction, reconcileDrawingMatchingSheetIds, resolveDrawingPageNavigation, resolveDrawingTarget } from '../src/drawing-navigation.js';
 
 test('resolveDrawingTarget preserves page and region context for exact drawing restoration', () => {
   const analysis = {
@@ -119,4 +119,9 @@ test('catalog page ID is the stable first-priority navigation identity', () => {
   assert.equal(resolved.resolved, true);
   assert.equal(resolved.reason, 'page-id');
   assert.equal(resolved.pageNumber, 4);
+});
+
+test('development page consistency assertion rejects sidebar, toolbar, viewer, and target disagreement', () => {
+  assert.equal(assertDrawingPageConsistency({ selectedPage: 5, renderedPage: 5, targetPage: 5, toolbarPage: 5, activePage: 5 }), true);
+  assert.throws(() => assertDrawingPageConsistency({ selectedPage: 5, renderedPage: 4, targetPage: 5, toolbarPage: 5, activePage: 5 }), /state disagreement/);
 });

@@ -1,7 +1,32 @@
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, Number(value) || minimum));
 const key = (documentId, pageNumber) => `${String(documentId || '')}:${Number(pageNumber) || 0}`;
 
-export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom = .35, maxZoom = 3 } = {}) {
+export function createDrawingRenderCache({ maxEntries = 6, onMetric = () => {} } = {}) {
+  const entries = new Map();
+  return {
+    get(cacheKey) {
+      const keyValue = String(cacheKey || '');
+      if (!entries.has(keyValue)) { onMetric({ operation: 'render-cache', cache: 'miss', key: keyValue }); return null; }
+      const value = entries.get(keyValue);
+      entries.delete(keyValue);
+      entries.set(keyValue, value);
+      onMetric({ operation: 'render-cache', cache: 'hit', key: keyValue });
+      return value;
+    },
+    set(cacheKey, value) {
+      const keyValue = String(cacheKey || '');
+      if (!keyValue || !value) return false;
+      entries.delete(keyValue);
+      entries.set(keyValue, value);
+      while (entries.size > Math.max(1, Number(maxEntries) || 6)) entries.delete(entries.keys().next().value);
+      return true;
+    },
+    clear() { entries.clear(); },
+    size: () => entries.size
+  };
+}
+
+export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom = .35, maxZoom = 3, clock = () => performance.now(), onMetric = () => {} } = {}) {
   let documentId = '';
   let pageCount = 0;
   let selectedPage = 0;
@@ -19,14 +44,16 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
     },
     getPageCount: () => pageCount,
     selectPage(pageNumber) {
+      const startedAt = clock();
       if (!pageCount) return 0;
       selectedPage = clamp(Math.trunc(Number(pageNumber) || selectedPage || 1), 1, pageCount);
+      onMetric({ operation: 'page-selection', durationMs: Math.max(0, clock() - startedAt), pageNumber: selectedPage });
       return selectedPage;
     },
     nextPage: () => api.selectPage(selectedPage + 1),
     previousPage: () => api.selectPage(selectedPage - 1),
     beginRender(pageNumber = selectedPage) {
-      api.selectPage(pageNumber);
+      if (Number(pageNumber) !== selectedPage) api.selectPage(pageNumber);
       api.cancelRender();
       renderGeneration += 1;
       return { generation: renderGeneration, documentId, pageNumber: selectedPage };
@@ -37,6 +64,7 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
       return true;
     },
     async renderSelectedPage(startRender) {
+      const startedAt = clock();
       const token = api.beginRender(selectedPage);
       const task = await startRender(selectedPage, token);
       if (!api.attachRender(token, task)) return { committed: false, cancelled: true, token, task };
@@ -46,7 +74,9 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
         if (!api.canCommit(token)) return { committed: false, cancelled: true, token, task };
         throw error;
       }
-      return { committed: api.canCommit(token), cancelled: !api.canCommit(token), token, task };
+      const committed = api.canCommit(token);
+      onMetric({ operation: 'page-render', durationMs: Math.max(0, clock() - startedAt), pageNumber: token.pageNumber, committed });
+      return { committed, cancelled: !committed, token, task };
     },
     canCommit(token, canvasConnected = true) {
       return Boolean(canvasConnected) && token?.generation === renderGeneration && token?.documentId === documentId && token?.pageNumber === selectedPage;
@@ -69,12 +99,15 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
       return api.restoreViewport(pageNumber, { ...viewport, mode: 'custom', zoom: clamp(zoom, minZoom, maxZoom) });
     },
     zoomAtPoint({ deltaY = 0, pointerX = 0, pointerY = 0, pageNumber = selectedPage, sensitivity = .002 } = {}) {
+      const startedAt = clock();
       const viewport = api.getViewport(pageNumber);
       const currentZoom = clamp(viewport.zoom || 1, minZoom, maxZoom);
       const zoom = clamp(currentZoom * Math.exp(-(Number(deltaY) || 0) * sensitivity), minZoom, maxZoom);
       const drawingX = ((Number(viewport.scrollLeft) || 0) + Number(pointerX || 0)) / currentZoom;
       const drawingY = ((Number(viewport.scrollTop) || 0) + Number(pointerY || 0)) / currentZoom;
-      return api.restoreViewport(pageNumber, { ...viewport, mode: 'custom', zoom, scrollLeft: Math.max(0, drawingX * zoom - Number(pointerX || 0)), scrollTop: Math.max(0, drawingY * zoom - Number(pointerY || 0)) });
+      const result = api.restoreViewport(pageNumber, { ...viewport, mode: 'custom', zoom, scrollLeft: Math.max(0, drawingX * zoom - Number(pointerX || 0)), scrollTop: Math.max(0, drawingY * zoom - Number(pointerY || 0)) });
+      onMetric({ operation: 'zoom', durationMs: Math.max(0, clock() - startedAt), pageNumber, zoom: result.zoom });
+      return result;
     },
     fitPage: (pageNumber = selectedPage) => api.restoreViewport(pageNumber, { ...api.getViewport(pageNumber), mode: 'fit-page', zoom: null, scrollLeft: 0, scrollTop: 0 }),
     fitWidth: (pageNumber = selectedPage) => api.restoreViewport(pageNumber, { ...api.getViewport(pageNumber), mode: 'fit-width', zoom: null, scrollLeft: 0, scrollTop: 0 }),

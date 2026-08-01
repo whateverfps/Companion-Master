@@ -108,14 +108,14 @@ import {
 import { openPdfBlob, readPdfPageGraphics, renderPdfPage } from './pdf-source.js';
 import { extractLegendCandidates, matchLegendOccurrences } from './drawing-legends.js';
 import { applyObservationVerification, drawingAnalysisRequiresUpgrade, drawingWarningPresentation, DRAWING_ANALYSIS_VERSION, groupDrawingObservations, observationKindLabel, reanalyzeDrawingAnalysis, upgradeDrawingAnalysis } from './drawing-intelligence.js';
-import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingWheelZoom, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
+import { assertDrawingPageConsistency, calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingWheelZoom, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
 import { buildPlanQuery, buildPlanQueryScope, createChiefConstructionContext, drawingSearchSummary, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from './plan-query.js';
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
 import { drawingUpgradeKey, loadAuthoritativeDrawingRegistry, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
 import { buildChiefDrawingEvidence } from './chief-drawing-evidence.js';
 import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent, navigateExactDrawingCommand } from './engineering-locator.js';
 import { inspectDrawingRegistryRuntime } from './drawing-registry-diagnostics.js';
-import { createDrawingViewerEngine } from './drawing-viewer-engine.js';
+import { createDrawingRenderCache, createDrawingViewerEngine } from './drawing-viewer-engine.js';
 import { createDrawingContextService } from './drawing-context.js';
 import { createDrawingWorkspace } from './drawing-workspace.js';
 import { createDrawingCatalog } from './drawing-catalog.js';
@@ -198,8 +198,9 @@ let drawingSearchActiveIndex = -1;
 let drawingZoom = null;
 let drawingRotation = 0;
 const drawingViewportBySet = new Map();
-const drawingViewerEngine = createDrawingViewerEngine({ viewportStore: drawingViewportBySet });
-const drawingCatalog = createDrawingCatalog({ onDifference: difference => logger.warning('Drawing catalog parser difference', difference) });
+const drawingViewerEngine = createDrawingViewerEngine({ viewportStore: drawingViewportBySet, onMetric: metric => logger.debug('Drawing viewer performance', metric) });
+const drawingRenderCache = createDrawingRenderCache({ maxEntries: 6, onMetric: metric => logger.debug('Drawing viewer performance', metric) });
+const drawingCatalog = createDrawingCatalog({ onDifference: difference => logger.warning('Drawing catalog parser difference', difference), onDiagnostics: diagnostics => logger.debug('Drawing catalog diagnostics', diagnostics) });
 const drawingContextService = createDrawingContextService();
 const drawingWorkspace = createDrawingWorkspace({ viewerEngine: drawingViewerEngine, contextService: drawingContextService });
 let drawingViewportDocumentId = '';
@@ -1737,6 +1738,7 @@ function groupedRoomEvidenceMarkup(roomObservations, sheet) {
 
 function releaseDrawingSource() {
   drawingViewerEngine.cancelRender();
+  drawingRenderCache.clear();
   activeDrawingPdf?.cleanup?.();
   activeDrawingPdf?.destroy?.();
   activeDrawingPdf = null;
@@ -1807,6 +1809,8 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
   const canvas = $('#mcDrawingCanvas');
   const stage = $('#mcDrawingStage');
   if (!canvas || !stage || !source || !sheet) return;
+  stage.tabIndex = 0;
+  stage.setAttribute('aria-label', 'Interactive drawing canvas. Use arrow keys to change pages, plus or minus to zoom, and zero to reset view.');
   try {
     drawingViewportDocumentId = source.documentId;
     if (!activeDrawingPdf || activeDrawingDocumentId !== source.documentId) {
@@ -1817,6 +1821,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       drawingRenderGeneration += 1;
     }
     drawingViewerEngine.openDocument(source.documentId, activeDrawingPdf.numPages, sheet.pageNumber);
+    const viewportRestoreStartedAt = globalThis.performance?.now?.() ?? Date.now();
     const restored = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) };
     drawingZoom = restored.zoom;
     drawingRotation = restored.rotation;
@@ -1833,11 +1838,17 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
     const nextIdentity = createDrawingRenderIdentity({ documentId: source.documentId, drawingSetId: drawingTarget?.drawingSetId, pageNumber: sheet.pageNumber, scale: boundedScale, rotation: (sheet.rotation + drawingRotation) % 360, sourceAvailable: true, generation: drawingRenderGeneration });
     const decision = drawingRenderDecision({ previousIdentity: activeDrawingRenderIdentity, nextIdentity, canvas });
     if (decision.repaint) {
-      const renderCanvas = document.createElement('canvas');
-      const renderOutcome = await drawingViewerEngine.renderSelectedPage(pageNumber => renderPdfPage(activeDrawingPdf, pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation }));
-      if (!renderOutcome.committed || !canvas.isConnected || drawingTarget?.pageNumber !== sheet.pageNumber) {
-        renderOutcome.task?.release?.();
-        return;
+      const cacheKey = [nextIdentity.documentId, nextIdentity.drawingSetId, nextIdentity.pageNumber, nextIdentity.scale, nextIdentity.rotation, nextIdentity.generation].join(':');
+      let renderCanvas = drawingRenderCache.get(cacheKey);
+      if (!renderCanvas) {
+        renderCanvas = document.createElement('canvas');
+        stage.classList.add('is-loading');
+        const renderOutcome = await drawingViewerEngine.renderSelectedPage(pageNumber => renderPdfPage(activeDrawingPdf, pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation }));
+        if (!renderOutcome.committed || !canvas.isConnected || drawingTarget?.pageNumber !== sheet.pageNumber) {
+          renderOutcome.task?.release?.();
+          return;
+        }
+        drawingRenderCache.set(cacheKey, renderCanvas);
       }
       canvas.width = renderCanvas.width;
       canvas.height = renderCanvas.height;
@@ -1849,11 +1860,14 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       canvas.dataset.drawingPage = String(sheet.pageNumber);
       canvas.dataset.renderReason = decision.reason;
       activeDrawingRenderIdentity = nextIdentity;
+      stage.classList.remove('is-loading');
     }
     stage.scrollLeft = restored.scrollLeft || 0;
     stage.scrollTop = restored.scrollTop || 0;
     drawingViewerEngine.restoreViewport(sheet.pageNumber, { ...restored, zoom: drawingZoom, rotation: drawingRotation, selectedObservationId: observation?.observationId || restored.selectedObservationId, highlightedRegion: observation?.region || restored.highlightedRegion });
-    stage.onscroll = () => captureDrawingViewport();
+    logger.debug('Drawing viewer performance', { operation: 'viewport-restore', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - viewportRestoreStartedAt), pageNumber: sheet.pageNumber, mode: restored.mode });
+    let scrollFrame = 0;
+    stage.onscroll = () => { if (scrollFrame) return; scrollFrame = requestAnimationFrame(() => { scrollFrame = 0; captureDrawingViewport(); }); };
     stage.onwheel = event => {
       const bounds = stage.getBoundingClientRect();
       const next = drawingWheelZoom({
@@ -1872,7 +1886,42 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       captureDrawingViewport({ mode: 'custom', zoom: next.zoom, scrollLeft: next.scrollLeft, scrollTop: next.scrollTop });
       void paintDrawingPage(source, sheet, observation, overlayRecords);
     };
+    stage.ondblclick = event => {
+      if (event.target.closest('.mc-drawing-object-overlay')) return;
+      event.preventDefault();
+      const bounds = stage.getBoundingClientRect();
+      const next = drawingViewerEngine.zoomAtPoint({ deltaY: -140, pointerX: event.clientX - bounds.left, pointerY: event.clientY - bounds.top, pageNumber: sheet.pageNumber });
+      drawingZoom = next.zoom;
+      stage.scrollLeft = next.scrollLeft;
+      stage.scrollTop = next.scrollTop;
+      void paintDrawingPage(source, sheet, observation, overlayRecords);
+    };
+    let pan = null;
+    stage.onpointerdown = event => {
+      if (event.button !== 0 || event.target.closest('button')) return;
+      pan = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop };
+      stage.setPointerCapture?.(event.pointerId);
+      stage.classList.add('is-panning');
+    };
+    stage.onpointermove = event => {
+      if (!pan || pan.pointerId !== event.pointerId) return;
+      stage.scrollLeft = pan.left - (event.clientX - pan.x);
+      stage.scrollTop = pan.top - (event.clientY - pan.y);
+    };
+    const stopPan = event => { if (!pan || event?.pointerId !== undefined && pan.pointerId !== event.pointerId) return; pan = null; stage.classList.remove('is-panning'); captureDrawingViewport(); };
+    stage.onpointerup = stopPan;
+    stage.onpointercancel = stopPan;
+    stage.onkeydown = event => {
+      const action = { ArrowRight: '[data-drawing-next]', PageDown: '[data-drawing-next]', ArrowLeft: '[data-drawing-previous]', PageUp: '[data-drawing-previous]' }[event.key];
+      if (action) { event.preventDefault(); stage.closest('.mc-drawing-viewer')?.querySelector(action)?.click(); }
+      if (['+', '='].includes(event.key)) { event.preventDefault(); stage.closest('.mc-drawing-viewer')?.querySelector('[data-drawing-zoom="in"]')?.click(); }
+      if (event.key === '-') { event.preventDefault(); stage.closest('.mc-drawing-viewer')?.querySelector('[data-drawing-zoom="out"]')?.click(); }
+      if (event.key === '0') { event.preventDefault(); stage.closest('.mc-drawing-viewer')?.querySelector('[data-drawing-reset-view]')?.click(); }
+    };
     updateDrawingOverlays(stage, sheet, observation, overlayRecords);
+    const activeCard = stage.closest('.mc-drawing-workspace')?.querySelector(`[data-drawing-page-id="${CSS.escape(sheet.pageId || '')}"]`);
+    activeCard?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    if (globalThis.__MC_DEV_ASSERTIONS__) assertDrawingPageConsistency({ selectedPage: drawingViewerEngine.snapshot().selectedPage, renderedPage: Number(canvas.dataset.drawingPage), targetPage: drawingTarget?.pageNumber, toolbarPage: sheet.pageNumber, activePage: Number(activeCard?.dataset.drawingPageNumber) });
     if (globalThis.ResizeObserver && activeDrawingResizeStage !== stage) {
       activeDrawingResizeObserver?.disconnect();
       activeDrawingResizeObserver = new ResizeObserver(() => {
@@ -1884,20 +1933,22 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
     }
   } catch (error) {
     if (drawingTarget?.pageNumber !== sheet.pageNumber) return;
+    stage.classList.remove('is-loading');
     canvas.insertAdjacentHTML('afterend', `<div class="mc-drawing-render-error" role="status"><strong>Drawing page could not be updated.</strong><p>${esc(error.message)}</p><small>The previously rendered sheet remains available when possible.</small></div>`);
   }
 }
 
 function drawingSearchResultMarkup(result, selectedSheetId, index) {
-  if (result.sheet.viewerFallback) return `<li><button data-drawing-page-id="${esc(result.sheet.pageId)}" data-drawing-sheet="${esc(result.sheetId)}" data-drawing-result-index="${index}" class="${result.sheetId === selectedSheetId ? 'active' : ''} ${index === drawingSearchActiveIndex ? 'keyboard-active' : ''}" ${index === drawingSearchActiveIndex ? 'aria-current="true"' : ''}><strong>${esc(result.sheet.sheetNumber || `Page ${result.pageNumber}`)}</strong><span>${esc(result.sheet.sheetTitle || 'Retained PDF page')}</span><small><i data-discipline="${esc(result.sheet.discipline || 'Unknown')}"></i>${esc(result.sheet.discipline || 'Unknown')} · ${esc(result.primarySheetType || 'Unknown')} · PDF page ${result.pageNumber}</small><small>${esc(result.sheet.identityStatus || (result.sheet.metadataAvailable ? 'Parser' : 'Fallback'))}</small>${result.matchedReason ? `<em>${esc(result.matchedReason)}</em>` : ''}</button></li>`;
+  if (result.sheet.viewerFallback) return `<li><button data-drawing-page-id="${esc(result.sheet.pageId)}" data-drawing-page-number="${result.pageNumber}" data-drawing-sheet="${esc(result.sheetId)}" data-drawing-result-index="${index}" class="${result.sheetId === selectedSheetId ? 'active' : ''} ${index === drawingSearchActiveIndex ? 'keyboard-active' : ''}" ${index === drawingSearchActiveIndex ? 'aria-current="true"' : ''}><strong>${esc(result.sheet.sheetNumber || `Page ${result.pageNumber}`)}</strong><span>${esc(result.sheet.sheetTitle || 'Retained PDF page')}</span><small><i data-discipline="${esc(result.sheet.discipline || 'Unknown')}"></i>${esc(result.sheet.discipline || 'Unknown')} · ${esc(result.primarySheetType || 'Unknown')} · PDF page ${result.pageNumber}</small><small>${esc(result.sheet.identityStatus || (result.sheet.metadataAvailable ? 'Parser' : 'Fallback'))}</small>${result.matchedReason ? `<em>${esc(result.matchedReason)}</em>` : ''}</button></li>`;
   const warnings = result.sheet.warnings?.length ? `${result.sheet.warnings.length} identity warning${result.sheet.warnings.length === 1 ? '' : 's'}` : 'Identity supported';
-  return `<li><button data-drawing-sheet="${esc(result.sheetId)}" data-drawing-search-observation="${esc(result.observationId)}" data-drawing-result-index="${index}" class="${result.sheetId === selectedSheetId ? 'active' : ''} ${index === drawingSearchActiveIndex ? 'keyboard-active' : ''}" ${index === drawingSearchActiveIndex ? 'aria-current="true"' : ''}><strong>${esc(result.sheet.sheetNumber || 'Identity requires review')}</strong><span>${esc(result.sheet.sheetTitle || 'Title requires review')}</span><small><i data-discipline="${esc(result.sheet.discipline)}"></i>${esc(result.sheet.discipline)} · ${esc(result.primarySheetType)} · ${result.sheet.building ? `Building ${esc(result.sheet.building)} · ` : ''}Page ${result.pageNumber}</small><small>${Math.round((result.sheet.confidence || 0) * 100)}% identity confidence · ${esc(warnings)}</small>${result.matchedReason ? `<em>${esc(result.matchedReason)}</em>` : ''}</button></li>`;
+  return `<li><button data-drawing-page-id="${esc(result.sheet.pageId)}" data-drawing-page-number="${result.pageNumber}" data-drawing-sheet="${esc(result.sheetId)}" data-drawing-search-observation="${esc(result.observationId)}" data-drawing-result-index="${index}" class="${result.sheetId === selectedSheetId ? 'active' : ''} ${index === drawingSearchActiveIndex ? 'keyboard-active' : ''}" ${index === drawingSearchActiveIndex ? 'aria-current="true"' : ''}><strong>${esc(result.sheet.sheetNumber || 'Identity requires review')}</strong><span>${esc(result.sheet.sheetTitle || 'Title requires review')}</span><small><i data-discipline="${esc(result.sheet.discipline)}"></i>${esc(result.sheet.discipline)} · ${esc(result.primarySheetType)} · ${result.sheet.building ? `Building ${esc(result.sheet.building)} · ` : ''}Page ${result.pageNumber}</small><small>${Math.round((result.sheet.confidence || 0) * 100)}% identity confidence · ${esc(warnings)}</small>${result.matchedReason ? `<em>${esc(result.matchedReason)}</em>` : ''}</button></li>`;
 }
 
 async function updateDrawingSearchResults() {
+  const startedAt = globalThis.performance?.now?.() ?? Date.now();
   const revision = ++drawingSearchRevision;
-  const persistedAnalysis = drawingTarget?.documentId ? await engine.drawingAnalysis(drawingTarget.documentId) : null;
-  const analysis = activeDrawingViewerAnalysis?.documentId === drawingTarget?.documentId ? activeDrawingViewerAnalysis : persistedAnalysis;
+  const activeAnalysis = activeDrawingViewerAnalysis?.documentId === drawingTarget?.documentId ? activeDrawingViewerAnalysis : null;
+  const analysis = activeAnalysis || (drawingTarget?.documentId ? await engine.drawingAnalysis(drawingTarget.documentId) : null);
   const resultsHost = $('#mcDrawingResults');
   const status = $('#mcDrawingResultStatus');
   if (revision !== drawingSearchRevision || !analysis || !resultsHost || !status) return;
@@ -1909,6 +1960,7 @@ async function updateDrawingSearchResults() {
   resultsHost.innerHTML = results.length ? results.map((result, index) => drawingSearchResultMarkup(result, drawingTarget?.sheetId, index)).join('') : '<li class="mc-drawing-no-results"><strong>No drawing evidence found.</strong><span>Try a sheet number, room, trade, equipment tag, or clear the active filters.</span></li>';
   $('[data-drawing-clear-search]')?.toggleAttribute('hidden', !drawingFilter);
   resultsHost.querySelector('.keyboard-active')?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+  logger.debug('Drawing viewer performance', { operation: 'search', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - startedAt), resultCount: results.length });
 }
 
 function observationButtons(items, sheet) {
@@ -1974,6 +2026,9 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const preservedCanvas = host.querySelector('#mcDrawingCanvas') || portableDrawingCanvas;
   const preservedStage = host.querySelector('#mcDrawingStage');
   const preservedViewport = { scrollLeft: preservedStage?.scrollLeft || 0, scrollTop: preservedStage?.scrollTop || 0 };
+  const preservedBrowserScroll = host.querySelector('.mc-drawing-index')?.scrollTop || 0;
+  const focusedElement = host.contains(document.activeElement) ? document.activeElement : null;
+  const preservedFocusSelector = focusedElement?.id ? `#${CSS.escape(focusedElement.id)}` : focusedElement?.dataset?.drawingSheet ? `[data-drawing-sheet="${CSS.escape(focusedElement.dataset.drawingSheet)}"]` : focusedElement?.dataset?.drawingZoom ? `[data-drawing-zoom="${CSS.escape(focusedElement.dataset.drawingZoom)}"]` : focusedElement?.dataset?.drawingFit ? `[data-drawing-fit="${CSS.escape(focusedElement.dataset.drawingFit)}"]` : '';
   let targetLifecycleUnavailable = null;
   let activeReturnTarget = null;
   if (drawingTarget?.documentId) {
@@ -2054,6 +2109,7 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const sheetOccurrences = (analysis?.candidateOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
   drawingWorkspace.setPages((analysis?.sheets || []).map(item => ({ ...item, documentId: item.documentId || selected.id, drawingSetId: item.drawingSetId || analysis?.drawingSetId, projectId: item.projectId || analysis?.projectId, pdfPageNumber: item.pdfPageNumber || item.pageNumber })));
   const pageContext = drawingWorkspace.getContext(sheet ? { ...sheet, documentId: sheet.documentId || selected.id, drawingSetId: sheet.drawingSetId || analysis?.drawingSetId, projectId: sheet.projectId || analysis?.projectId, pdfPageNumber: sheet.pdfPageNumber || sheet.pageNumber } : drawingTarget?.pageNumber || 1);
+  if (sheet) logger.debug('Drawing viewer metadata source', { documentId: selected.id, pageId: sheet.pageId || '', pageNumber: sheet.pageNumber, identityState: sheet.identityStatus || 'fallback' });
   if (sheet) drawingViewerEngine.openDocument(selected.id, Math.max(sheet.pageNumber, ...(analysis?.sheets || []).map(item => Number(item.pageNumber) || 0)), sheet.pageNumber);
   const viewport = sheet ? { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) } : defaultDrawingViewport();
   const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
@@ -2080,8 +2136,12 @@ async function renderDrawingWorkspace(shell = 'professional') {
   if (preserveCanvas) portableDrawingCanvas = null;
   const nextStage = host.querySelector('#mcDrawingStage');
   if (nextStage && preserveCanvas) { nextStage.scrollLeft = preservedViewport.scrollLeft; nextStage.scrollTop = preservedViewport.scrollTop; }
+  const nextBrowser = host.querySelector('.mc-drawing-index');
+  if (nextBrowser) nextBrowser.scrollTop = preservedBrowserScroll;
   if (source && sheet) await paintDrawingPage(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), overlayRecords);
-  if (focusTarget && host.querySelector(`#${focusTarget}`)) {
+  const restoredFocus = preservedFocusSelector ? host.querySelector(preservedFocusSelector) : null;
+  if (restoredFocus) restoredFocus.focus({ preventScroll: true });
+  else if (focusTarget && host.querySelector(`#${focusTarget}`)) {
     const focusTargetElement = host.querySelector(`#${focusTarget}`) || host.querySelector('.mc-drawing-sheet-title');
     if (focusTargetElement && !host.querySelector('.mc-drawing-sheet-title')?.matches(':focus')) {
       focusTargetElement.focus({ preventScroll: true });
@@ -2520,6 +2580,7 @@ app.addEventListener('click', async event => {
   const button = event.target.closest('button');
   if (!button || !button.closest('.mc-drawing-workspace')) return;
   const shell = experience === 'mission-control' ? 'mission-control' : 'professional';
+  const navigationStartedAt = globalThis.performance?.now?.() ?? Date.now();
   const pageSelectionRequest = button.dataset.drawingSheet || button.hasAttribute('data-drawing-previous') || button.hasAttribute('data-drawing-next') ? ++drawingPageSelectionRequest : 0;
   const persistedAnalysis = drawingTarget?.documentId ? await engine.drawingAnalysis(drawingTarget.documentId) : null;
   if (pageSelectionRequest && pageSelectionRequest !== drawingPageSelectionRequest) return;
@@ -2583,7 +2644,9 @@ app.addEventListener('click', async event => {
     const observation = button.dataset.drawingSearchObservation ? analysis.observations.find(item => item.observationId === button.dataset.drawingSearchObservation) : null;
     drawingViewerEngine.selectPage(sheet.pageNumber);
     drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, pageId: sheet.pageId, drawingId: sheet.drawingId || '', sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
-    await renderDrawingWorkspace(shell); return;
+    await renderDrawingWorkspace(shell);
+    logger.debug('Drawing viewer performance', { operation: 'navigation', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: sheet.pageNumber });
+    return;
   }
   if (button.hasAttribute('data-drawing-reanalyze') && analysis && shell === 'professional') {
     if (!confirm('Reanalyze this drawing set from its retained positioned text? Source PDF bytes and exact page identities will be preserved.')) return;
@@ -2598,7 +2661,9 @@ app.addEventListener('click', async event => {
     const observation = analysis.observations.find(item => item.observationId === button.dataset.drawingObservation);
     const sheet = analysis.sheets.find(item => item.sheetId === observation?.sheetId);
     if (observation && sheet) drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: sheet.drawingId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation.observationId, region: observation.region });
-    await renderDrawingWorkspace(shell); return;
+    await renderDrawingWorkspace(shell);
+    logger.debug('Drawing viewer performance', { operation: 'navigation', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: drawingTarget?.pageNumber });
+    return;
   }
   if (button.dataset.drawingVerify && analysis) {
     const selectedObservation = analysis.observations.find(item => item.observationId === button.dataset.observationId);
@@ -2657,7 +2722,9 @@ app.addEventListener('click', async event => {
     const next = analysis.sheets[currentIndex + offset];
     if (matchingTarget) { drawingViewerEngine.selectPage(matchingTarget.pageNumber); drawingTarget = matchingTarget; }
     else if (next) { drawingViewerEngine.selectPage(next.pageNumber); drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: next.drawingId, sheetId: next.sheetId, pageNumber: next.pageNumber }); }
-    await renderDrawingWorkspace(shell); return;
+    await renderDrawingWorkspace(shell);
+    logger.debug('Drawing viewer performance', { operation: 'navigation', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: drawingTarget?.pageNumber });
+    return;
   }
   if (button.dataset.drawingZoom) {
     drawingZoom = Math.max(.35, Math.min(3, drawingZoom + (button.dataset.drawingZoom === 'in' ? .2 : -.2)));

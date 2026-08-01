@@ -179,3 +179,30 @@ test('catalog editor exposes apply, reset, compare, and default restoration with
   assert.match(app, /drawingCatalog\.restoreDefaults/);
   assert.match(app, /data-drawing-page-id/);
 });
+
+test('professional viewer interactions include double-click zoom, drag pan, keyboard navigation, loading state, and active-card restoration', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
+  assert.match(app, /stage\.ondblclick = event =>/);
+  assert.match(app, /drawingViewerEngine\.zoomAtPoint/);
+  assert.match(app, /stage\.onpointerdown/);
+  assert.match(app, /stage\.onpointermove/);
+  assert.match(app, /stage\.onkeydown/);
+  assert.match(app, /assertDrawingPageConsistency/);
+  assert.match(app, /activeCard\?\.scrollIntoView/);
+  assert.match(css, /\.mc-drawing-stage\.is-loading/);
+  assert.match(css, /\.mc-drawing-stage\.is-panning/);
+});
+
+test('production hardening preserves focus and browser scroll while reporting cache and viewport diagnostics', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /createDrawingRenderCache/);
+  assert.match(app, /drawingRenderCache\.get/);
+  assert.match(app, /drawingRenderCache\.set/);
+  assert.match(app, /preservedBrowserScroll/);
+  assert.match(app, /preservedFocusSelector/);
+  assert.match(app, /operation: 'viewport-restore'/);
+  assert.match(app, /operation: 'search'/);
+  assert.match(app, /operation: 'navigation'/);
+  assert.match(app, /Drawing viewer metadata source/);
+});

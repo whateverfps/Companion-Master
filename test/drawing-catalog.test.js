@@ -68,3 +68,17 @@ test('comparison explains parser, catalog, chosen values, and precedence reason'
   const title = catalog.compare('doc', 1).find(item => item.field === 'sheetTitle');
   assert.deepEqual(title, { field: 'sheetTitle', parserValue: 'Parser Plan', catalogValue: 'Manual Plan', chosenValue: 'Manual Plan', reason: 'manual-catalog-precedence' });
 });
+
+test('catalog diagnostics report incomplete, duplicate, disputed, and fallback metadata without interruption', () => {
+  const catalog = createDrawingCatalog({ storage: memoryStorage() });
+  catalog.reconcile({ documentId: 'doc', pageCount: 3, parserRecords: [{ pageNumber: 1, sheetNumber: '61M-101' }, { pageNumber: 2, sheetNumber: '61M-101', sheetTitle: 'Plan' }] });
+  catalog.setManual('doc', 1, { sheetNumber: '61M-101', sheetTitle: 'Corrected' });
+  const diagnostics = catalog.diagnostics('doc');
+  assert.equal(diagnostics.pageCount, 3);
+  assert.ok(diagnostics.missingTitles.length);
+  assert.ok(diagnostics.missingDisciplines.length);
+  assert.ok(diagnostics.missingDrawingTypes.length);
+  assert.equal(diagnostics.duplicateSheets.length, 1);
+  assert.ok(diagnostics.parserDisagreements.length);
+  assert.deepEqual(diagnostics.unknownIdentities, ['drawing-page:doc:3']);
+});

@@ -41,7 +41,7 @@ function audit(oldRecord, newRecord, time, source) {
   return [...list(oldRecord?.auditTrail), { time, source: text(source) || 'unknown', changes }];
 }
 
-export function createDrawingCatalog({ storage = globalThis.localStorage, onDifference = () => {}, now = () => new Date().toISOString() } = {}) {
+export function createDrawingCatalog({ storage = globalThis.localStorage, onDifference = () => {}, onDiagnostics = () => {}, now = () => new Date().toISOString() } = {}) {
   let records = read(storage);
   const persist = () => { try { storage?.setItem(STORAGE_KEY, JSON.stringify(records)); } catch {} };
   const save = (next, source) => {
@@ -79,6 +79,7 @@ export function createDrawingCatalog({ storage = globalThis.localStorage, onDiff
         output.push(!existing || differs(existing, next) || existing.identityState !== next.identityState ? save(next, parserHasMetadata ? 'parser' : 'fallback') : existing);
       }
       persist();
+      onDiagnostics(this.diagnostics(documentId));
       return output;
     },
     applyToCatalog(documentId, pdfPageNumber, values = {}, ownership = {}, source = 'manual') {
@@ -104,6 +105,20 @@ export function createDrawingCatalog({ storage = globalThis.localStorage, onDiff
       if (!existing) return [];
       const parser = parserOverride ? valuesOf(parserOverride) : existing.parserValues || valuesOf({});
       return FIELDS.map(field => ({ field, parserValue: parser[field], catalogValue: existing[field], chosenValue: existing[field], reason: protectedState(existing.identityState) ? `${existing.identityState}-catalog-precedence` : parser[field] ? 'parser-enrichment' : 'catalog-fallback' }));
+    },
+    diagnostics(documentId) {
+      const documentRecords = this.recordsForDocument(documentId);
+      const numbers = new Map();
+      for (const record of documentRecords.filter(item => item.normalizedSheetNumber)) numbers.set(record.normalizedSheetNumber, [...(numbers.get(record.normalizedSheetNumber) || []), record.pageId]);
+      return {
+        documentId: text(documentId), pageCount: documentRecords.length,
+        missingTitles: documentRecords.filter(item => !item.sheetTitle).map(item => item.pageId),
+        missingDisciplines: documentRecords.filter(item => !item.discipline || item.discipline === 'Unknown').map(item => item.pageId),
+        missingDrawingTypes: documentRecords.filter(item => !item.drawingType || item.drawingType === 'Unknown').map(item => item.pageId),
+        duplicateSheets: [...numbers.entries()].filter(([, pageIds]) => pageIds.length > 1).map(([normalizedSheetNumber, pageIds]) => ({ normalizedSheetNumber, pageIds })),
+        parserDisagreements: documentRecords.filter(item => protectedState(item.identityState) && item.parserValues && differs(item, item.parserValues)).map(item => ({ pageId: item.pageId, fields: this.compare(documentId, item.pdfPageNumber) })),
+        unknownIdentities: documentRecords.filter(item => item.identityState === 'fallback').map(item => item.pageId)
+      };
     }
   };
 }

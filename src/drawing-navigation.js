@@ -39,6 +39,12 @@ export function resolveDrawingPageNavigation(target = {}, pages = [], currentPag
     : { resolved: false, pageNumber: Number(currentPageNumber) || null, page: null, reason: 'unresolved' };
 }
 
+export function assertDrawingPageConsistency({ selectedPage, renderedPage, targetPage, toolbarPage, activePage } = {}) {
+  const values = [selectedPage, renderedPage, targetPage, toolbarPage, activePage].map(Number).filter(Number.isFinite);
+  if (values.length && values.some(value => value !== values[0])) throw new Error(`Drawing page state disagreement: ${values.join(' / ')}`);
+  return true;
+}
+
 export function createPdfPageViewerAnalysis({ documentId, projectId, pageCount, selectedPage = 1, pageWidth = 1, pageHeight = 1, rotation = 0, metadataAnalysis = null, catalogRecords = [] } = {}) {
   const count = Math.max(0, Math.trunc(Number(pageCount) || 0));
   const activePage = Math.max(1, Math.min(count || 1, Math.trunc(Number(selectedPage) || 1)));

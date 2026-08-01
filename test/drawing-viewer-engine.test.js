@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDrawingViewerEngine } from '../src/drawing-viewer-engine.js';
+import { createDrawingRenderCache, createDrawingViewerEngine } from '../src/drawing-viewer-engine.js';
 
 test('viewer engine opens retained documents and selects any bounded page', () => {
   const engine = createDrawingViewerEngine();
@@ -84,4 +84,29 @@ test('page navigation sequence keeps selected and rendered PDF pages synchronize
     assert.equal(canvasPage, requestedPage);
     assert.equal(toolbarPage, requestedPage);
   }
+});
+
+test('viewer engine measures page selection, render, and zoom without changing behavior', async () => {
+  let time = 0;
+  const metrics = [];
+  const engine = createDrawingViewerEngine({ clock: () => time += 2, onMetric: metric => metrics.push(metric) });
+  engine.openDocument('doc', 2, 1);
+  engine.selectPage(2);
+  await engine.renderSelectedPage(() => ({ promise: Promise.resolve(), cancel() {} }));
+  engine.zoomAtPoint({ deltaY: -20, pointerX: 10, pointerY: 10 });
+  assert.deepEqual(metrics.map(item => item.operation), ['page-selection', 'page-render', 'zoom']);
+  assert.ok(metrics.every(item => item.durationMs >= 0));
+});
+
+test('bounded render cache reports hits and misses and evicts the oldest bitmap', () => {
+  const metrics = [];
+  const cache = createDrawingRenderCache({ maxEntries: 2, onMetric: metric => metrics.push(metric) });
+  const page1 = { page: 1 };
+  cache.set('page-1', page1);
+  cache.set('page-2', { page: 2 });
+  assert.equal(cache.get('page-1'), page1);
+  cache.set('page-3', { page: 3 });
+  assert.equal(cache.get('page-2'), null);
+  assert.equal(cache.size(), 2);
+  assert.deepEqual(metrics.map(item => item.cache), ['hit', 'miss']);
 });
