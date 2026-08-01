@@ -12,15 +12,11 @@
 - [x] Action payload normalization preserves drawing metadata
 - [x] Exact specification section renders after navigation
 - [x] Exact drawing sheet/page/region renders after navigation
-
-## In Progress
-
-- [ ] Exact RFI document/section drill-down
+- [x] Exact RFI document/section drill-down
+- [x] Exact submittal document/section drill-down
 
 ## Remaining
 
-- [ ] Exact RFI document/section drill-down
-- [ ] Exact submittal document/section drill-down
 - [ ] Exact first-class Inspection Record drill-down
 - [ ] Exact deficiency source drill-down
 - [ ] Room-centered transient package

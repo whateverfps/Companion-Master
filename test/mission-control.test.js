@@ -257,12 +257,30 @@ test('Phase 24B makes Chief construction-first with one synchronized drawing sta
   assert.doesNotMatch(app, /engine\.setState\([^)]*workPackage|persistWorkPackage/);
 });
 
-test('Mission Control exposes My Projects and an accessible demonstration orientation banner', () => {
+test('Mission Control hides built-in demo entry points and opens to Chief by default', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
-  assert.match(app, /data-control-projects>My Projects/);
-  assert.match(app, /aria-labelledby="mcDemoBannerTitle"/);
-  assert.match(app, /Stop Demonstration/);
-  assert.match(app, /Reset Demonstration Project/);
+  assert.match(app, /data-control-home[^>]*>Chief<\/button>/);
+  assert.match(app, /<button data-control-view="plans">Drawings<\/button>/);
+  assert.match(app, /<button data-control-view="chat">Command Desk<\/button>/);
+  assert.doesNotMatch(app, /Explore Demonstration Project/);
+  assert.doesNotMatch(app, /Load Demonstration Project/);
+  assert.doesNotMatch(app, /Open Demonstration Project/);
+  assert.doesNotMatch(app, /Stop Demonstration/);
+  assert.doesNotMatch(app, /Reset Demonstration Project/);
+});
+
+test('Mission Control uses a four-item primary navigation and a More Tools drawer', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /data-control-home[^>]*>Chief<\/button>/);
+  assert.match(app, /<button[^>]*data-control-view="plans">Drawings<\/button>/);
+  assert.match(app, /<button[^>]*data-control-view="chat">Command Desk<\/button>/);
+  assert.match(app, /<button[^>]*data-control-more-tools[^>]*>More Tools<\/button>/);
+  assert.doesNotMatch(app, /data-control-projects/);
+  assert.match(app, /aria-label="More Tools"/);
+  assert.match(app, /Projects<\/button>/);
+  assert.match(app, /Inspection Records<\/button>/);
+  assert.match(app, /Knowledge Validation<\/button>/);
+  assert.match(app, /Import\s\/\sExport/);
 });
 
 test('stopping the demonstration clears transient state without deleting the fixture or restoring a project', () => {
@@ -295,10 +313,13 @@ test('Mission Control owns native chat, conversation history, attachments, and p
   assert.doesNotMatch(app.slice(app.indexOf('if \(button\.dataset\.controlPrompt\)'), app.indexOf('const action = button.dataset.controlAction')), /openProfessionalDestination\(\{ view: 'chat'/);
 });
 
-test('Stop Demonstration is top-positioned and starts a fresh conversation', () => {
+test('Mission Control uses user-facing Chief, command-desk, and drawing guidance', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
-  const banner = app.indexOf('Stop Demonstration');
-  const dashboard = app.indexOf('mc-control-project"');
-  assert.ok(banner > -1 && banner < dashboard);
-  assert.match(app.slice(app.indexOf('async function returnFromDemonstrationProject'), app.indexOf('async function openDemonstrationProject')), /missionControlView = 'chat'/);
+  assert.match(app, /Select or create a project to begin construction analysis\./);
+  assert.match(app, /Ask Chief about \$\{esc\(project\.name\)\}/);
+  assert.match(app, /No construction context selected/);
+  assert.match(app, /No drawing set is available for this project\./);
+  assert.match(app, /Import Drawing/);
+  assert.match(app, /Return to Chief/);
+  assert.doesNotMatch(app, /No active Engineering Context/);
 });

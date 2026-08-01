@@ -224,12 +224,53 @@ app.innerHTML = `
     <button id="openProfessionalWorkspace" class="mc-control-experience-switch">Open Professional Workspace</button>
   </header>
   <nav class="mc-control-nav" aria-label="Mission Control navigation">
-    <button data-control-home aria-current="page">Mission Control</button>
+    <button data-control-home aria-current="page">Chief</button>
     <button data-control-view="plans">Drawings</button>
     <button data-control-view="chat">Command Desk</button>
-    <!-- data-control-projects>My Projects -->
-    <button data-control-projects data-control-view="projects" data-control-projects-label="My Projects">My Projects</button>
+    <button id="moreToolsTrigger" data-control-more-tools aria-expanded="false" aria-controls="missionControlMoreTools">More Tools</button>
   </nav>
+  <div id="missionControlMoreTools" class="mc-more-tools-panel" role="dialog" aria-label="More Tools" aria-modal="false" hidden>
+    <div class="mc-more-tools-panel-header">
+      <div>
+        <span>MORE TOOLS</span>
+        <h2>Workspace shortcuts</h2>
+      </div>
+      <button type="button" class="subtle mc-more-tools-close" data-control-more-tools-close>Close</button>
+    </div>
+    <div class="mc-more-tools-groups">
+      <section class="mc-more-tools-group">
+        <h3>Project content</h3>
+        <div class="mc-more-tools-list">
+          <button type="button" data-more-tools-action="projects">Projects<span>Open your current project set and create or import work.</span></button>
+          <button type="button" data-more-tools-action="documents">Documents<span>Review the current project document library.</span></button>
+          <button type="button" data-more-tools-action="specifications">Specifications<span>Open the project specifications and supporting requirements.</span></button>
+          <button type="button" data-more-tools-action="rfis-submittals">RFIs and Submittals<span>Review related requests and approvals in one place.</span></button>
+          <button type="button" data-more-tools-action="evidence">Evidence<span>Inspect the project evidence behind recent answers.</span></button>
+          <button type="button" data-more-tools-action="inspection-records">Inspection Records<span>Review field inspections and project follow-up.</span></button>
+        </div>
+      </section>
+      <section class="mc-more-tools-group">
+        <h3>Engineering tools</h3>
+        <div class="mc-more-tools-list">
+          <button type="button" data-more-tools-action="engineering-context">Engineering Context<span>Open the exact project context behind the current task.</span></button>
+          <button type="button" data-more-tools-action="workflows">Workflows<span>Move exact project knowledge through structured workflows.</span></button>
+          <button type="button" data-more-tools-action="relationships">Relationships<span>Inspect linked project knowledge and references.</span></button>
+          <button type="button" data-more-tools-action="versions">Versions<span>Review document lineage and version history.</span></button>
+          <button type="button" data-more-tools-action="revision-review">Revision Review<span>Compare explicit revisions without guesswork.</span></button>
+          <button type="button" data-more-tools-action="source-inspector">Source Inspector<span>Review the indexed project sources directly.</span></button>
+          <button type="button" data-more-tools-action="knowledge-validation">Knowledge Validation<span>Check project knowledge readiness and coverage.</span></button>
+        </div>
+      </section>
+      <section class="mc-more-tools-group">
+        <h3>Administration</h3>
+        <div class="mc-more-tools-list">
+          <button type="button" data-more-tools-action="import-export">Import / Export<span>Move projects and data between workspaces.</span></button>
+          <button type="button" data-more-tools-action="settings">Settings<span>Adjust the workspace and project preferences.</span></button>
+          <button type="button" data-more-tools-action="diagnostics">Diagnostics<span>Inspect health checks and application status.</span></button>
+        </div>
+      </section>
+    </div>
+  </div>
   <main id="missionControlMain" tabindex="-1">
     <div id="missionControlContent" aria-live="polite"></div>
   </main>
@@ -267,8 +308,6 @@ app.innerHTML = `
       <label>ACTIVE PROJECT</label>
       <select id="projectSelect"></select>
       <button id="newProject" class="subtle">＋ New project</button>
-      <button id="loadDemoProject" class="mc-demo-load">Load Demonstration Project</button>
-      <button id="resetDemoProject" class="subtle mc-demo-reset" hidden>Reset Demonstration Project</button>
     </div>
 
     <div class="rail-foot">
@@ -1335,15 +1374,12 @@ function missionControlEmpty(title, detail, action = '') {
 
 function renderMyProjects() {
   const currentState = state();
-  const { userProjects, demonstrationProject } = separateMissionControlProjects(currentState.projects, DEMO_PROJECT_ID);
+  const { userProjects } = separateMissionControlProjects(currentState.projects, DEMO_PROJECT_ID);
   $('#missionControlContent').innerHTML = `
     <section class="mc-control-projects" aria-labelledby="missionControlTitle">
       <header class="mc-control-projects-header"><div><span>MISSION COMPANION</span><h1 id="missionControlTitle" tabindex="-1">My Projects</h1><p>Open existing work, create a project, or import a project package.</p></div><div><button data-control-action="create-project">Create New Project</button><button class="subtle" data-control-action="import-project">Import Project</button></div></header>
       <section class="mc-control-project-group" aria-labelledby="mcUserProjectsTitle"><header><span>YOUR WORK</span><h2 id="mcUserProjectsTitle">User Projects</h2></header>
         ${userProjects.length ? `<div class="mc-control-project-list">${userProjects.map(project => `<article class="mc-control-project-tile ${project.id === currentState.activeProject ? 'active' : ''}"><div><span>${project.id === currentState.activeProject ? 'CURRENT PROJECT' : 'PROJECT'}</span><h3>${esc(project.name)}</h3><p>${esc(project.description || 'Project details are available after opening.')}</p></div><button data-control-project-id="${esc(project.id)}">${project.id === currentState.activeProject ? 'Open Project' : 'Open'}</button></article>`).join('')}</div>` : missionControlEmpty('No user projects yet', 'Create a project or import an existing Mission Companion project package.', '<button data-control-action="create-project">Create your first project</button>')}
-      </section>
-      <section class="mc-control-project-group mc-control-built-in" aria-labelledby="mcBuiltInTitle"><header><span>BUILT-IN DEMONSTRATION</span><h2 id="mcBuiltInTitle">Explore Mission Companion</h2></header>
-        ${demonstrationProject ? `<article class="mc-control-project-tile"><div><span>FICTIONAL SAMPLE DATA</span><h3>${esc(demonstrationProject.name)}</h3><p>Explore connected inspections, evidence, revisions, and project knowledge using the built-in sample project.</p></div><button data-control-action="load-demo">${currentState.activeProject === DEMO_PROJECT_ID ? 'Return to Demonstration Project' : 'Explore Demonstration Project'}</button></article>` : `<article class="mc-control-project-tile"><div><span>BUILT-IN PROJECT</span><h3>Mission Companion Demonstration Project</h3><p>Load the offline fictional sample when you want a guided product example.</p></div><button data-control-action="load-demo">Explore Demonstration Project</button></article>`}
       </section>
     </section>`;
 }
@@ -1722,7 +1758,7 @@ async function renderDrawingWorkspace(shell = 'professional') {
   const analysesByDocument = new Map(analyses.map(item => [item.documentId, item]));
   if (!documents.length) {
     releaseDrawingSource();
-    host.innerHTML = drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list"><h2>Drawing Sets</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : '<div class="mc-drawing-empty"><strong>No drawing PDFs are available.</strong><p>Import a PDF into the active project. Newly imported PDFs preserve their original source for sheet viewing.</p></div>';
+    host.innerHTML = drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list"><h2>Drawing Sets</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : `<div class="mc-drawing-empty"><strong>No drawing set is available for this project.</strong><p>Import a drawing package or return to Chief to continue the project review.</p><div class="mc-drawing-empty-actions"><button type="button" data-drawing-empty-action="import">Import Drawing</button><button type="button" class="subtle" data-drawing-empty-action="chief">Return to Chief</button></div></div>`;
     return;
   }
   const requestedDocument = drawingTarget?.documentId;
@@ -1850,29 +1886,54 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
     { label: 'Review RFIs', action: 'browse-rfis', show: model.summary.rfis > 0 },
     { label: 'Review Submittals', action: 'browse-submittals', show: model.summary.submittals > 0 },
     { label: 'Browse Project Library', target: { view: 'knowledge' }, show: Boolean(project) },
-    { label: 'Open Demonstration Guide', action: 'demo-guide', show: model.project?.isDemonstration },
     { label: 'Ask Companion', target: { view: 'chat' }, show: true }
   ].filter(item => item.show);
-  const prompts = model.project?.isDemonstration
-    ? DEMO_QUESTIONS.slice(0, 4)
-    : documents.length
-      ? ['Summarize the key requirements in this project', 'Which project sources need review?', 'Show the strongest evidence for a project question']
-      : [];
+  const prompts = documents.length
+    ? ['Summarize the key requirements in this project', 'Which project sources need review?', 'Show the strongest evidence for a project question']
+    : [];
+  if (!project) {
+    $('#missionControlContent').innerHTML = `
+      <section class="mc-control-home" aria-labelledby="missionControlTitle">
+        <section class="mc-control-project mc-control-project-empty" aria-labelledby="mcControlProjectTitle">
+          <div><span>MISSION COMPANION</span><h2 id="mcControlProjectTitle">Mission Companion</h2><p>Select or create a project to begin construction analysis.</p></div>
+          <div class="mc-control-empty-actions"><button data-control-action="create-project">Create Project</button><button class="subtle" data-control-action="import-project">Import Project</button></div>
+          <p class="mc-control-supporting">Chief connects project drawings, specifications, RFIs, submittals, inspections, and field evidence into one construction workspace.</p>
+        </section>
+      </section>`;
+    return;
+  }
+  if (!currentState.chat.length) {
+    $('#missionControlContent').innerHTML = `
+      <section class="mc-control-home" aria-labelledby="missionControlTitle">
+        <section class="mc-control-project mc-control-project-empty mc-control-home-hero" aria-labelledby="mcControlProjectTitle">
+          <div><span>CHIEF</span><h2 id="mcControlProjectTitle">Ask Chief about ${esc(project.name)}</h2><p>Start with a construction question about this project.</p></div>
+          <div class="mc-control-prompt-suggestions">
+            <span class="mc-prompt-heading">Suggested questions</span>
+            <div class="mc-control-prompt-list">
+              <button type="button" class="mc-prompt-button" data-control-prompt="Where is the planned work?">Where is the planned work?</button>
+              <button type="button" class="mc-prompt-button" data-control-prompt="What drawings apply to this room?">What drawings apply to this room?</button>
+              <button type="button" class="mc-prompt-button" data-control-prompt="What specifications govern this work?">What specifications govern this work?</button>
+              <button type="button" class="mc-prompt-button" data-control-prompt="Are there related RFIs or submittals?">Are there related RFIs or submittals?</button>
+              <button type="button" class="mc-prompt-button" data-control-prompt="What inspections are recorded?">What inspections are recorded?</button>
+            </div>
+          </div>
+        </section>
+      </section>`;
+    return;
+  }
   $('#missionControlContent').innerHTML = `
     <section class="mc-control-home" aria-labelledby="missionControlTitle">
       <header class="mc-control-welcome">
-        <div><span>${model.project ? esc(model.dateLabel) : 'MISSION COMPANION'}</span><h1 id="missionControlTitle" tabindex="-1">${esc(model.project ? model.greeting : 'Welcome')}</h1><p>${model.project ? `Here is what Companion can verify for ${esc(model.project.name)}.` : 'What would you like to do?'}</p></div>
-        ${model.project?.isDemonstration ? '<span class="mc-control-demo-badge">Demonstration Project · Fictional Sample Data</span>' : ''}
+        <div><span>${model.project ? esc(model.dateLabel) : 'CHIEF'}</span><h1 id="missionControlTitle" tabindex="-1">${esc(model.project ? model.greeting : 'Chief')}</h1><p>${model.project ? `Here is what Companion can verify for ${esc(model.project.name)}.` : 'Start with a project question, open an existing project, or create a new one to begin.'}</p></div>
       </header>
-      ${model.project?.isDemonstration ? `<aside class="mc-control-demo-banner" aria-labelledby="mcDemoBannerTitle"><div><span>BUILT-IN DEMONSTRATION</span><h2 id="mcDemoBannerTitle">Demonstration Project</h2><p>You are exploring the built-in sample project.</p></div><div><button data-control-action="return-projects">Stop Demonstration</button><button class="subtle" data-control-action="reset-demo">Reset Demonstration Project</button></div></aside>` : ''}
       ${model.project ? `
         <section class="mc-control-project" aria-labelledby="mcControlProjectTitle">
           <div><span>CURRENT PROJECT</span><h2 id="mcControlProjectTitle">${esc(model.project.name)}</h2><p>${esc(model.project.description || 'Project information and work are ready to review.')}</p></div>
           <dl><div><dt>Documents</dt><dd>${fmt(model.summary.documents)}</dd></div><div><dt>Indexed sections</dt><dd>${fmt(model.summary.sections)}</dd></div><div><dt>Inspections</dt><dd>${fmt(model.summary.inspections)}</dd></div></dl>
         </section>` : `
         <section class="mc-control-project mc-control-project-empty" aria-labelledby="mcControlProjectTitle">
-          <div><span>GET STARTED</span><h2 id="mcControlProjectTitle">No project open</h2><p>Open or create your project. The built-in demonstration is available separately if you are new to Mission Companion.</p></div>
-          <div class="mc-control-empty-actions"><button data-control-action="my-projects">Open My Project</button><button data-control-action="create-project">Create New Project</button><span>New to Mission Companion?</span><button data-control-action="load-demo">Explore Demonstration Project</button></div>
+          <div><span>GET STARTED</span><h2 id="mcControlProjectTitle">No project open</h2><p>Open or create your project to begin working in a practical construction workspace.</p></div>
+          <div class="mc-control-empty-actions"><button data-control-action="my-projects">Open My Project</button><button data-control-action="create-project">Create New Project</button><button data-control-action="import-project">Import Project</button></div>
         </section>`}
       ${primary ? `
         <section class="mc-control-primary" aria-labelledby="mcControlPrimaryTitle">
@@ -1887,7 +1948,7 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
         <section class="mc-control-card mc-control-health" aria-labelledby="mcControlHealthTitle">
           <header><span>PROJECT HEALTH</span><h2 id="mcControlHealthTitle">Current picture</h2></header>
           <div class="mc-control-health-state ${esc(model.health.tone)}"><span aria-hidden="true">${model.health.tone === 'attention' ? '!' : model.health.tone === 'active' ? '✓' : '•'}</span><div><strong>${esc(model.health.label)}</strong><p>${esc(model.health.explanation)}</p></div></div>
-          ${model.project?.isDemonstration ? '<small>Health reflects explicit sample records, not a substantive project review.</small>' : '<small>Health reflects tracked operational facts only.</small>'}
+          <small>Health reflects tracked operational facts only.</small>
         </section>
         <section class="mc-control-card mc-control-continue" aria-labelledby="mcControlContinueTitle">
           <header><span>CONTINUE WORKING</span><h2 id="mcControlContinueTitle">Pick up where you left off</h2></header>
@@ -1910,16 +1971,119 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
 
 $('#openProfessionalWorkspace').onclick = () => switchExperience('professional-workspace', { destination: view });
 $('#returnMissionControl').onclick = () => switchExperience('mission-control');
+
+function setMoreToolsOpenState(isOpen) {
+  const trigger = $('#moreToolsTrigger');
+  const panel = $('#missionControlMoreTools');
+  if (!trigger || !panel) return;
+  trigger.setAttribute('aria-expanded', String(isOpen));
+  panel.hidden = !isOpen;
+  if (!isOpen) return;
+  updateMoreToolsSelection();
+  const focusTarget = panel.querySelector('button:not([data-control-more-tools-close])');
+  focusTarget?.focus();
+}
+
+function updateMoreToolsSelection() {
+  const panel = $('#missionControlMoreTools');
+  if (!panel) return;
+  const currentDestination = missionControlView === 'projects'
+    ? 'projects'
+    : view === 'knowledge'
+      ? 'documents'
+      : view === 'evidence'
+        ? 'evidence'
+        : view === 'engineering'
+          ? 'engineering-context'
+          : view === 'workflow'
+            ? 'workflows'
+            : view === 'relationships'
+              ? 'relationships'
+              : view === 'versions'
+                ? 'versions'
+                : view === 'revisions'
+                  ? 'revision-review'
+                  : view === 'sources'
+                    ? 'source-inspector'
+                    : view === 'evaluate'
+                      ? 'knowledge-validation'
+                      : view === 'inspections'
+                        ? 'inspection-records'
+                        : view === 'settings'
+                          ? 'settings'
+                          : view === 'diagnostics'
+                            ? 'diagnostics'
+                            : missionControlView === 'chat'
+                              ? 'command-desk'
+                              : null;
+  panel.querySelectorAll('[data-more-tools-action]').forEach(button => {
+    const active = button.dataset.moreToolsAction === currentDestination;
+    button.toggleAttribute('aria-current', active);
+  });
+}
+
+function openMoreToolsDrawer() {
+  setMoreToolsOpenState(true);
+}
+
+function closeMoreToolsDrawer({ restoreFocus = true } = {}) {
+  setMoreToolsOpenState(false);
+  if (restoreFocus) $('#moreToolsTrigger')?.focus();
+}
+
 function showMissionControlView(name = 'home') {
   if (!['plans', 'chat'].includes(name)) releaseDrawingSource();
   missionControlView = ['projects', 'chat', 'history', 'library', 'inspections', 'plans'].includes(name) ? name : 'home';
   $('[data-control-home]').toggleAttribute('aria-current', missionControlView === 'home');
-  $('[data-control-projects]').toggleAttribute('aria-current', missionControlView === 'projects');
+  closeMoreToolsDrawer({ restoreFocus: false });
   return renderMissionControl().then(() => $('#missionControlTitle')?.focus());
 }
 $('[data-control-home]').onclick = () => showMissionControlView('home');
-$('[data-control-projects]').onclick = () => showMissionControlView('projects');
 $$('[data-control-view]').forEach(button => button.onclick = () => showMissionControlView(button.dataset.controlView));
+$('#moreToolsTrigger').onclick = () => {
+  if ($('#missionControlMoreTools').hidden) openMoreToolsDrawer();
+  else closeMoreToolsDrawer();
+};
+$('#missionControlMoreTools').addEventListener('click', async event => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  if (button.dataset.controlMoreToolsClose) {
+    closeMoreToolsDrawer();
+    return;
+  }
+  if (button.dataset.moreToolsAction === 'projects') {
+    await showMissionControlView('projects');
+    return;
+  }
+  const actionMap = {
+    documents: { view: 'knowledge' },
+    specifications: { view: 'knowledge' },
+    'rfis-submittals': { view: 'project' },
+    evidence: { view: 'evidence' },
+    'inspection-records': { view: 'inspections' },
+    'engineering-context': { view: 'engineering' },
+    workflows: { view: 'workflow' },
+    relationships: { view: 'relationships' },
+    versions: { view: 'versions' },
+    'revision-review': { view: 'revisions' },
+    'source-inspector': { view: 'sources' },
+    'knowledge-validation': { view: 'evaluate' },
+    'import-export': { view: 'project' },
+    settings: { view: 'settings' },
+    diagnostics: { view: 'diagnostics' }
+  };
+  const destination = actionMap[button.dataset.moreToolsAction];
+  if (destination) {
+    await openProfessionalDestination(destination);
+    closeMoreToolsDrawer({ restoreFocus: false });
+  }
+});
+$('#missionControlMoreTools').addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    event.stopPropagation();
+    closeMoreToolsDrawer();
+  }
+});
 $('#missionControlContent').onclick = async event => {
   const button = event.target.closest('button');
   if (!button) return;
@@ -1964,6 +2128,14 @@ $('#missionControlContent').onclick = async event => {
   if (button.hasAttribute('data-inline-full-drawing')) {
     await showMissionControlView('plans');
     $('#missionDrawingViewer .mc-drawing-sheet-title')?.focus();
+    return;
+  }
+  if (button.dataset.drawingEmptyAction === 'chief') {
+    await showMissionControlView('home');
+    return;
+  }
+  if (button.dataset.drawingEmptyAction === 'import') {
+    await openProfessionalDestination({ view: 'project' });
     return;
   }
   if (button.hasAttribute('data-work-package-current') && activeWorkPackage) {
@@ -2501,7 +2673,7 @@ async function renderContextBusBanner(workspace) {
   if (!container) return;
   const reference = contextBusSnapshot.context;
   if (!reference) {
-    container.insertAdjacentHTML('afterbegin', '<div class="mc-context-bus-banner unavailable" data-context-bus-banner role="status"><strong>No active Engineering Context</strong><span>Open a Knowledge Object or ask an evidence-backed question to synchronize this workspace.</span></div>');
+    container.insertAdjacentHTML('afterbegin', '<div class="mc-context-bus-banner unavailable" data-context-bus-banner role="status"><strong>No construction context selected</strong><span>Ask Chief a construction question or open an exact drawing, specification, or project record to synchronize this workspace.</span></div>');
     return;
   }
   const documents = await engine.documents();
@@ -2846,7 +3018,6 @@ async function refresh() {
     `).join('');
   $('#projectSelect').innerHTML = `
     <optgroup label="My Projects">${projectOptions(projectGroups.userProjects)}</optgroup>
-    ${projectGroups.demonstrationProject ? `<optgroup label="Built-in Demonstration">${projectOptions([projectGroups.demonstrationProject])}</optgroup>` : ''}
   `;
 
   const documents = await engine.documents();
@@ -2863,36 +3034,8 @@ async function refresh() {
 }
 
 function renderDemonstrationControls() {
-  const currentState = state();
-  const demoExists = currentState.projects.some(project => project.id === DEMO_PROJECT_ID);
-  const demoActive = currentState.activeProject === DEMO_PROJECT_ID;
-  $('#loadDemoProject').textContent = demoExists ? 'Open Demonstration Project' : 'Load Demonstration Project';
-  $('#resetDemoProject').hidden = !demoExists;
   const guide = $('#demoGuide');
-  if (!demoActive || demoGuideDismissed) {
-    guide.hidden = true;
-    return;
-  }
-  guide.hidden = false;
-  guide.innerHTML = `
-    <button class="mc-demo-guide-close" data-demo-dismiss aria-label="Dismiss demonstration guide">×</button>
-    <span>FICTIONAL SAMPLE DATA</span>
-    <h2 id="demoGuideTitle">Explore the Demonstration Project</h2>
-    <p>Try an exact question or open a connected inspection surface.</p>
-    <div class="mc-demo-guide-actions">
-      ${DEMO_QUESTIONS.map((question, index) => `<button data-demo-question="${index}">${esc(question)}</button>`).join('')}
-      <button data-demo-view="versions">Compare drawing revisions</button>
-      <button data-demo-view="relationships">Inspect relationships</button>
-      <button data-demo-view="workflow">Open the synchronized workflow</button>
-    </div>`;
-  $('[data-demo-dismiss]').onclick = () => { demoGuideDismissed = true; renderDemonstrationControls(); };
-  $$('[data-demo-question]').forEach(button => button.onclick = async () => {
-    await switchExperience('professional-workspace', { destination: 'chat' });
-    $('#prompt').value = DEMO_QUESTIONS[Number(button.dataset.demoQuestion)];
-    resizeComposer();
-    $('#prompt').focus();
-  });
-  $$('[data-demo-view]').forEach(button => button.onclick = () => switchExperience('professional-workspace', { destination: button.dataset.demoView }));
+  if (guide) guide.hidden = true;
 }
 
 async function selectProjectThroughProductionPath(projectId) {
@@ -3002,21 +3145,6 @@ $('#mode').onchange = () => {
 
 $('#projectSelect').onchange = async () => {
   await selectProjectThroughProductionPath($('#projectSelect').value);
-};
-
-$('#loadDemoProject').onclick = () => {
-  const exists = state().projects.some(project => project.id === DEMO_PROJECT_ID);
-  if (exists) return void openDemonstrationProject().catch(error => alert(error.message));
-  openModal(`
-    <h2>Load Demonstration Project</h2>
-    <p class="mc-demo-disclosure"><strong>Fictional Sample Data</strong>This offline project contains original sample construction records for product exploration. It does not represent a real facility, contract, or project.</p>
-    <button id="confirmLoadDemo">Load Demonstration Project</button>
-  `, () => { $('#confirmLoadDemo').onclick = async () => { closeModal(); try { await openDemonstrationProject(); } catch (error) { alert(error.message); } }; });
-};
-
-$('#resetDemoProject').onclick = async () => {
-  if (!confirm('Reset the Demonstration Project? This deletes only the loaded fictional demonstration project and reloads its canonical sample data. Any changes made to that demo copy will be lost.')) return;
-  try { await openDemonstrationProject({ reset: true }); } catch (error) { alert(error.message); }
 };
 
 $('#newProject').onclick = () => openModal(
@@ -4706,7 +4834,7 @@ async function renderEngineeringWorkspace() {
 
   if (!context) {
     $('#engineeringHeader').innerHTML = '<div><span>ENGINEERING CONTEXT</span><h2>Engineering Context unavailable</h2><p>Open a Knowledge Object or ask an evidence-backed question to synchronize this workbench.</p></div>';
-    $('#engineeringContext').innerHTML = `<div class="mc-context-activation-unavailable" role="status"><strong>No active Engineering Context.</strong><span>${contextClearedEvent ? `Current transition: cleared from ${esc(contextClearedEvent.source)}.` : 'Open an exact document, section, or evidence source to activate context.'}</span></div>`;
+    $('#engineeringContext').innerHTML = `<div class="mc-context-activation-unavailable" role="status"><strong>No construction context selected.</strong><span>${contextClearedEvent ? `Current transition: cleared from ${esc(contextClearedEvent.source)}.` : 'Ask Chief a construction question or open an exact drawing, specification, or project record to synchronize this workspace.'}</span></div>`;
     $('#engineeringKnowledge').innerHTML = '<div class="mc-engineering-empty">Related project knowledge appears after an exact document establishes Engineering Context.</div>';
     $('#engineeringSession').innerHTML = '<div class="mc-engineering-empty">The temporary Inspection Session becomes available with an active Engineering Context.</div>';
     return;
