@@ -108,7 +108,7 @@ import {
 import { openPdfBlob, readPdfPageGraphics, renderPdfPage } from './pdf-source.js';
 import { extractLegendCandidates, matchLegendOccurrences } from './drawing-legends.js';
 import { applyObservationVerification, drawingAnalysisRequiresUpgrade, drawingWarningPresentation, DRAWING_ANALYSIS_VERSION, groupDrawingObservations, observationKindLabel, reanalyzeDrawingAnalysis, upgradeDrawingAnalysis } from './drawing-intelligence.js';
-import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingViewportKey, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
+import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingViewportKey, drawingWheelZoom, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
 import { buildPlanQuery, buildPlanQueryScope, createChiefConstructionContext, drawingSearchSummary, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from './plan-query.js';
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
 import { drawingUpgradeKey, loadAuthoritativeDrawingRegistry, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
@@ -1846,6 +1846,24 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
     stage.scrollTop = restored.scrollTop || 0;
     drawingViewportBySet.set(viewportKey, { ...restored, zoom: drawingZoom, rotation: drawingRotation, selectedObservationId: observation?.observationId || restored.selectedObservationId, highlightedRegion: observation?.region || restored.highlightedRegion });
     stage.onscroll = () => captureDrawingViewport();
+    stage.onwheel = event => {
+      const bounds = stage.getBoundingClientRect();
+      const next = drawingWheelZoom({
+        deltaY: event.deltaY,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        zoom: drawingZoom,
+        scrollLeft: stage.scrollLeft,
+        scrollTop: stage.scrollTop,
+        pointerX: event.clientX - bounds.left,
+        pointerY: event.clientY - bounds.top
+      });
+      if (!next.recognized) return;
+      event.preventDefault();
+      drawingZoom = next.zoom;
+      captureDrawingViewport({ mode: 'custom', zoom: next.zoom, scrollLeft: next.scrollLeft, scrollTop: next.scrollTop });
+      void paintDrawingPage(source, sheet, observation, overlayRecords);
+    };
     updateDrawingOverlays(stage, sheet, observation, overlayRecords);
     if (globalThis.ResizeObserver && activeDrawingResizeStage !== stage) {
       activeDrawingResizeObserver?.disconnect();

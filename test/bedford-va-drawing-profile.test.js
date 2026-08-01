@@ -42,8 +42,14 @@ function runtimeIndexItems() {
       if (discipline !== current) { output.push(item(discipline, numberX, y - .003, .1)); current = discipline; }
       const words = title.split(' '), split = Math.max(1, Math.ceil(words.length / 2));
       if (columnIndex) {
-        const parts = number.match(/^(.+-)(\d+[A-Z]?)$/);
-        output.push(item(parts[1], numberX, y, .045), item(parts[2], numberX + .047, y, .035));
+        const compact = number.replace('-', '');
+        const fragmentCount = 2 + (index % 4);
+        const size = Math.ceil(compact.length / fragmentCount);
+        const fragments = Array.from({ length: fragmentCount }, (_, fragmentIndex) => compact.slice(fragmentIndex * size, (fragmentIndex + 1) * size)).filter(Boolean);
+        fragments.forEach((fragment, fragmentIndex) => {
+          output.push(item(fragment, numberX + fragmentIndex * .014, y + (fragmentIndex % 2 ? .003 : 0), .012));
+          if (fragmentIndex < fragments.length - 1) output.push(item('   ', numberX + fragmentIndex * .014 + .012, y, .001));
+        });
       } else output.push(item(number, numberX, y, .08));
       output.push(item(words.slice(0, split).join(' '), titleX, y, .18), item(words.slice(split).join(' '), titleX, y + .0035, .18), item('YES', titleX + .29, y, .03));
     });
@@ -83,6 +89,14 @@ test('Bedford lower-right title block and 70-row index parse authoritatively', (
   assert.equal(rows.find(row => row.sheetNumber === '61T-402').sheetTitle, 'TELECOMMUNICATION ROOM 137 - INVENTORY LIST');
 });
 
+test('Bedford title block reconstructs normalized sheet identity only inside the labeled region', () => {
+  const source = titleBlock('61M-101', 'MECHANICAL PLAN - FIRST LEVEL - OVERALL').filter(entry => entry.text !== '61M-101');
+  source.push(item('61', .82, .88, .018), item('M', .841, .883, .009), item('-', .852, .88, .005), item('1', .86, .882, .006), item('0', .868, .88, .006), item('1', .876, .883, .006), item('FX500', .2, .2));
+  const block = parseBedfordTitleBlock(source);
+  assert.equal(block.drawingNumber, '61M-101');
+  assert.notEqual(block.drawingNumber, 'FX500');
+});
+
 test('runtime-shaped split-column index recovers all 70 rows including wrapped titles', () => {
   const source = runtimePages();
   const rows = parseBedfordDrawingIndex(findBedfordDrawingIndexPage(source));
@@ -93,6 +107,9 @@ test('runtime-shaped split-column index recovers all 70 rows including wrapped t
   const analysis = buildDrawingAnalysis({ documentId: 'runtime-general', projectId: 'general', pages: source, analyzedAt: 'now' });
   assert.equal(analysis.drawingRegistry.length, 70);
   assert.equal(analysis.registryHealth.unresolvedPages, 0);
+  assert.equal(analysis.registryHealth.blankIdentityCount, 0);
+  assert.equal(analysis.registryHealth.genericOnlyIdentityCount, 0);
+  assert.equal(analysis.registryHealth.reviewOnlyIdentityCount, 0, JSON.stringify(analysis.sheets.filter(sheet => sheet.identityStatus === 'Ambiguous').map(sheet => ({ pageNumber: sheet.pageNumber, sheetNumber: sheet.sheetNumber, sheetTitle: sheet.sheetTitle, warnings: sheet.warnings }))));
 });
 
 test('Bedford sequence reconciliation expands 18 title-block anchors to 70 authoritative records', () => {

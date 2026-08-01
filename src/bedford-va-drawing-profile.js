@@ -3,7 +3,7 @@ const list = value => Array.isArray(value) ? value : [];
 const clean = value => text(value).replace(/\s+/g, ' ');
 
 export const BEDFORD_VA_PROFILE_ID = 'bedford-va-triple-c';
-export const BEDFORD_VA_PROFILE_VERSION = 2;
+export const BEDFORD_VA_PROFILE_VERSION = 3;
 export const BEDFORD_TITLE_BLOCK_REGION = Object.freeze({ x: .48, y: .55, width: .52, height: .45 });
 export const normalizeBedfordSheetNumber = value => clean(value).toUpperCase().replace(/[^A-Z0-9]+/g, '');
 export const normalizeBedfordTitle = value => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -20,76 +20,20 @@ function inRegion(item, region = BEDFORD_TITLE_BLOCK_REGION) {
   return Number(item?.region?.x) >= region.x && Number(item?.region?.y) >= region.y && Number(item?.region?.x) <= region.x + region.width && Number(item?.region?.y) <= region.y + region.height;
 }
 
-function indexParserDiagnostics(tableItems, strictSheetItems, rows) {
-  const emitted = new Set(rows.map(row => row.normalizedSheetNumber));
-  const strict = new Map(strictSheetItems.map(item => [normalizeBedfordSheetNumber(item.text), item]));
-  const discovered = new Map();
-  const remember = (normalizedSheetNumber, parts, reason) => {
-    if (!normalizedSheetNumber || emitted.has(normalizedSheetNumber)) return;
-    const existing = discovered.get(normalizedSheetNumber);
-    const candidate = {
-      sheetNumber: normalizedSheetNumber,
-      exclusionRule: reason,
-      fragmentCount: parts.length,
-      reconstructedFragmentCandidate: parts.map(part => part.text).join(''),
-      originalPdfJsTextItems: parts.map(part => ({ text: part.text, order: part.order, x: Number(part.region.x), y: Number(part.region.y), width: Number(part.region.width || 0) }))
-    };
-    if (!existing || candidate.fragmentCount < existing.fragmentCount) discovered.set(normalizedSheetNumber, candidate);
-  };
+function formatBedfordSheetNumber(value) {
+  const normalized = normalizeBedfordSheetNumber(value);
+  const match = normalized.match(/^(\d{1,4})([A-Z]{1,3})(\d{3,4}[A-Z]?)$/);
+  return match ? `${match[1]}${match[2]}-${match[3]}` : clean(value).toUpperCase();
+}
 
-  for (let start = 0; start < tableItems.length; start += 1) {
-    for (let count = 1; count <= 8; count += 1) {
-      const parts = tableItems.slice(start, start + count);
-      if (parts.length !== count) continue;
-      const normalized = normalizeBedfordSheetNumber(parts.map(part => part.text).join(''));
-      if (!SHEET.test(normalized)) continue;
-      const baselineFailure = parts.some(part => Math.abs(Number(part.region.y) - Number(parts[0].region.y)) > .006);
-      const ordered = parts.slice().sort((a, b) => Number(a.region.x) - Number(b.region.x));
-      const gapFailure = ordered.some((part, index) => index && Number(part.region.x) - (Number(ordered[index - 1].region.x) + Number(ordered[index - 1].region.width || 0)) > .025);
-      const strictCandidate = strict.get(normalized);
-      const reason = strictCandidate
-        ? 'title reconstruction failure'
-        : count > 3
-          ? 'more than 3 fragments'
-          : baselineFailure
-            ? 'baseline > .006'
-            : gapFailure
-              ? 'gap > .025'
-              : 'SHEET regex failure';
-      remember(normalized, parts, reason);
-    }
+function rowBands(items, tolerance = .012) {
+  const bands = [];
+  for (const item of items.slice().sort((a, b) => Number(a.region.y) - Number(b.region.y) || Number(a.region.x) - Number(b.region.x))) {
+    const band = bands.find(candidate => Math.abs(candidate.y - Number(item.region.y)) <= tolerance);
+    if (band) { band.items.push(item); band.y = Math.min(band.y, Number(item.region.y)); }
+    else bands.push({ y: Number(item.region.y), items: [item] });
   }
-
-  const sameBaseline = tableItems.slice().sort((a, b) => Number(a.region.y) - Number(b.region.y) || Number(a.region.x) - Number(b.region.x));
-  for (let left = 0; left < sameBaseline.length; left += 1) {
-    for (let right = left + 1; right < Math.min(sameBaseline.length, left + 10); right += 1) {
-      const parts = [sameBaseline[left], sameBaseline[right]];
-      if (Math.abs(Number(parts[0].region.y) - Number(parts[1].region.y)) > .006) continue;
-      const normalized = normalizeBedfordSheetNumber(parts.map(part => part.text).join(''));
-      if (SHEET.test(normalized) && Number(parts[1].order) !== Number(parts[0].order) + 1) remember(normalized, parts, 'non-consecutive');
-    }
-  }
-
-  for (const item of strictSheetItems) {
-    const normalized = normalizeBedfordSheetNumber(item.text);
-    if (!emitted.has(normalized)) remember(normalized, [item], 'title reconstruction failure');
-  }
-
-  const duplicateKeys = rows.map(row => row.normalizedSheetNumber).filter((key, index, source) => source.indexOf(key) !== index);
-  for (const key of duplicateKeys) {
-    const item = strict.get(key);
-    remember(key, item ? [item] : [], 'duplicate elimination');
-  }
-
-  const missingRows = [...discovered.values()].sort((a, b) => a.sheetNumber.localeCompare(b.sheetNumber, undefined, { numeric: true }));
-  if (missingRows.length && globalThis.console) {
-    console.groupCollapsed?.(`Bedford drawing index parser: ${missingRows.length} sheet-like row(s) not emitted`);
-    console.info?.('Bedford drawing index parser comparison', { functionName: 'parseBedfordDrawingIndex', sheetLikeTextDiscovered: new Set([...emitted, ...discovered.keys()]).size, canonicalRowsEmitted: rows.length, missingCanonicalRows: missingRows.length, emittedSheetNumbers: [...emitted] });
-    console.table?.(missingRows.map(item => ({ sheetNumber: item.sheetNumber, rule: item.exclusionRule, fragments: item.fragmentCount, candidate: item.reconstructedFragmentCandidate })));
-    missingRows.forEach(item => console.info?.('Bedford drawing index row exclusion', item));
-    console.groupEnd?.();
-  }
-  return missingRows;
+  return bands;
 }
 
 export function parseBedfordTitleBlock(items = []) {
@@ -99,6 +43,17 @@ export function parseBedfordTitleBlock(items = []) {
   for (const label of source) {
     const name = FIELD_NAMES[label.text.replace(/:$/, '').toUpperCase()];
     if (!name) continue;
+    if (name === 'drawingNumber') {
+      const nearby = source.filter(item => item !== label && !FIELD_NAMES[item.text.replace(/:$/, '').toUpperCase()])
+        .filter(item => item.region.y >= label.region.y - .004 && item.region.y <= label.region.y + .065 && item.region.x >= label.region.x - .08 && item.region.x <= label.region.x + .18);
+      const reconstructed = rowBands(nearby, .012).map(band => ({ parts: band.items.slice().sort((a, b) => a.region.x - b.region.x), value: normalizeBedfordSheetNumber(band.items.slice().sort((a, b) => a.region.x - b.region.x).map(item => item.text).join('')) })).find(item => SHEET.test(item.value));
+      if (reconstructed) {
+        const value = formatBedfordSheetNumber(reconstructed.value);
+        evidence.push({ field: name, labelRegion: label.region, valueRegion: reconstructed.parts[0].region, value, valid: true, fragments: reconstructed.parts.map(item => item.text) });
+        if (!fields[name]) fields[name] = value;
+        continue;
+      }
+    }
     const candidate = source.filter(item => item !== label && !FIELD_NAMES[item.text.replace(/:$/, '').toUpperCase()])
       .filter(item => item.region.y >= label.region.y - .004 && item.region.y <= label.region.y + .065)
       .sort((a, b) => Math.abs(a.region.x - label.region.x) - Math.abs(b.region.x - label.region.x) || a.region.y - b.region.y)[0];
@@ -139,44 +94,39 @@ export function parseBedfordDrawingIndex(page = null) {
   if (!page) return [];
   const items = normalizedItems(page.textItems).sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x);
   const tableItems = items.filter(item => Number(item.region.y) < BEDFORD_TITLE_BLOCK_REGION.y);
-  const sheetItems = [];
-  for (let index = 0; index < tableItems.length; index += 1) {
-    const item = tableItems[index];
-    const direct = normalizeBedfordSheetNumber(item.text);
-    if (SHEET.test(item.text) || SHEET.test(direct)) sheetItems.push({ ...item, text: SHEET.test(item.text) ? item.text : direct, sourceOrders: [item.order] });
-    for (let count = 2; count <= 3; count += 1) {
-      const parts = tableItems.slice(index, index + count);
-      if (parts.length !== count || parts.some(part => Math.abs(Number(part.region.y) - Number(item.region.y)) > .006)) continue;
-      const ordered = parts.slice().sort((a, b) => a.region.x - b.region.x);
-      if (ordered.some((part, partIndex) => partIndex && Number(part.region.x) - (Number(ordered[partIndex - 1].region.x) + Number(ordered[partIndex - 1].region.width || 0)) > .025)) continue;
-      const combined = normalizeBedfordSheetNumber(ordered.map(part => part.text).join(''));
-      if (!SHEET.test(combined)) continue;
-      const left = Math.min(...ordered.map(part => Number(part.region.x)));
-      const right = Math.max(...ordered.map(part => Number(part.region.x) + Number(part.region.width || 0)));
-      sheetItems.push({ text: combined, order: Math.min(...ordered.map(part => part.order)), sourceOrders: ordered.map(part => part.order), region: { x: left, y: Math.min(...ordered.map(part => Number(part.region.y))), width: right - left, height: Math.max(...ordered.map(part => Number(part.region.height || 0))) } });
+  const numberHeaders = tableItems.filter(item => /^SHEET\s+(?:NUMBER|NO)$/i.test(item.text)).sort((a, b) => a.region.x - b.region.x);
+  const titleHeaders = tableItems.filter(item => /^SHEET\s+(?:NAME|TITLE)$/i.test(item.text)).sort((a, b) => a.region.x - b.region.x);
+  if (!numberHeaders.length || !titleHeaders.length) return [];
+  const columns = numberHeaders.map((header, index) => {
+    const right = numberHeaders[index + 1]?.region.x ?? 1;
+    const titleHeader = titleHeaders.find(item => item.region.x > header.region.x && item.region.x < right);
+    return titleHeader ? { numberX: Number(header.region.x), titleX: Number(titleHeader.region.x), right: Number(right), headerY: Math.max(Number(header.region.y), Number(titleHeader.region.y)) } : null;
+  }).filter(Boolean);
+  const indexBlock = parseBedfordTitleBlock(page.textItems);
+  const expectedBuilding = normalizeBedfordSheetNumber(indexBlock.buildingNumber || indexBlock.drawingNumber).match(/^(\d+)/)?.[1] || '';
+  const candidates = [];
+  for (const [columnIndex, column] of columns.entries()) {
+    const numberZone = tableItems.filter(item => item.region.x >= column.numberX - .025 && item.region.x < column.titleX - .004 && item.region.y > column.headerY + .003)
+      .filter(item => !DISCIPLINES[item.text.toUpperCase()] && !/^SHEET\s+(?:NUMBER|NO)$/i.test(item.text));
+    for (const band of rowBands(numberZone, .006)) {
+      const fragments = band.items.slice().sort((a, b) => a.region.x - b.region.x);
+      const normalizedSheetNumber = normalizeBedfordSheetNumber(fragments.map(item => item.text).join(''));
+      if (!SHEET.test(normalizedSheetNumber) || (expectedBuilding && !normalizedSheetNumber.startsWith(expectedBuilding))) continue;
+      candidates.push({ columnIndex, column, y: band.y, fragments, normalizedSheetNumber, sheetNumber: formatBedfordSheetNumber(normalizedSheetNumber), order: Math.min(...fragments.map(item => item.order)) });
     }
   }
-  const uniqueSheetItems = sheetItems.filter((item, index, source) => source.findIndex(other => normalizeBedfordSheetNumber(other.text) === normalizeBedfordSheetNumber(item.text) && Math.abs(Number(other.region.x) - Number(item.region.x)) < .006 && Math.abs(Number(other.region.y) - Number(item.region.y)) < .006) === index);
-  const columnStarts = [];
-  for (const item of uniqueSheetItems.slice().sort((a, b) => a.region.x - b.region.x)) {
-    if (!columnStarts.some(value => Math.abs(value - item.region.x) <= .04)) columnStarts.push(Number(item.region.x));
-  }
-  const rows = [];
-  for (const item of uniqueSheetItems.sort((a, b) => a.order - b.order || a.region.y - b.region.y || a.region.x - b.region.x)) {
-    const columnIndex = columnStarts.findIndex(value => Math.abs(value - item.region.x) <= .04);
-    const columnLeft = columnStarts[columnIndex] ?? Number(item.region.x);
-    const columnRight = columnStarts[columnIndex + 1] === undefined ? 1 : columnStarts[columnIndex + 1] - .01;
-    const nextRow = uniqueSheetItems.filter(other => other !== item && Math.abs(other.region.x - columnLeft) <= .04 && other.region.y > item.region.y + .001).sort((a, b) => a.region.y - b.region.y)[0];
-    const rowBottom = Math.min(Number(item.region.y) + .018, nextRow ? Number(nextRow.region.y) - .001 : Number(item.region.y) + .018);
-    const row = tableItems.filter(other => other !== item && !item.sourceOrders?.includes(other.order) && other.region.x > item.region.x + item.region.width * .5 && other.region.x < columnRight && other.region.y >= item.region.y - .003 && other.region.y <= rowBottom).sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x);
-    const headingItem = tableItems.filter(other => DISCIPLINES[other.text.toUpperCase()] && other.region.x >= columnLeft - .04 && other.region.x < columnRight && other.region.y <= item.region.y).sort((a, b) => b.region.y - a.region.y)[0];
-    const discipline = DISCIPLINES[headingItem?.text.toUpperCase()] || 'Unknown';
-    const status = row.find(other => /^(?:YES|NO|N\/A|INCLUDED|ISSUED)$/i.test(other.text));
-    const title = clean(row.filter(other => other !== status && !DISCIPLINES[other.text.toUpperCase()] && !FIELD_NAMES[other.text.replace(/:$/, '').toUpperCase()]).map(other => other.text).join(' '));
-    if (!title || /^(?:SHEET (?:NAME|TITLE))$/i.test(title)) continue;
-    rows.push({ buildingNumber: normalizeBedfordSheetNumber(item.text).match(/^(\d+)/)?.[1] || '', discipline, sheetNumber: item.text.toUpperCase(), normalizedSheetNumber: normalizeBedfordSheetNumber(item.text), sheetTitle: title, normalizedTitle: normalizeBedfordTitle(title), expectedOrder: rows.length, inventoryOrder: rows.length, includedStatus: status?.text || '', sourcePage: page.pageNumber, sourceRegion: { x: item.region.x, y: item.region.y, width: Math.max(...row.map(other => other.region.x + other.region.width), item.region.x + item.region.width) - item.region.x, height: Math.max(item.region.height || 0, ...row.map(other => other.region.height || 0)) }, extractionMethod: 'bedford-va-index-profile' });
-  }
-  const canonicalRows = rows.filter((row, index, source) => source.findIndex(other => other.normalizedSheetNumber === row.normalizedSheetNumber) === index).map((row, index) => ({ ...row, expectedOrder: index, inventoryOrder: index }));
-  indexParserDiagnostics(tableItems, uniqueSheetItems, canonicalRows);
-  return canonicalRows;
+  const rows = candidates.map(candidate => {
+    const next = candidates.filter(item => item.columnIndex === candidate.columnIndex && item.y > candidate.y + .001).sort((a, b) => a.y - b.y)[0];
+    const bottom = Math.min(candidate.y + .028, next ? next.y - .001 : candidate.y + .028);
+    const titleItems = tableItems.filter(item => item.region.x >= candidate.column.titleX - .01 && item.region.x < candidate.column.right - .01 && item.region.y >= candidate.y - .002 && item.region.y <= bottom)
+      .filter(item => !/^(?:YES|NO|N\/A|INCLUDED|ISSUED)$/i.test(item.text) && !/^SHEET\s+(?:NAME|TITLE|NUMBER|NO)$/i.test(item.text))
+      .sort((a, b) => a.region.y - b.region.y || a.region.x - b.region.x);
+    const status = tableItems.find(item => item.region.x >= candidate.column.titleX && item.region.x < candidate.column.right && item.region.y >= candidate.y - .002 && item.region.y <= bottom && /^(?:YES|NO|N\/A|INCLUDED|ISSUED)$/i.test(item.text));
+    const heading = tableItems.filter(item => DISCIPLINES[item.text.toUpperCase()] && item.region.x >= candidate.column.numberX - .04 && item.region.x < candidate.column.right && item.region.y <= candidate.y).sort((a, b) => b.region.y - a.region.y)[0];
+    const sheetTitle = clean(titleItems.map(item => item.text).join(' ')) || 'Title unavailable';
+    const left = Math.min(...candidate.fragments.map(item => Number(item.region.x)));
+    const right = Math.max(...candidate.fragments.map(item => Number(item.region.x) + Number(item.region.width || 0)), ...titleItems.map(item => Number(item.region.x) + Number(item.region.width || 0)));
+    return { buildingNumber: expectedBuilding || candidate.normalizedSheetNumber.match(/^(\d+)/)?.[1] || '', discipline: DISCIPLINES[heading?.text.toUpperCase()] || 'Unknown', sheetNumber: candidate.sheetNumber, normalizedSheetNumber: candidate.normalizedSheetNumber, sheetTitle, normalizedTitle: normalizeBedfordTitle(sheetTitle), includedStatus: status?.text || '', sourcePage: page.pageNumber, sourceRegion: { x: left, y: candidate.y, width: right - left, height: Math.max(...candidate.fragments.map(item => Number(item.region.height || 0)), ...titleItems.map(item => Number(item.region.height || 0)), .001) }, extractionMethod: 'bedford-va-index-profile', sourceOrder: candidate.order };
+  }).sort((a, b) => a.sourceOrder - b.sourceOrder || a.sourceRegion.y - b.sourceRegion.y || a.sourceRegion.x - b.sourceRegion.x);
+  return rows.filter((row, index, source) => source.findIndex(other => other.normalizedSheetNumber === row.normalizedSheetNumber) === index).map((row, index) => ({ ...row, expectedOrder: index, inventoryOrder: index }));
 }

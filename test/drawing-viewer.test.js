@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { calculateDrawingFit, createDrawingRenderIdentity, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingRenderDecision, sameDrawingRenderIdentity, drawingWorkspaceLayout, restoreDrawingViewport, saveDrawingViewport } from '../src/drawing-navigation.js';
+import { calculateDrawingFit, createDrawingRenderIdentity, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingRenderDecision, drawingWheelZoom, sameDrawingRenderIdentity, drawingWorkspaceLayout, restoreDrawingViewport, saveDrawingViewport } from '../src/drawing-navigation.js';
 
 test('true Fit Page waits for size and accounts for rotation', () => {
   assert.equal(calculateDrawingFit({ containerWidth: 0, containerHeight: 500, pageWidth: 1000, pageHeight: 700 }).ready, false);
@@ -21,6 +21,37 @@ test('per-sheet viewport restores custom zoom, scroll, selection, and overlays',
   assert.equal(restored.overlays.candidates, false);
   assert.equal(restoreDrawingViewport(viewports, 'set', 'new').mode, 'fit-page');
   assert.equal(defaultDrawingViewport().zoom, null);
+});
+
+test('trackpad pinch and modified wheel zoom within the existing scale bounds', () => {
+  const zoomIn = drawingWheelZoom({ ctrlKey: true, deltaY: -80, zoom: 1 });
+  const zoomOut = drawingWheelZoom({ metaKey: true, deltaY: 80, zoom: 1 });
+  assert.equal(zoomIn.recognized, true);
+  assert.ok(zoomIn.zoom > 1);
+  assert.ok(zoomOut.zoom < 1);
+  assert.equal(drawingWheelZoom({ ctrlKey: true, deltaY: -100000, zoom: 1 }).zoom, 3);
+  assert.equal(drawingWheelZoom({ ctrlKey: true, deltaY: 100000, zoom: 1 }).zoom, .35);
+});
+
+test('drawing gesture zoom keeps the same drawing point under the cursor', () => {
+  const input = { ctrlKey: true, deltaY: -60, zoom: 1.2, scrollLeft: 240, scrollTop: 180, pointerX: 320, pointerY: 210 };
+  const next = drawingWheelZoom(input);
+  assert.ok(Math.abs((input.scrollLeft + input.pointerX) / input.zoom - (next.scrollLeft + input.pointerX) / next.zoom) < 1e-9);
+  assert.ok(Math.abs((input.scrollTop + input.pointerY) / input.zoom - (next.scrollTop + input.pointerY) / next.zoom) < 1e-9);
+});
+
+test('ordinary wheel scrolling is not intercepted by drawing zoom', () => {
+  const result = drawingWheelZoom({ deltaY: 80, zoom: 1.4, scrollLeft: 22, scrollTop: 44 });
+  assert.deepEqual(result, { recognized: false, preventDefault: false, zoom: 1.4, scrollLeft: 22, scrollTop: 44 });
+});
+
+test('drawing stage gesture handling reuses the existing zoom controls and viewport map', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /stage\.onwheel = event =>/);
+  assert.match(app, /if \(!next\.recognized\) return;\s*event\.preventDefault\(\)/);
+  assert.match(app, /captureDrawingViewport\(\{ mode: 'custom', zoom: next\.zoom, scrollLeft: next\.scrollLeft, scrollTop: next\.scrollTop \}\)/);
+  assert.match(app, /button\.dataset\.drawingZoom/);
+  assert.equal((app.match(/const drawingViewportBySet = new Map\(\);/g) || []).length, 1);
 });
 
 test('drawing workspace expands and restores both rails without viewport mutation', () => {

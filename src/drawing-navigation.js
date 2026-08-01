@@ -165,6 +165,36 @@ export function restoreDrawingViewport(viewports = {}, drawingSetId, sheetId) {
   return structuredClone(viewports[drawingViewportKey(drawingSetId, sheetId)] || defaultDrawingViewport());
 }
 
+export function drawingWheelZoom({
+  deltaY = 0,
+  ctrlKey = false,
+  metaKey = false,
+  zoom = 1,
+  scrollLeft = 0,
+  scrollTop = 0,
+  pointerX = 0,
+  pointerY = 0,
+  minZoom = .35,
+  maxZoom = 3,
+  sensitivity = .002
+} = {}) {
+  const recognized = Boolean(ctrlKey || metaKey);
+  const currentZoom = Math.max(Number(minZoom), Math.min(Number(maxZoom), Number(zoom) || 1));
+  if (!recognized) return { recognized: false, preventDefault: false, zoom: currentZoom, scrollLeft: Number(scrollLeft) || 0, scrollTop: Number(scrollTop) || 0 };
+  const nextZoom = Math.max(Number(minZoom), Math.min(Number(maxZoom), currentZoom * Math.exp(-(Number(deltaY) || 0) * Number(sensitivity))));
+  const x = Number(pointerX) || 0;
+  const y = Number(pointerY) || 0;
+  const drawingX = ((Number(scrollLeft) || 0) + x) / currentZoom;
+  const drawingY = ((Number(scrollTop) || 0) + y) / currentZoom;
+  return {
+    recognized: true,
+    preventDefault: true,
+    zoom: nextZoom,
+    scrollLeft: Math.max(0, drawingX * nextZoom - x),
+    scrollTop: Math.max(0, drawingY * nextZoom - y)
+  };
+}
+
 export function drawingWorkspaceLayout(layout = {}, action = '') {
   const current = { finderHidden: Boolean(layout.finderHidden), evidenceHidden: Boolean(layout.evidenceHidden), expanded: Boolean(layout.expanded) };
   if (action === 'expand') return { finderHidden: true, evidenceHidden: true, expanded: true };
