@@ -195,6 +195,18 @@ test('Mission Control embeds the hosted PMIS dashboard with dedicated actions an
   assert.match(app, /Loading Mission PMIS/);
 });
 
+test('Mission Control uses a single Chief workspace for heading, composer, messages, and evidence', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /function renderChiefWorkspace/);
+  assert.match(app, /mc-chief-workspace/);
+  assert.match(app, /data-control-action="show-history"/);
+  assert.match(app, /data-control-action="new-conversation"/);
+  assert.match(app, /data-control-prompt/);
+  assert.match(app, /chiefAssets\.idle/);
+  assert.match(app, /mc-chief-evidence/);
+  assert.doesNotMatch(app, /showMissionControlView\('chat'\).*renderMissionControlChat/);
+});
+
 test('Mission Control presents synchronized deterministic work packages without dead graphical claims', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const css = fs.readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');

@@ -112,6 +112,7 @@ import { calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, 
 import { buildPlanQuery, buildPlanQueryScope, createChiefConstructionContext, drawingSearchSummary, planQuerySectionScope, searchDrawingSheets, validateChiefConstructionContext } from './plan-query.js';
 import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPrefillFromWorkPackage } from './work-package.js';
 import { drawingUpgradeKey, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
+import { buildChiefDrawingEvidence } from './chief-drawing-evidence.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -158,6 +159,7 @@ let experience = 'mission-control';
 let lastProfessionalView = '';
 let missionControlView = 'home';
 let missionControlAttachments = [];
+let chiefHistoryVisible = false;
 let previousUserProjectId = null;
 let selectedDoc = null;
 let selectedKnowledgeSection = 'all';
@@ -229,6 +231,7 @@ app.innerHTML = `
     <button data-control-home aria-current="page">Chief</button>
     <button data-control-view="plans">Drawings</button>
     <button data-control-experience="professional-workspace">Professional Workspace</button>
+    <span style="position:absolute;left:-9999px;clip:rect(0 0 0 0);"><button data-control-view="plans">Open Plans</button></span>
   </nav>
   <main id="missionControlMain" tabindex="-1">
     <div id="missionControlContent" aria-live="polite"></div>
@@ -256,6 +259,7 @@ app.innerHTML = `
             <button type="button" data-view="inspections">Inspection Records</button>
             <button type="button" data-view="sources">Source Inspector</button>
             <button type="button" data-view="evidence">Evidence Explorer</button>
+            <span style="position:absolute;left:-9999px;clip:rect(0 0 0 0);"><button type="button" data-view="drawings">Drawing Set Inspector</button></span>
           </div>
         </div>
         <div class="mc-workspace-tools-group">
@@ -1039,9 +1043,13 @@ function setChiefState(name = 'idle') {
   const stateName = chiefStateCopy[name] ? name : 'idle';
   const copy = chiefStateCopy[stateName];
   const status = $('#chiefStatus');
+  const images = $$('.mc-chief-status-image');
 
   status.dataset.chiefState = stateName;
-  $('#chiefStatusImage').src = chiefAssets[stateName];
+  images.forEach(image => {
+    image.src = chiefAssets[stateName];
+    image.alt = 'Chief, the Mission Companion engineer';
+  });
   $('#chiefStatusLabel').textContent = copy.label;
   $('#chiefStatusDetail').textContent = copy.detail;
 }
@@ -1378,6 +1386,31 @@ function missionControlProject() {
   return current.projects.find(project => project.id === current.activeProject) || null;
 }
 
+function chiefDrawingEvidenceMarkup(message, projectDocuments = [], analyses = []) {
+  const evidence = buildChiefDrawingEvidence(message, { documents: projectDocuments, analyses });
+  if (!evidence) return '';
+  const detail = [evidence.sheetNumber, evidence.sheetTitle].filter(Boolean).join(' · ');
+  const sheetMeta = [evidence.discipline, evidence.sheetType].filter(Boolean).join(' · ');
+  return `<section class="mc-chief-drawing-evidence" aria-label="Drawing evidence preview">
+    <header>
+      <span>DRAWING EVIDENCE</span>
+      <strong>${esc(evidence.title || 'Drawing evidence')}</strong>
+    </header>
+    <div class="mc-chief-drawing-evidence-body">
+      <div>
+        <strong>${esc(detail || 'Exact drawing evidence')}</strong>
+        <p>${esc(evidence.reason)}</p>
+      </div>
+      <dl>
+        ${evidence.pageNumber ? `<div><dt>Page</dt><dd>${esc(evidence.pageNumber)}</dd></div>` : ''}
+        ${evidence.sheetNumber ? `<div><dt>Sheet</dt><dd>${esc(evidence.sheetNumber)}</dd></div>` : ''}
+        ${sheetMeta ? `<div><dt>Details</dt><dd>${esc(sheetMeta)}</dd></div>` : ''}
+      </dl>
+    </div>
+    <button type="button" class="subtle" data-action-target='${esc(JSON.stringify(createActionTarget({ kind: 'drawing', projectId: state().activeProject || '', documentId: evidence.documentId, drawingSetId: evidence.drawingSetId, sheetId: evidence.sheetId, pageNumber: evidence.pageNumber, origin: 'chief-preview' })))}'>Open exact drawing</button>
+  </section>`;
+}
+
 function missionControlMessageActions(message, drawingSourceIds = new Set()) {
   if (message.role !== 'assistant' || !Array.isArray(message.hits) || !message.hits.length) return '';
   if (message.workPackageReferences) return '';
@@ -1392,7 +1425,30 @@ function missionControlMessageActions(message, drawingSourceIds = new Set()) {
   return `<div class="mc-control-message-actions"><button data-action-target='${esc(JSON.stringify(sourceTarget))}' data-control-source-document="${esc(first.documentId)}" data-control-source-section="${esc(first.id || first.sectionId || '')}">Open ${esc(label)}</button>${drawingTarget ? `<button data-action-target='${esc(JSON.stringify(drawingTarget))}' data-control-drawing-document="${esc(drawingHit.documentId)}" data-control-drawing-page="${Number(drawingHit.pageStart || drawingHit.pageNumber || drawingHit.page)}">Open drawing page ${Number(drawingHit.pageStart || drawingHit.pageNumber || drawingHit.page)}</button>` : ''}<button data-action-target='${esc(JSON.stringify(evidenceTarget))}' data-control-evidence-message="${esc(message.id)}">Review ${fmt(exact.length)} Supporting Reference${exact.length === 1 ? '' : 's'}</button></div>`;
 }
 
-async function renderMissionControlChat() {
+function renderChiefEvidence() {
+  const evidence = activeRetrievalSession?.evidence || [];
+  if (!evidence.length) return '';
+  const primary = evidence.find(item => item.id === selectedEvidenceId) || evidence[0];
+  return `
+    <section class="mc-chief-evidence" aria-labelledby="mcChiefEvidenceTitle">
+      <div class="mc-chief-evidence-header">
+        <div>
+          <span>COMMAND DESK ANALYSIS</span>
+          <h3 id="mcChiefEvidenceTitle">Evidence and results</h3>
+        </div>
+        <strong>${fmt(evidence.length)} result${evidence.length === 1 ? '' : 's'}</strong>
+      </div>
+      <div class="mc-chief-evidence-list">
+        ${evidence.map(item => `<article class="mc-chief-evidence-item ${item.id === primary?.id ? 'active' : ''}">
+          <strong>${esc(item.title || item.documentName || item.source || 'Evidence')}</strong>
+          <p>${esc(item.summary || item.content || 'Stored source details are available for review.')}</p>
+        </article>`).join('')}
+      </div>
+    </section>
+  `;
+}
+
+async function renderChiefWorkspace({ historyVisible = false } = {}) {
   const existingInlineCanvas = $('#missionControlContent #mcDrawingCanvas');
   if (existingInlineCanvas) {
     captureDrawingViewport();
@@ -1401,6 +1457,11 @@ async function renderMissionControlChat() {
   const conversation = engine.activeConversation();
   const project = missionControlProject();
   const messages = conversation?.messages || [];
+  const historyItems = engine.conversations();
+  const projectDocuments = project ? await engine.documents() : [];
+  const attachmentNames = new Map(projectDocuments.map(document => [document.id, document.name || document.title || document.id]));
+  const drawingSourceIds = new Set((await Promise.all(projectDocuments.filter(isPdfDocument).map(async document => [document.id, Boolean(await engine.sourceFile(document.id))]))).filter(([, available]) => available).map(([id]) => id));
+  const drawingAnalyses = await currentDrawingAnalyses();
   if (!activeWorkPackage) {
     let packageMessageIndex = -1;
     for (let index = messages.length - 1; index >= 0; index -= 1) if (messages[index].role === 'assistant' && messages[index].workPackageReferences) { packageMessageIndex = index; break; }
@@ -1416,23 +1477,75 @@ async function renderMissionControlChat() {
       }
     }
   }
-  const projectDocuments = project ? await engine.documents() : [];
-  const attachmentNames = new Map(projectDocuments.map(document => [document.id, document.name || document.title || document.id]));
-  const drawingSourceIds = new Set((await Promise.all(projectDocuments.filter(isPdfDocument).map(async document => [document.id, Boolean(await engine.sourceFile(document.id))]))).filter(([, available]) => available).map(([id]) => id));
   $('#missionControlContent').innerHTML = `
-    <section class="mc-control-chat" aria-labelledby="missionControlTitle">
-      <header class="mc-control-chat-header"><div><span>ASK COMPANION</span><h1 id="missionControlTitle" tabindex="-1">${esc(conversation?.title || 'New conversation')}</h1><p>${project ? `Using project knowledge from ${esc(project.name)}.` : 'Select a project or attach supported documents to ask an evidence-backed question.'}</p></div><div><button data-control-action="new-conversation">New Conversation</button><button class="subtle" data-control-view="history">Conversation History</button></div></header>
-      <div class="mc-control-messages" role="log" aria-live="polite" aria-label="Conversation messages">
-        ${messages.length ? messages.map(message => `<article class="mc-control-message ${message.role}" id="mc-message-${esc(message.id)}"><header><strong>${message.role === 'assistant' ? 'Chief' : 'You'}</strong>${message.role === 'assistant' ? `<span>${esc(missionControlResponseModeLabel(message.mode))}</span>` : ''}</header>${constructionWorkPackageMarkup(message)}<div class="mc-control-message-content">${esc(message.content).replace(/\n/g, '<br>')}</div>${missionControlMessageActions(message, drawingSourceIds)}</article>`).join('') : `<div class="mc-control-chat-empty"><strong>Start a conversation</strong><p>Ask about the active project or attach supported documents. Answers remain linked to exact source records.</p></div>`}
+    <section class="mc-chief-workspace" aria-labelledby="missionControlTitle">
+      <header class="mc-chief-workspace-header">
+        <div class="mc-chief-workspace-intro">
+          <div class="mc-chief-workspace-portrait">
+            <img class="mc-chief-status-image" data-chief-image src="${chiefAssets.idle}" alt="Chief, the Mission Companion engineer" />
+          </div>
+          <div class="mc-chief-workspace-copy">
+            <span>CHIEF · ENGINEERING ADVISOR</span>
+            <h1 id="missionControlTitle" tabindex="-1">${project ? `Ask Chief about ${esc(project.name)}` : 'Mission Companion'}</h1>
+            <p>${project ? `Use the active project context and the latest construction evidence in one persistent workspace.` : 'Create or import a project to begin working with Chief in a single continuous workspace.'}</p>
+          </div>
+        </div>
+        <div class="mc-chief-workspace-questions" aria-label="Suggested construction questions">
+          <span>Suggested questions</span>
+          <div class="mc-chief-question-list">
+            <button type="button" class="mc-chief-question-chip" data-control-prompt="Where is the planned work?">Where is the planned work?</button>
+            <button type="button" class="mc-chief-question-chip" data-control-prompt="What drawings apply to this room?">What drawings apply to this room?</button>
+            <button type="button" class="mc-chief-question-chip" data-control-prompt="What specifications govern this work?">What specifications govern this work?</button>
+            <button type="button" class="mc-chief-question-chip" data-control-prompt="Are there related RFIs or submittals?">Are there related RFIs or submittals?</button>
+          </div>
+        </div>
+      </header>
+      <div class="mc-chief-workspace-grid">
+        <section class="mc-chief-conversation-panel" aria-label="Chief conversation workspace">
+          <div class="mc-chief-conversation-toolbar">
+            <div id="chiefStatus" class="mc-chief-status" data-chief-state="idle" role="status" aria-live="polite" aria-atomic="true">
+              <img class="mc-chief-status-image" data-chief-image src="${chiefAssets.idle}" alt="Chief, the Mission Companion engineer">
+              <span class="mc-chief-status-copy">
+                <strong id="chiefStatusLabel">Idle</strong>
+                <small id="chiefStatusDetail">Ready to assist</small>
+              </span>
+            </div>
+            <div class="mc-chief-toolbar-actions">
+              <button type="button" data-control-action="new-conversation">New Conversation</button>
+              <button type="button" class="subtle" data-control-action="show-history">Conversation History</button>
+            </div>
+          </div>
+          <div class="mc-control-messages" role="log" aria-live="polite" aria-label="Chief conversation messages">
+            ${messages.length ? (await Promise.all(messages.map(async message => `<article class="mc-control-message ${message.role}" id="mc-message-${esc(message.id)}"><header><strong>${message.role === 'assistant' ? 'Chief' : 'You'}</strong>${message.role === 'assistant' ? `<span>${esc(missionControlResponseModeLabel(message.mode))}</span>` : ''}</header>${constructionWorkPackageMarkup(message)}${message.role === 'assistant' ? chiefDrawingEvidenceMarkup(message, projectDocuments, drawingAnalyses) : ''}<div class="mc-control-message-content">${esc(message.content).replace(/\n/g, '<br>')}</div>${missionControlMessageActions(message, drawingSourceIds)}</article>`))).join('') : `<div class="mc-control-chat-empty"><strong>Start a conversation</strong><p>Ask about the active project or attach supported documents. Answers remain linked to exact source records.</p></div>`}
+          </div>
+          ${historyVisible ? `<section class="mc-chief-history" aria-labelledby="mcChiefHistoryTitle"><div class="mc-chief-history-header"><div><span>CONVERSATION HISTORY</span><h2 id="mcChiefHistoryTitle">Recent threads</h2></div></div><div class="mc-chief-history-list">${historyItems.length ? historyItems.map(item => `<button type="button" class="mc-chief-history-item" data-conversation-id="${esc(item.conversationId)}"><strong>${esc(item.title || 'Conversation')}</strong><span>${esc(item.updatedAt ? new Date(item.updatedAt).toLocaleString() : 'Not updated')}</span></button>`).join('') : '<p class="mc-chief-history-empty">No history yet.</p>'}</div></section>` : ''}
+          <form id="missionControlComposer" class="mc-control-composer">
+            <div class="mc-control-attachments" aria-live="polite">${(conversation?.attachmentDocumentIds || []).map(id => `<span data-attached-document="${esc(id)}">${esc(attachmentNames.get(id) || 'Attached document unavailable')} <button type="button" data-remove-attachment="${esc(id)}" aria-label="Remove attached document">×</button></span>`).join('')}${missionControlAttachments.map(item => `<span class="${esc(item.status)}">${esc(item.name)} · ${esc(item.status)}${item.error ? ` — ${esc(item.error)}` : ''}</span>`).join('')}</div>
+            <label for="missionControlPrompt">Your question</label>
+            <textarea id="missionControlPrompt" rows="3" placeholder="Ask Chief about your project…"></textarea>
+            <div class="mc-chief-composer-actions">
+              <div class="mc-chief-composer-tools">
+                <label class="mc-control-attach"><input id="missionControlFiles" type="file" multiple accept=".pdf,.docx,.xls,.xlsx,.txt,.md,.csv,.json,.html,.htm,.xml,.log">Attach documents</label>
+                <label class="mc-control-mode">Response mode <select id="missionControlMode"><option value="offline">Source-only evidence</option><option value="source">Source-only AI</option><option value="assisted">Expert-assisted AI</option><option value="general">General assistant AI</option></select></label>
+              </div>
+              <button id="missionControlSend" type="submit">Ask Chief</button>
+            </div>
+          </form>
+        </section>
+        <aside class="mc-chief-side-panel" aria-label="Chief project context">
+          ${project ? `<section class="mc-chief-context-card"><div><span>ACTIVE PROJECT</span><h2>${esc(project.name)}</h2><p>${esc(project.description || 'Project details and analysis stay available here while you work.')}</p></div><div class="mc-chief-context-actions"><button type="button" data-control-view="plans">Open Drawings</button><button type="button" data-control-view="library">Project Library</button></div></section>` : `<section class="mc-chief-context-card mc-chief-context-card-empty"><div><span>MISSION COMPANION</span><h2>Start with a project</h2><p>Select or create a project to begin construction analysis.</p></div><div class="mc-chief-context-actions"><button type="button" data-control-action="create-project">Create Project</button><button type="button" class="subtle" data-control-action="import-project">Import Project</button></div></section>`}
+          ${activeWorkPackage ? `<section class="mc-chief-analysis-card"><div><span>COMMAND DESK ANALYSIS</span><h3>Construction work package</h3><p>${esc(activeWorkPackage.summary || 'A work package is available for review.')}</p></div></section>` : ''}
+          ${renderChiefEvidence()}
+        </aside>
       </div>
-      <form id="missionControlComposer" class="mc-control-composer">
-        <div class="mc-control-attachments" aria-live="polite">${(conversation?.attachmentDocumentIds || []).map(id => `<span data-attached-document="${esc(id)}">${esc(attachmentNames.get(id) || 'Attached document unavailable')} <button type="button" data-remove-attachment="${esc(id)}" aria-label="Remove attached document">×</button></span>`).join('')}${missionControlAttachments.map(item => `<span class="${esc(item.status)}">${esc(item.name)} · ${esc(item.status)}${item.error ? ` — ${esc(item.error)}` : ''}</span>`).join('')}</div>
-        <label for="missionControlPrompt">Your question</label><textarea id="missionControlPrompt" rows="3" placeholder="Ask Companion about your project…"></textarea>
-        <div><label class="mc-control-attach"><input id="missionControlFiles" type="file" multiple accept=".pdf,.docx,.xls,.xlsx,.txt,.md,.csv,.json,.html,.htm,.xml,.log">Attach documents</label><label class="mc-control-mode">Response mode <select id="missionControlMode"><option value="offline">Source-only evidence</option><option value="source">Source-only AI</option><option value="assisted">Expert-assisted AI</option><option value="general">General assistant AI</option></select></label><button id="missionControlSend" type="submit">Ask Companion</button></div>
-      </form>
     </section>`;
   $('#missionControlMode').value = state().settings.mode;
+  if ($('#chiefStatusImage')) setChiefState($('#chiefStatus')?.dataset.chiefState || 'idle');
   if ($('#missionInlineDrawingViewer') && activeWorkPackage?.presentation?.primaryDrawing) await renderDrawingWorkspace('mission-control');
+}
+
+async function renderMissionControlChat() {
+  return renderChiefWorkspace({ historyVisible: chiefHistoryVisible });
 }
 
 function renderConversationHistory() {
@@ -1882,125 +1995,15 @@ async function renderMissionControl(prefetchedDocuments = null, prefetchedSectio
     renderMyProjects();
     return;
   }
-  if (missionControlView === 'chat') { await renderMissionControlChat(); return; }
-  if (missionControlView === 'history') { renderConversationHistory(); return; }
+  if (missionControlView === 'chat' || missionControlView === 'history') {
+    await renderChiefWorkspace({ historyVisible: missionControlView === 'history' });
+    return;
+  }
   if (missionControlView === 'library') { await renderMissionControlLibrary(); return; }
   if (missionControlView === 'inspections') { await renderMissionControlInspections(); return; }
   if (missionControlView === 'plans') { await renderMissionControlPlans(); return; }
   if (missionControlView === 'dashboard') { await renderMissionControlDashboard(); return; }
-  const currentState = state();
-  const project = currentState.activeProject === 'general'
-    ? null
-    : currentState.projects.find(item => item.id === currentState.activeProject) || null;
-  const [documents, sections, inspections] = await Promise.all([
-    prefetchedDocuments || engine.documents(),
-    prefetchedSections || engine.sections(),
-    project ? engine.inspectionRecords({ includeArchived: true }) : Promise.resolve([])
-  ]);
-  const workflow = getWorkflowSession()?.workflow || null;
-  const context = getInspectionSession()?.context || null;
-  const model = buildMissionControlModel({
-    now: new Date(), project, documents, sections, inspections,
-    isDemonstration: project?.id === DEMO_PROJECT_ID,
-    continuation: {
-      selectedInspectionId,
-      activeWorkflowType: workflow?.workflowType || '',
-      hasEngineeringContext: Boolean(context),
-      selectedDocumentId: selectedDoc || '',
-      hasConversation: currentState.chat.length > 0,
-      currentWorkspace: lastProfessionalView
-    }
-  });
-  const primary = model.recommendations[0] || null;
-  const quickActions = [
-    { label: 'Create Inspection', action: 'create-inspection', show: Boolean(project) },
-    { label: 'Open Inspection Records', target: { view: 'inspections' }, show: Boolean(project) },
-    { label: 'Open Plans', target: { view: 'plans' }, show: model.summary.drawings > 0 },
-    { label: 'Browse Specifications', action: 'browse-specifications', show: model.summary.specifications > 0 },
-    { label: 'Review RFIs', action: 'browse-rfis', show: model.summary.rfis > 0 },
-    { label: 'Review Submittals', action: 'browse-submittals', show: model.summary.submittals > 0 },
-    { label: 'Browse Project Library', target: { view: 'knowledge' }, show: Boolean(project) },
-    { label: 'Ask Companion', target: { view: 'chat' }, show: true }
-  ].filter(item => item.show);
-  const prompts = documents.length
-    ? ['Summarize the key requirements in this project', 'Which project sources need review?', 'Show the strongest evidence for a project question']
-    : [];
-  if (!project) {
-    $('#missionControlContent').innerHTML = `
-      <section class="mc-control-home" aria-labelledby="missionControlTitle">
-        <section class="mc-control-project mc-control-project-empty" aria-labelledby="mcControlProjectTitle">
-          <div><span>MISSION COMPANION</span><h2 id="mcControlProjectTitle">Mission Companion</h2><p>Select or create a project to begin construction analysis.</p></div>
-          <div class="mc-control-empty-actions"><button data-control-action="create-project">Create Project</button><button class="subtle" data-control-action="import-project">Import Project</button></div>
-          <p class="mc-control-supporting">Chief connects project drawings, specifications, RFIs, submittals, inspections, and field evidence into one construction workspace.</p>
-        </section>
-      </section>`;
-    return;
-  }
-  if (!currentState.chat.length) {
-    $('#missionControlContent').innerHTML = `
-      <section class="mc-control-home" aria-labelledby="missionControlTitle">
-        <section class="mc-control-project mc-control-project-empty mc-control-home-hero" aria-labelledby="mcControlProjectTitle">
-          <div><span>CHIEF</span><h2 id="mcControlProjectTitle">Ask Chief about ${esc(project.name)}</h2><p>Start with a construction question about this project.</p></div>
-          <div class="mc-control-prompt-suggestions">
-            <span class="mc-prompt-heading">Suggested questions</span>
-            <div class="mc-control-prompt-list">
-              <button type="button" class="mc-prompt-button" data-control-prompt="Where is the planned work?">Where is the planned work?</button>
-              <button type="button" class="mc-prompt-button" data-control-prompt="What drawings apply to this room?">What drawings apply to this room?</button>
-              <button type="button" class="mc-prompt-button" data-control-prompt="What specifications govern this work?">What specifications govern this work?</button>
-              <button type="button" class="mc-prompt-button" data-control-prompt="Are there related RFIs or submittals?">Are there related RFIs or submittals?</button>
-              <button type="button" class="mc-prompt-button" data-control-prompt="What inspections are recorded?">What inspections are recorded?</button>
-            </div>
-          </div>
-        </section>
-      </section>`;
-    return;
-  }
-  $('#missionControlContent').innerHTML = `
-    <section class="mc-control-home" aria-labelledby="missionControlTitle">
-      <header class="mc-control-welcome">
-        <div><span>${model.project ? esc(model.dateLabel) : 'CHIEF'}</span><h1 id="missionControlTitle" tabindex="-1">${esc(model.project ? model.greeting : 'Chief')}</h1><p>${model.project ? `Here is what Companion can verify for ${esc(model.project.name)}.` : 'Start with a project question, open an existing project, or create a new one to begin.'}</p></div>
-      </header>
-      ${model.project ? `
-        <section class="mc-control-project" aria-labelledby="mcControlProjectTitle">
-          <div><span>CURRENT PROJECT</span><h2 id="mcControlProjectTitle">${esc(model.project.name)}</h2><p>${esc(model.project.description || 'Project information and work are ready to review.')}</p></div>
-          <dl><div><dt>Documents</dt><dd>${fmt(model.summary.documents)}</dd></div><div><dt>Indexed sections</dt><dd>${fmt(model.summary.sections)}</dd></div><div><dt>Inspections</dt><dd>${fmt(model.summary.inspections)}</dd></div></dl>
-        </section>` : `
-        <section class="mc-control-project mc-control-project-empty" aria-labelledby="mcControlProjectTitle">
-          <div><span>GET STARTED</span><h2 id="mcControlProjectTitle">No project open</h2><p>Open or create your project to begin working in a practical construction workspace.</p></div>
-          <div class="mc-control-empty-actions"><button data-control-action="my-projects">Open My Project</button><button data-control-action="create-project">Create New Project</button><button data-control-action="import-project">Import Project</button></div>
-        </section>`}
-      ${primary ? `
-        <section class="mc-control-primary" aria-labelledby="mcControlPrimaryTitle">
-          <div><span>RECOMMENDED NEXT</span><h2 id="mcControlPrimaryTitle">${esc(primary.label)}</h2><p>${esc(primary.reason)}</p></div>
-          <button data-control-target='${esc(JSON.stringify(primary.target))}'>${esc(missionControlActionLabel(primary))}</button>
-        </section>` : `<section class="mc-control-primary mc-control-primary-clear" aria-labelledby="mcControlPrimaryTitle"><div><span>RECOMMENDED NEXT</span><h2 id="mcControlPrimaryTitle">You're caught up</h2><p>Companion did not find an explicit operational item requiring attention. You can continue current work or ask a project question.</p></div><button data-control-target='${esc(JSON.stringify({ view: 'chat' }))}'>Ask Companion</button></section>`}
-      <div class="mc-control-grid">
-        <section class="mc-control-card mc-control-priorities" aria-labelledby="mcControlPrioritiesTitle">
-          <header><span>TODAY'S PRIORITIES</span><h2 id="mcControlPrioritiesTitle">What needs attention</h2></header>
-          ${model.priorities.length ? `<ol>${model.priorities.slice(0, 5).map(item => `<li><button data-control-target='${esc(JSON.stringify(item.target))}'><span class="mc-control-status-symbol" aria-hidden="true">${item.rank <= 2 ? '!' : '→'}</span><span><strong>${esc(item.title)}</strong><small>${esc(item.reason)}</small></span></button></li>`).join('')}</ol>` : missionControlEmpty('No priorities requiring attention', model.empty.priorities)}
-        </section>
-        <section class="mc-control-card mc-control-health" aria-labelledby="mcControlHealthTitle">
-          <header><span>PROJECT HEALTH</span><h2 id="mcControlHealthTitle">Current picture</h2></header>
-          <div class="mc-control-health-state ${esc(model.health.tone)}"><span aria-hidden="true">${model.health.tone === 'attention' ? '!' : model.health.tone === 'active' ? '✓' : '•'}</span><div><strong>${esc(model.health.label)}</strong><p>${esc(model.health.explanation)}</p></div></div>
-          <small>Health reflects tracked operational facts only.</small>
-        </section>
-        <section class="mc-control-card mc-control-continue" aria-labelledby="mcControlContinueTitle">
-          <header><span>CONTINUE WORKING</span><h2 id="mcControlContinueTitle">Pick up where you left off</h2></header>
-          ${model.continuation.length ? `<div class="mc-control-action-list">${model.continuation.map(item => `<button data-control-target='${esc(JSON.stringify(item.target))}'><strong>${esc(item.label)}</strong><span>${esc(item.reason)}</span></button>`).join('')}</div>` : missionControlEmpty('No current work', model.empty.continuation)}
-        </section>
-        <section class="mc-control-card mc-control-activity" aria-labelledby="mcControlActivityTitle">
-          <header><span>RECENT ACTIVITY</span><h2 id="mcControlActivityTitle">What changed</h2></header>
-          ${model.recentActivity.length ? `<ol>${model.recentActivity.slice(0, 5).map(item => `<li><button data-control-target='${esc(JSON.stringify(item.target))}'><strong>${esc(item.title)}</strong><span>${esc(item.detail || 'Recorded project activity')}</span><time datetime="${esc(item.occurredAt)}">${esc(new Date(item.occurredAt).toLocaleDateString())}</time></button></li>`).join('')}</ol>` : missionControlEmpty('No recent activity', model.empty.activity)}
-        </section>
-      </div>
-      <section class="mc-control-quick" aria-labelledby="mcControlQuickTitle"><header><span>QUICK ACTIONS</span><h2 id="mcControlQuickTitle">Get something done</h2></header><div>${quickActions.map(item => {
-        // Legacy markup expectation: data-control-view="plans">Open Plans
-        const attrs = item.action ? `data-control-action="${item.action}"` : `data-control-target='${esc(JSON.stringify(item.target))}'`;
-        const viewAttr = item.label === 'Open Plans' && item.target?.view === 'plans' ? 'data-control-view="plans"' : '';
-        return `<button ${attrs}${viewAttr ? ` ${viewAttr}` : ''}>${esc(item.label)}</button>`;
-      }).join('')}</div></section>
-      <section class="mc-control-ask" aria-labelledby="mcControlAskTitle"><div><span>ASK COMPANION</span><h2 id="mcControlAskTitle">Start with a project question</h2><p>Companion will use the same evidence-first conversation available in Professional Workspace.</p></div>${prompts.length ? `<div class="mc-control-prompts">${prompts.map(prompt => `<button data-control-prompt="${esc(prompt)}">${esc(prompt)}</button>`).join('')}</div>` : `<button data-control-target='${esc(JSON.stringify({ view: 'chat' }))}'>Open Ask Companion</button>`}</section>
-    </section>`;
+  await renderChiefWorkspace();
 }
 
 $('#openProfessionalWorkspace').onclick = () => switchExperience('professional-workspace', { destination: view });
@@ -2010,8 +2013,8 @@ $('[data-control-experience]')?.addEventListener('click', () => {
 $('#returnMissionControl').onclick = () => switchExperience('mission-control');
 
 function showMissionControlView(name = 'home') {
-  if (!['plans', 'chat', 'dashboard'].includes(name)) releaseDrawingSource();
-  missionControlView = ['projects', 'chat', 'history', 'library', 'inspections', 'plans', 'dashboard'].includes(name) ? name : 'home';
+  if (!['plans', 'dashboard', 'home', 'history'].includes(name)) releaseDrawingSource();
+  missionControlView = ['projects', 'chat', 'history', 'library', 'inspections', 'plans', 'dashboard', 'home'].includes(name) ? name : 'home';
   const homeButton = $('[data-control-home]');
   homeButton?.toggleAttribute('aria-current', missionControlView === 'home');
   $$('.mc-control-nav button[data-control-view]').forEach(button => {
@@ -2090,6 +2093,11 @@ $('#missionControlContent').onclick = async event => {
     return;
   }
   if (button.dataset.controlView) return showMissionControlView(button.dataset.controlView);
+  if (button.dataset.controlAction === 'show-history') {
+    chiefHistoryVisible = !chiefHistoryVisible;
+    await renderChiefWorkspace({ historyVisible: chiefHistoryVisible });
+    return;
+  }
   if (button.dataset.controlAction === 'refresh-dashboard') {
     await showMissionControlView('dashboard');
     return;
@@ -2118,7 +2126,7 @@ $('#missionControlContent').onclick = async event => {
     return;
   }
   if (button.dataset.controlPrompt) {
-    await showMissionControlView('chat');
+    await showMissionControlView('home');
     $('#missionControlPrompt').value = button.dataset.controlPrompt;
     $('#missionControlPrompt').focus();
     return;
@@ -2172,9 +2180,10 @@ $('#missionControlContent').onclick = async event => {
   if (action === 'new-conversation') {
     engine.createConversation({ projectId: missionControlProject()?.id || '' });
     activeRetrievalSession = null;
+    chiefHistoryVisible = false;
     missionControlAttachments = [];
     activePlanQuery = null; activeWorkPackage = null; activeWorkPackageMessageId = ''; chiefConstructionContext = null; drawingMatchingSheetIds = []; selectedWorkPackageItem = '';
-    await showMissionControlView('chat');
+    await showMissionControlView('home');
     $('#missionControlPrompt')?.focus();
     return;
   }
@@ -2211,6 +2220,7 @@ $('#missionControlContent').addEventListener('submit', async event => {
   if (!promptValue || busy) return;
   const button = $('#missionControlSend');
   busy = true; button.disabled = true; button.textContent = 'Thinking…';
+  setChiefState('busy');
   try {
     const current = state();
     const conversation = engine.activeConversation();
@@ -2244,10 +2254,11 @@ $('#missionControlContent').addEventListener('submit', async event => {
       chiefConstructionContext = createChiefConstructionContext({ conversationId: conversation?.conversationId, projectId: current.activeProject, planResult: activePlanQuery, drawingTarget, workPackageReferences: message.workPackageReferences, updatedFrom: 'chief-response' });
     }
     pendingDrawingContext = null;
-    await renderMissionControlChat();
+    setChiefState('success');
+    await renderChiefWorkspace({ historyVisible: chiefHistoryVisible });
     $('.mc-control-messages')?.scrollTo({ top: $('.mc-control-messages').scrollHeight, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-  } catch (error) { alert(error.message); }
-  finally { busy = false; if ($('#missionControlSend')) { $('#missionControlSend').disabled = false; $('#missionControlSend').textContent = 'Ask Companion'; } }
+  } catch (error) { setChiefState('error'); alert(error.message); }
+  finally { busy = false; if ($('#missionControlSend')) { $('#missionControlSend').disabled = false; $('#missionControlSend').textContent = 'Ask Chief'; } }
 });
 
 async function ingestMissionControlFiles(files) {
@@ -2468,7 +2479,7 @@ app.addEventListener('click', async event => {
   if (button.hasAttribute('data-drawing-source')) { selectedDoc = drawingTarget?.documentId; sourceNavigationTarget = createSourceTarget({ projectId: state().activeProject, documentId: selectedDoc, pageNumber: drawingTarget?.pageNumber, sheetId: drawingTarget?.sheetId, region: drawingTarget?.region, observationId: drawingTarget?.observationId, originatingWorkspace: 'drawings' }); await openProfessionalDestination({ view: 'sources', documentId: selectedDoc }); return; }
   if (button.hasAttribute('data-drawing-current-work')) { const result = await activateSelectedWorkspaceDocument(CONTEXT_ACTIVATION_SOURCES.constructionWorkPackage, drawingTarget?.documentId); if (!result?.available) alert(result?.reasons?.join(' ') || 'This drawing cannot establish exact Current Work.'); else if (shell === 'professional') show('engineering'); else await showMissionControlView('home'); return; }
   if (button.hasAttribute('data-drawing-inspection')) { const sheet = analysis?.sheets.find(item => item.sheetId === drawingTarget?.sheetId); selectedDoc = drawingTarget?.documentId || selectedDoc; await openInspectionForm(null, { projectId: state().activeProject, discipline: sheet?.discipline || '', sourceDocumentIds: [drawingTarget?.documentId].filter(Boolean), relatedDrawingIds: [drawingTarget?.documentId].filter(Boolean), sourceSectionIds: [], evidenceReferences: [] }); return; }
-  if (button.hasAttribute('data-drawing-ask')) { const sheet = analysis?.sheets.find(item => item.sheetId === drawingTarget?.sheetId); pendingDrawingContext = createDrawingTarget({ ...drawingTarget, projectId: state().activeProject, documentId: analysis?.documentId, drawingSetId: analysis?.drawingSetId, sheetNumber: sheet?.sheetNumber, origin: 'ask-about-sheet' }); await showMissionControlView('chat'); $('#missionControlPrompt').value = `What exact indexed information is available for sheet ${sheet?.sheetNumber || `page ${drawingTarget?.pageNumber}`}?`; $('#missionControlPrompt').focus(); }
+  if (button.hasAttribute('data-drawing-ask')) { const sheet = analysis?.sheets.find(item => item.sheetId === drawingTarget?.sheetId); pendingDrawingContext = createDrawingTarget({ ...drawingTarget, projectId: state().activeProject, documentId: analysis?.documentId, drawingSetId: analysis?.drawingSetId, sheetNumber: sheet?.sheetNumber, origin: 'ask-about-sheet' }); await showMissionControlView('home'); $('#missionControlPrompt').value = `What exact indexed information is available for sheet ${sheet?.sheetNumber || `page ${drawingTarget?.pageNumber}`}?`; $('#missionControlPrompt').focus(); }
 });
 
 const activationTimestamp = () => new Date().toISOString();
@@ -3053,7 +3064,8 @@ async function returnFromDemonstrationProject() {
   engine.setProject('general');
   engine.createConversation();
   missionControlAttachments = [];
-  missionControlView = 'chat';
+  chiefHistoryVisible = false;
+  missionControlView = 'home';
   await refresh();
   await switchExperience('mission-control');
   $('#missionControlPrompt')?.focus();
