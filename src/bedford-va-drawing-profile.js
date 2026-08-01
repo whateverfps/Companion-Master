@@ -20,6 +20,78 @@ function inRegion(item, region = BEDFORD_TITLE_BLOCK_REGION) {
   return Number(item?.region?.x) >= region.x && Number(item?.region?.y) >= region.y && Number(item?.region?.x) <= region.x + region.width && Number(item?.region?.y) <= region.y + region.height;
 }
 
+function indexParserDiagnostics(tableItems, strictSheetItems, rows) {
+  const emitted = new Set(rows.map(row => row.normalizedSheetNumber));
+  const strict = new Map(strictSheetItems.map(item => [normalizeBedfordSheetNumber(item.text), item]));
+  const discovered = new Map();
+  const remember = (normalizedSheetNumber, parts, reason) => {
+    if (!normalizedSheetNumber || emitted.has(normalizedSheetNumber)) return;
+    const existing = discovered.get(normalizedSheetNumber);
+    const candidate = {
+      sheetNumber: normalizedSheetNumber,
+      exclusionRule: reason,
+      fragmentCount: parts.length,
+      reconstructedFragmentCandidate: parts.map(part => part.text).join(''),
+      originalPdfJsTextItems: parts.map(part => ({ text: part.text, order: part.order, x: Number(part.region.x), y: Number(part.region.y), width: Number(part.region.width || 0) }))
+    };
+    if (!existing || candidate.fragmentCount < existing.fragmentCount) discovered.set(normalizedSheetNumber, candidate);
+  };
+
+  for (let start = 0; start < tableItems.length; start += 1) {
+    for (let count = 1; count <= 8; count += 1) {
+      const parts = tableItems.slice(start, start + count);
+      if (parts.length !== count) continue;
+      const normalized = normalizeBedfordSheetNumber(parts.map(part => part.text).join(''));
+      if (!SHEET.test(normalized)) continue;
+      const baselineFailure = parts.some(part => Math.abs(Number(part.region.y) - Number(parts[0].region.y)) > .006);
+      const ordered = parts.slice().sort((a, b) => Number(a.region.x) - Number(b.region.x));
+      const gapFailure = ordered.some((part, index) => index && Number(part.region.x) - (Number(ordered[index - 1].region.x) + Number(ordered[index - 1].region.width || 0)) > .025);
+      const strictCandidate = strict.get(normalized);
+      const reason = strictCandidate
+        ? 'title reconstruction failure'
+        : count > 3
+          ? 'more than 3 fragments'
+          : baselineFailure
+            ? 'baseline > .006'
+            : gapFailure
+              ? 'gap > .025'
+              : 'SHEET regex failure';
+      remember(normalized, parts, reason);
+    }
+  }
+
+  const sameBaseline = tableItems.slice().sort((a, b) => Number(a.region.y) - Number(b.region.y) || Number(a.region.x) - Number(b.region.x));
+  for (let left = 0; left < sameBaseline.length; left += 1) {
+    for (let right = left + 1; right < Math.min(sameBaseline.length, left + 10); right += 1) {
+      const parts = [sameBaseline[left], sameBaseline[right]];
+      if (Math.abs(Number(parts[0].region.y) - Number(parts[1].region.y)) > .006) continue;
+      const normalized = normalizeBedfordSheetNumber(parts.map(part => part.text).join(''));
+      if (SHEET.test(normalized) && Number(parts[1].order) !== Number(parts[0].order) + 1) remember(normalized, parts, 'non-consecutive');
+    }
+  }
+
+  for (const item of strictSheetItems) {
+    const normalized = normalizeBedfordSheetNumber(item.text);
+    if (!emitted.has(normalized)) remember(normalized, [item], 'title reconstruction failure');
+  }
+
+  const duplicateKeys = rows.map(row => row.normalizedSheetNumber).filter((key, index, source) => source.indexOf(key) !== index);
+  for (const key of duplicateKeys) {
+    const item = strict.get(key);
+    remember(key, item ? [item] : [], 'duplicate elimination');
+  }
+
+  const missingRows = [...discovered.values()].sort((a, b) => a.sheetNumber.localeCompare(b.sheetNumber, undefined, { numeric: true }));
+  if (missingRows.length && globalThis.console) {
+    console.groupCollapsed?.(`Bedford drawing index parser: ${missingRows.length} sheet-like row(s) not emitted`);
+    console.info?.('Bedford drawing index parser comparison', { functionName: 'parseBedfordDrawingIndex', sheetLikeTextDiscovered: new Set([...emitted, ...discovered.keys()]).size, canonicalRowsEmitted: rows.length, missingCanonicalRows: missingRows.length, emittedSheetNumbers: [...emitted] });
+    console.table?.(missingRows.map(item => ({ sheetNumber: item.sheetNumber, rule: item.exclusionRule, fragments: item.fragmentCount, candidate: item.reconstructedFragmentCandidate })));
+    missingRows.forEach(item => console.info?.('Bedford drawing index row exclusion', item));
+    console.groupEnd?.();
+  }
+  return missingRows;
+}
+
 export function parseBedfordTitleBlock(items = []) {
   const source = normalizedItems(items).filter(item => inRegion(item));
   const fields = {};
@@ -104,5 +176,7 @@ export function parseBedfordDrawingIndex(page = null) {
     if (!title || /^(?:SHEET (?:NAME|TITLE))$/i.test(title)) continue;
     rows.push({ buildingNumber: normalizeBedfordSheetNumber(item.text).match(/^(\d+)/)?.[1] || '', discipline, sheetNumber: item.text.toUpperCase(), normalizedSheetNumber: normalizeBedfordSheetNumber(item.text), sheetTitle: title, normalizedTitle: normalizeBedfordTitle(title), expectedOrder: rows.length, inventoryOrder: rows.length, includedStatus: status?.text || '', sourcePage: page.pageNumber, sourceRegion: { x: item.region.x, y: item.region.y, width: Math.max(...row.map(other => other.region.x + other.region.width), item.region.x + item.region.width) - item.region.x, height: Math.max(item.region.height || 0, ...row.map(other => other.region.height || 0)) }, extractionMethod: 'bedford-va-index-profile' });
   }
-  return rows.filter((row, index, source) => source.findIndex(other => other.normalizedSheetNumber === row.normalizedSheetNumber) === index).map((row, index) => ({ ...row, expectedOrder: index, inventoryOrder: index }));
+  const canonicalRows = rows.filter((row, index, source) => source.findIndex(other => other.normalizedSheetNumber === row.normalizedSheetNumber) === index).map((row, index) => ({ ...row, expectedOrder: index, inventoryOrder: index }));
+  indexParserDiagnostics(tableItems, uniqueSheetItems, canonicalRows);
+  return canonicalRows;
 }

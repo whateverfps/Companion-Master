@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { calculateDrawingFit, createDrawingRenderIdentity, defaultDrawingViewport, drawingRenderDecision, sameDrawingRenderIdentity, drawingWorkspaceLayout, restoreDrawingViewport, saveDrawingViewport } from '../src/drawing-navigation.js';
+import { calculateDrawingFit, createDrawingRenderIdentity, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingRenderDecision, sameDrawingRenderIdentity, drawingWorkspaceLayout, restoreDrawingViewport, saveDrawingViewport } from '../src/drawing-navigation.js';
 
 test('true Fit Page waits for size and accounts for rotation', () => {
   assert.equal(calculateDrawingFit({ containerWidth: 0, containerHeight: 500, pageWidth: 1000, pageHeight: 700 }).ready, false);
@@ -61,9 +61,23 @@ test('main and Professional drawing views share state and switching does not res
   assert.doesNotMatch(route, /drawingTarget\s*=\s*null|drawingViewportBySet\.clear|drawingMatchingSheetIds\s*=\s*\[\]/);
 });
 
-test('drawing workspace preserves unresolved targets with a safe empty selection', () => {
+test('retained PDF fallback enumerates pages without fabricating drawing identities', () => {
+  const fallback = createPdfPageViewerAnalysis({ documentId: 'pdf-1', projectId: 'general', pageCount: 70, selectedPage: 2, pageWidth: 1000, pageHeight: 700 });
+  assert.equal(fallback.viewerFallback, true);
+  assert.equal(fallback.sheets.length, 70);
+  assert.equal(fallback.sheets[0].sheetTitle, 'Page 1');
+  assert.equal(fallback.sheets[1].pageWidth, 1000);
+  assert.equal(fallback.sheets.every(sheet => sheet.sheetNumber === '' && sheet.drawingId === ''), true);
+  assert.deepEqual(fallback.drawingRegistry, []);
+});
+
+test('drawing workspace uses retained PDF pages when analysis is missing or stale', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.match(app, /const announcementText = sheet \? drawingAnnouncementText/);
-  assert.match(app, /<strong>No drawing selected\.<\/strong>/);
+  assert.match(app, /createRetainedPdfViewerAnalysis\(selected, source/);
+  assert.match(app, /activeDrawingViewerAnalysis/);
+  assert.match(app, /analysis\?\.viewerFallback \? analysis\.sheets\.map/);
+  assert.match(app, /Manual PDF page viewing remains available/);
+  assert.doesNotMatch(app, /<strong>No drawing selected\.<\/strong>/);
   assert.doesNotMatch(app, /sheetNumber:\s*['"](?:UNRESOLVED|UNKNOWN)/);
 });

@@ -19,6 +19,22 @@ export function createDrawingTarget({ projectId, documentId, drawingSetId, drawi
   };
 }
 
+export function createPdfPageViewerAnalysis({ documentId, projectId, pageCount, selectedPage = 1, pageWidth = 1, pageHeight = 1, rotation = 0 } = {}) {
+  const count = Math.max(0, Math.trunc(Number(pageCount) || 0));
+  const activePage = Math.max(1, Math.min(count || 1, Math.trunc(Number(selectedPage) || 1)));
+  const drawingSetId = `pdf-viewer-${safe(documentId)}`;
+  const sheets = Array.from({ length: count }, (_, index) => {
+    const pageNumber = index + 1;
+    return {
+      viewerFallback: true, sheetId: `${drawingSetId}-page-${pageNumber}`, drawingId: '', documentId: text(documentId), projectId: text(projectId), drawingSetId,
+      sheetNumber: '', sheetTitle: `Page ${pageNumber}`, normalizedTitle: `page ${pageNumber}`, discipline: 'Unknown', primarySheetType: 'Unknown', sheetTypes: ['Unknown'],
+      building: '', pageNumber, pdfPage: pageNumber, pageWidth: pageNumber === activePage ? Number(pageWidth) || 1 : 1, pageHeight: pageNumber === activePage ? Number(pageHeight) || 1 : 1,
+      rotation: pageNumber === activePage ? Number(rotation) || 0 : 0, identityStatus: 'Unavailable', confidence: 0, warnings: [], textItems: []
+    };
+  });
+  return { viewerFallback: true, documentId: text(documentId), projectId: text(projectId), drawingSetId, sheets, drawingRegistry: [], observations: [], legends: [], schedules: [], keyedNoteOccurrences: [], candidateOccurrences: [], warnings: [] };
+}
+
 export function resolveDrawingTarget(target, { documents = [], analyses = [] } = {}) {
   if (!target?.documentId) return { status: 'none', document: null, analysis: null, sheet: null, observation: null, planObject: null, region: null, kind: 'none' };
   const document = documents.find(item => text(item?.id) === target.documentId) || null;
