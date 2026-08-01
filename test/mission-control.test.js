@@ -385,9 +385,11 @@ test('exact engineering navigation returns before retrieval and preserves regist
   assert.match(submit.slice(exactBranch, retrieval), /return;/);
   assert.match(submit, /projectId: locationPresentation\.target\.projectId/);
   assert.match(submit, /drawingId: locationPresentation\.target\.drawingId/);
-  assert.match(submit, /currentGlobalDrawingRegistryAnalyses\(\)/);
+  assert.match(submit, /currentGlobalDrawingRegistryAnalyses\(promptValue\)/);
   const globalUpgrade = app.slice(app.indexOf('async function currentGlobalDrawingRegistryAnalyses'), app.indexOf('async function buildActiveConstructionPackage'));
   assert.match(globalUpgrade, /engine\.drawingRegistryAnalyses\(\)/);
   assert.match(globalUpgrade, /drawingAnalysisRequiresUpgrade\(analysis\)/);
   assert.match(globalUpgrade, /engine\.saveDrawingAnalysis\(upgraded\)/);
+  assert.match(globalUpgrade, /Drawing registry runtime inspection/);
+  assert.match(globalUpgrade, /inspectDrawingRegistryRuntime/);
 });

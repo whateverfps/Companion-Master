@@ -98,14 +98,18 @@ test('runtime registry diagnostics trace exact Bedford commands globally while G
   const input = { activeProject: { id: 'general', name: 'General' }, documents: [{ id: 'bedford-61', title: 'Building 61 plans' }], analyses: [analysis] };
   const mechanical = inspectDrawingRegistryRuntime({ ...input, query: 'Open Mechanical Sheet 61M-101' });
   assert.equal(mechanical.activeProjectId, 'general');
+  assert.equal(mechanical.activeProjectRegistryCount, 0);
+  assert.equal(mechanical.globalRegistryCount, 70);
   assert.equal(mechanical.analyses[0].profileSelected, true);
   assert.equal(mechanical.analyses[0].parsedIndexRowCount, 70);
   assert.equal(mechanical.registeredSheetCount, 70);
   assert.deepEqual(mechanical.knownSheets, { '61G001': true, '61M101': true, '61T402': true });
   assert.equal(mechanical.commandTrace.normalizedQueryKey, '61M101');
+  assert.equal(mechanical.commandTrace.rawSheetToken, '61M-101');
   assert.equal(mechanical.commandTrace.finalMatchCount, 1);
   assert.equal(mechanical.commandTrace.rejectionReason, '');
   assert.equal(mechanical.matchingRecords.find(record => record.normalizedSheetNumber === '61M101').projectId, 'bedford-project');
+  assert.equal(mechanical.matchingRecords.find(record => record.normalizedSheetNumber === '61M101').profileVersion, BEDFORD_VA_PROFILE_VERSION);
   assert.deepEqual(mechanical.ownershipFailures, []);
   const telecom = inspectDrawingRegistryRuntime({ ...input, query: 'Open sheet 61T-402' });
   assert.equal(telecom.commandTrace.normalizedQueryKey, '61T402');

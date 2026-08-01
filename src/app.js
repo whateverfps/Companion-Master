@@ -114,6 +114,7 @@ import { buildConstructionWorkPackage, currentWorkActivationTarget, inspectionPr
 import { drawingUpgradeKey, reduceStaleDrawingTarget } from './drawing-lifecycle.js';
 import { buildChiefDrawingEvidence } from './chief-drawing-evidence.js';
 import { buildChiefLocationPresentation, classifyEngineeringNavigationIntent } from './engineering-locator.js';
+import { inspectDrawingRegistryRuntime } from './drawing-registry-diagnostics.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -1624,8 +1625,9 @@ async function currentDrawingAnalyses() {
   return outcomes.filter(item => item.ok && item.analysis).map(item => item.analysis);
 }
 
-async function currentGlobalDrawingRegistryAnalyses() {
-  const analyses = await engine.drawingRegistryAnalyses();
+async function currentGlobalDrawingRegistryAnalyses(query = '') {
+  const [analyses, activeAnalyses] = await Promise.all([engine.drawingRegistryAnalyses(), engine.drawingAnalyses()]);
+  const rebuildResults = [];
   const outcomes = await Promise.all(analyses.map(async analysis => {
     if (!drawingAnalysisRequiresUpgrade(analysis)) return { ok: true, analysis };
     const key = drawingUpgradeKey(analysis, DRAWING_ANALYSIS_VERSION);
@@ -1638,9 +1640,13 @@ async function currentGlobalDrawingRegistryAnalyses() {
     })().catch(error => ({ ok: false, status: 'failed', errorCode: 'drawing-upgrade-failed', analysis, owningProjectId: analysis.projectId, warning: error.message || 'Drawing registry upgrade failed.', recoverable: true })).finally(() => drawingUpgradeWork.delete(key)));
     const result = await drawingUpgradeWork.get(key);
     if (!result.ok) drawingUpgradeFailures.add(key);
+    rebuildResults.push({ drawingSetId: analysis.drawingSetId, documentId: analysis.documentId, projectId: analysis.projectId, ok: Boolean(result.ok), status: result.status || '', errorCode: result.errorCode || '', savedProfileVersion: result.analysis?.profile?.profileVersion || 0, savedRegistryCount: result.analysis?.drawingRegistry?.length || 0 });
     return result;
   }));
-  return outcomes.filter(outcome => outcome.ok && outcome.analysis).map(outcome => outcome.analysis);
+  const available = outcomes.filter(outcome => outcome.ok && outcome.analysis).map(outcome => outcome.analysis);
+  const currentState = state();
+  logger.info('Drawing registry runtime inspection', inspectDrawingRegistryRuntime({ activeProject: currentState.projects.find(project => project.id === currentState.activeProject) || { id: currentState.activeProject, name: currentState.activeProject }, analyses: available, activeAnalyses, query, rebuild: { attempted: rebuildResults.length > 0, results: rebuildResults } }));
+  return available;
 }
 
 async function buildActiveConstructionPackage(query, evidence = []) {
@@ -2268,7 +2274,7 @@ $('#missionControlContent').addEventListener('submit', async event => {
     const current = state();
     const conversation = engine.activeConversation();
     const navigationIntent = classifyEngineeringNavigationIntent(promptValue);
-    const [analyses, documents, sections] = await Promise.all([navigationIntent.kind === 'exact-drawing-navigation' ? currentGlobalDrawingRegistryAnalyses() : currentDrawingAnalyses(), engine.documents(), engine.sections()]);
+    const [analyses, documents, sections] = await Promise.all([navigationIntent.kind === 'exact-drawing-navigation' ? currentGlobalDrawingRegistryAnalyses(promptValue) : currentDrawingAnalyses(), engine.documents(), engine.sections()]);
     const locationPresentation = buildChiefLocationPresentation(promptValue, { analyses, documents, sections, returnTarget: 'chief-answer', projectId: current.activeProject });
     activeChiefLocationPresentation = locationPresentation && locationPresentation.status !== 'none' ? locationPresentation : null;
     const resolvedLocationTarget = locationPresentation.status === 'resolved' && locationPresentation.target?.kind === 'drawing'
