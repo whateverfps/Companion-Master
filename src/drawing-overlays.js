@@ -24,9 +24,32 @@ export function transformOverlayRegion(region, rotation = 0) {
   return { ...region };
 }
 
-export function visibleDrawingOverlays(records = [], { projectId, documentId, pageId, visibility = {}, rotation = 0 } = {}) {
-  return list(records).map(createDrawingOverlay).filter(Boolean).filter(record => record.projectId === text(projectId) && record.documentId === text(documentId) && record.pageId === text(pageId)
-    && record.visible && visibility[record.type] !== false).map(record => ({ ...record, displayRegion: transformOverlayRegion(record.region, rotation) }));
+const regionKey = region => [region.x, region.y, region.width, region.height].map(value => Math.round(Number(value) * 1000)).join(':');
+const candidate = record => record.verificationState === 'candidate' || record.type === 'candidates';
+const priority = record => record.type === 'selected' ? 0 : record.verificationState === 'confirmed' ? 1 : record.metadata?.related || record.styleToken === 'related' ? 2 : 3 + (1 - record.confidence);
+
+export function visibleDrawingOverlays(records = [], { projectId, documentId, pageId, visibility = {}, rotation = 0, reviewMode = false, maxVisible = 120, onDiagnostic = () => {} } = {}) {
+  const suppressionReasons = {}; const suppress = reason => { suppressionReasons[reason] = (suppressionReasons[reason] || 0) + 1; };
+  const normalized = list(records).map(createDrawingOverlay).filter(Boolean);
+  const owned = normalized.filter(record => record.projectId === text(projectId) && record.documentId === text(documentId) && record.pageId === text(pageId));
+  const accepted = []; const seen = new Set(); let oversizedRegionsRejected = 0;
+  for (const record of owned) {
+    if (candidate(record) && !reviewMode && visibility.candidates !== true) { suppress('candidate-hidden'); continue; }
+    if (candidate(record) && !reviewMode && record.confidence < .75) { suppress('low-confidence-candidate'); continue; }
+    if (!record.visible || (visibility[record.type] === false && !(reviewMode && candidate(record)))) { suppress('visibility-disabled'); continue; }
+    const area = record.region.width * record.region.height;
+    if (candidate(record) && record.type !== 'rooms' && area > .2) { oversizedRegionsRejected += 1; suppress('oversized-candidate'); continue; }
+    const identity = candidate(record) ? `${text(record.metadata?.objectType).toLowerCase()}:${record.label.toLowerCase()}` : record.overlayId;
+    const key = `${identity}:${regionKey(record.region)}`;
+    if (seen.has(key)) { suppress('duplicate-region'); continue; }
+    seen.add(key); accepted.push(record);
+  }
+  accepted.sort((a, b) => priority(a) - priority(b) || b.confidence - a.confidence || a.overlayId.localeCompare(b.overlayId));
+  const visible = accepted.slice(0, Math.max(1, Number(maxVisible) || 120));
+  if (accepted.length > visible.length) suppressionReasons['page-limit'] = accepted.length - visible.length;
+  const result = visible.map(record => ({ ...record, displayRegion: transformOverlayRegion(record.region, rotation) }));
+  onDiagnostic({ totalObservations: list(records).length, deduplicatedObjects: new Set(owned.map(item => item.overlayId)).size, regionsBeforeDeduplication: owned.length, regionsAfterDeduplication: accepted.length, oversizedRegionsRejected, normalViewOverlaysRendered: reviewMode ? 0 : result.length, reviewModeOverlaysRendered: reviewMode ? result.length : 0, suppressionReasons });
+  return result;
 }
 
 export function overlayStyle(record) {

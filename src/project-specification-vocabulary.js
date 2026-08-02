@@ -10,7 +10,16 @@ export const BEDFORD_PROJECT_SPECIFICATION_VOCABULARY = Object.freeze([
   { sectionNumber: '09 65 19', terms: ['resilient tile', 'resilient flooring', 'floor tile', 'lvt', 'vct'] },
   { sectionNumber: '09 91 00', terms: ['finish p 1', 'finish p 2', 'painted finish', 'wall finish', 'painted', 'paint', 'coating', 'p 1', 'p 2'] },
   { sectionNumber: '10 26 00', terms: ['resilient wall protection', 'wall protection', 'corner guard', 'wall guard', 'door protection'] },
-  { sectionNumber: '10 44 13', terms: ['fire extinguisher cabinet', 'extinguisher cabinet', 'recessed cabinet', 'fec'] }
+  { sectionNumber: '10 44 13', terms: ['fire extinguisher cabinet', 'extinguisher cabinet', 'recessed cabinet', 'fec'] },
+  { sectionNumber: '27 05 00', terms: ['common work results for communications', 'communications equipment', 'telecommunications room', 'telecom room', 'telecom symbols', 'telecom keyed notes'] },
+  { sectionNumber: '27 05 26', terms: ['grounding and bonding for telecommunications', 'telecommunications grounding', 'telecom grounding', 'grounding busbar', 'bonding'] },
+  { sectionNumber: '27 05 33', terms: ['raceways and boxes for communications', 'communications pathways', 'telecom pathways', 'raceways and boxes'] },
+  { sectionNumber: '27 05 36', terms: ['cable trays for communications systems', 'communications cable tray', 'telecom cable tray', 'cable tray'] },
+  { sectionNumber: '27 05 53', terms: ['identification for communications systems', 'communications labeling', 'telecom labeling', 'cable labels'] },
+  { sectionNumber: '27 10 00', terms: ['structured cabling', 'telecom outlet', 'telecommunications outlet', 'data outlet', 'data jack', 'telecom schedule'] },
+  { sectionNumber: '27 11 16', terms: ['communications cabinets racks frames and enclosures', 'equipment rack', 'telecom rack', 'patch panel'] },
+  { sectionNumber: '27 13 23', terms: ['optical fiber backbone cabling', 'fiber backbone', 'backbone cabling', 'fiber cabling'] },
+  { sectionNumber: '27 15 13', terms: ['communications copper horizontal cabling', 'copper horizontal cabling', 'horizontal cabling', 'copper cabling'] }
 ]);
 
 function termPattern(term) {

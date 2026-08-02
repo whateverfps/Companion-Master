@@ -1,1 +1,14 @@
 evaluation/
+.DS_Store
+
+# Local Bedford project sources and generated intake data.
+project-documents/bedford/**
+!project-documents/bedford/
+!project-documents/bedford/drawings/
+!project-documents/bedford/drawings/README.md
+!project-documents/bedford/drawing-overrides.json.example
+project-data/bedford/*
+!project-data/bedford/README.md
+!project-data/bedford/*/
+project-data/bedford/*/*
+!project-data/bedford/*/.gitkeep

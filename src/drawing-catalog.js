@@ -28,7 +28,7 @@ function normalizedRecord(record = {}, ownership = {}) {
     pageId: text(record.pageId) || pageIdFor(documentId, pdfPageNumber), documentId, drawingSetId: text(ownership.drawingSetId || record.drawingSetId), projectId: text(ownership.projectId || record.projectId),
     pdfPageNumber, pdfPageIndex: Math.max(0, pdfPageNumber - 1), ...values, normalizedSheetNumber: normalizeSheetNumber(values.sheetNumber),
     identityState: ['authoritative', 'parser', 'manual', 'fallback'].includes(record.identityState) ? record.identityState : 'fallback',
-    parserValues: record.parserValues ? valuesOf(record.parserValues) : null, defaults: record.defaults ? valuesOf(record.defaults) : null,
+    parserValues: record.parserValues ? valuesOf(record.parserValues) : null, defaults: record.defaults ? valuesOf(record.defaults) : null, defaultsIdentityState: text(record.defaultsIdentityState),
     createdAt: text(record.createdAt), updatedAt: text(record.updatedAt), auditTrail: list(record.auditTrail).map(item => structuredClone(item))
   };
 }
@@ -59,10 +59,11 @@ export function createDrawingCatalog({ storage = globalThis.localStorage, onDiff
     recordsForDocument(documentId) {
       return Object.values(records).filter(item => item.documentId === text(documentId)).sort((a, b) => a.pdfPageNumber - b.pdfPageNumber).map(item => structuredClone(normalizedRecord(item)));
     },
-    reconcile({ documentId, documentType = '', drawingSetId = '', projectId = '', pageCount = 0, parserRecords = [], storedMetadata = [] } = {}) {
+    reconcile({ documentId, documentType = '', drawingSetId = '', projectId = '', pageCount = 0, parserRecords = [], storedMetadata = [], authoritativeRecords = [] } = {}) {
       if (documentType && !isDrawingDocument({ documentType })) return [];
       const parserByPage = new Map(list(parserRecords).filter(item => pageNumber(item)).map(item => [pageNumber(item), item]));
       const storedByPage = new Map(list(storedMetadata).filter(item => pageNumber(item)).map(item => [pageNumber(item), item]));
+      const authoritativeByPage = new Map(list(authoritativeRecords).filter(item => pageNumber(item)).map(item => [pageNumber(item), item]));
       const output = [];
       for (let page = 1; page <= Math.max(0, Math.trunc(Number(pageCount) || 0)); page += 1) {
         const existing = recordFor(documentId, page);
@@ -70,6 +71,21 @@ export function createDrawingCatalog({ storage = globalThis.localStorage, onDiff
         const stored = storedByPage.get(page) || {};
         const parserValues = valuesOf({ sheetNumber: usableSheetNumber(parsed.sheetNumber) || usableSheetNumber(stored.sheetNumber), sheetTitle: text(parsed.sheetTitle || parsed.title) || text(stored.sheetTitle || stored.title), discipline: text(parsed.discipline) || text(stored.discipline), drawingType: text(parsed.drawingType || parsed.primarySheetType || parsed.sheetTypes?.[0]) || text(stored.drawingType || stored.primarySheetType || stored.sheetTypes?.[0]) });
         const parserHasMetadata = Boolean(parserValues.sheetNumber || parserValues.sheetTitle || parserValues.discipline !== 'Unknown' || parserValues.drawingType !== 'Unknown');
+        const authoritative = authoritativeByPage.get(page);
+        const authoritativeValues = authoritative ? valuesOf(authoritative) : null;
+        if (existing?.identityState === 'manual') {
+          if (parserHasMetadata && differs(existing, parserValues)) onDifference({ documentId: text(documentId), pageId: existing.pageId, pdfPageNumber: page, fields: this.compare(documentId, page, parserValues) });
+          const parserChanged = differs(existing.parserValues || {}, parserValues);
+          output.push(parserChanged ? save({ ...existing, parserValues }, 'parser-observation') : existing);
+          continue;
+        }
+        if (authoritativeValues) {
+          if (parserHasMetadata && differs(authoritativeValues, parserValues)) onDifference({ documentId: text(documentId), pageId: existing?.pageId || pageIdFor(documentId,page), pdfPageNumber: page, authoritativeValues, parserValues });
+          const next = normalizedRecord({ ...(existing || {}), ...authoritativeValues, documentId, drawingSetId, projectId, pdfPageNumber: page, identityState: 'authoritative', parserValues: parserHasMetadata ? parserValues : null, defaults: authoritativeValues, defaultsIdentityState: 'authoritative' }, { documentId, drawingSetId, projectId });
+          const parserChanged=parserHasMetadata?differs(existing?.parserValues||{},parserValues):Boolean(existing?.parserValues);
+          output.push(!existing || differs(existing,next) || existing.identityState!=='authoritative' || parserChanged ? save(next,'authoritative-drawing-index') : existing);
+          continue;
+        }
         if (existing && protectedState(existing.identityState)) {
           if (parserHasMetadata && differs(existing, parserValues)) onDifference({ documentId: text(documentId), pageId: existing.pageId, pdfPageNumber: page, fields: this.compare(documentId, page, parserValues) });
           const parserChanged = differs(existing.parserValues || {}, parserValues);
@@ -100,7 +116,8 @@ export function createDrawingCatalog({ storage = globalThis.localStorage, onDiff
       const existing = recordFor(documentId, pdfPageNumber);
       if (!existing?.defaults) return null;
       const hasMetadata = Boolean(existing.defaults.sheetNumber || existing.defaults.sheetTitle || existing.defaults.discipline !== 'Unknown' || existing.defaults.drawingType !== 'Unknown');
-      return save({ ...existing, ...existing.defaults, identityState: hasMetadata ? 'parser' : 'fallback' }, 'restore-defaults');
+      const identityState = existing.defaultsIdentityState === 'authoritative' ? 'authoritative' : hasMetadata ? 'parser' : 'fallback';
+      return save({ ...existing, ...existing.defaults, identityState }, 'restore-defaults');
     },
     compare(documentId, pdfPageNumber, parserOverride = null) {
       const existing = recordFor(documentId, pdfPageNumber);

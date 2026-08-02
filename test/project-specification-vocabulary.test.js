@@ -9,7 +9,8 @@ import { createProjectRelationshipEngine } from '../src/project-relationship-eng
 const memory = () => { const map = new Map(); return { getItem: key => map.get(key), setItem: (key, value) => map.set(key, value) }; };
 const sections = [
   ['09 65 13', 'Resilient Base and Accessories'], ['09 65 19', 'Resilient Tile Flooring'], ['09 91 00', 'Painting'],
-  ['10 14 00', 'Signage'], ['10 26 00', 'Wall and Door Protection'], ['10 44 13', 'Fire Extinguisher Cabinets']
+  ['10 14 00', 'Signage'], ['10 26 00', 'Wall and Door Protection'], ['10 44 13', 'Fire Extinguisher Cabinets'],
+  ['27 05 00','Common Work Results for Communications'],['27 05 26','Grounding and Bonding for Telecommunications'],['27 05 33','Raceways and Boxes for Communications'],['27 05 36','Cable Trays for Communications Systems'],['27 05 53','Identification for Communications Systems'],['27 10 00','Structured Cabling'],['27 11 16','Communications Cabinets, Racks, Frames, and Enclosures'],['27 13 23','Optical Fiber Backbone Cabling'],['27 15 13','Communications Copper Horizontal Cabling']
 ];
 function fixture() {
   const index = createSpecificationIndex({ storage: memory() });
@@ -49,6 +50,10 @@ test('unsupported evidence and unindexed or cross-project sections never qualify
   assert.deepEqual(vocabulary.matchPage({ projectId: 'other', specificationDocumentId: 'bedford-spec', evidence: ['signage schedule'] }), []);
   assert.deepEqual(vocabulary.matchPage({ projectId: 'bedford', specificationDocumentId: 'missing', evidence: ['signage schedule'] }), []);
 });
+
+test('61T-401 page evidence resolves only indexed Division 27 sections without duplicates',()=>{const{vocabulary}=fixture();const matches=vocabulary.matchPage({projectId:'bedford',specificationDocumentId:'bedford-spec',pageId:'61t401',evidence:['TELECOMMUNICATIONS ROOM PLAN','TELECOM OUTLET SCHEDULE','CABLE TRAY','TELECOM OUTLET SCHEDULE']});assert.deepEqual(matches.map(item=>item.sectionNumber),['27 05 00','27 05 36','27 10 00']);assert.ok(matches.every(item=>item.status==='suggested'&&item.applicabilityScope==='page-wide'));});
+test('telecom objects remain object-specific and generic room numbers produce no links',()=>{const{vocabulary}=fixture();assert.deepEqual(vocabulary.matchObject({projectId:'bedford',specificationDocumentId:'bedford-spec',pageId:'61t401',objectId:'outlet',evidence:['Data outlet 4A']}).map(item=>item.sectionNumber),['27 10 00']);assert.deepEqual(vocabulary.matchObject({projectId:'bedford',specificationDocumentId:'bedford-spec',pageId:'61t401',objectId:'room',evidence:['Room 137']}),[]);});
+test('telecom vocabulary never returns a section absent from the active specification index',()=>{const index=createSpecificationIndex({storage:memory()});index.index({document:{id:'partial',projectId:'bedford'},tocRows:[{id:'structured',sectionNumber:'27 10 00',sectionTitle:'Structured Cabling',pageStart:100}]});const vocabulary=createProjectSpecificationVocabulary({specificationIndex:index});assert.deepEqual(vocabulary.matchPage({projectId:'bedford',specificationDocumentId:'partial',pageId:'61t401',evidence:['telecom outlet cable tray equipment rack']}).map(item=>item.sectionNumber),['27 10 00']);});
 
 test('an explicit indexed section reference is confirmed while vocabulary remains suggested', () => {
   const { vocabulary } = fixture();

@@ -192,7 +192,7 @@ export function calculateDrawingFit({ containerWidth, containerHeight, pageWidth
 }
 
 export function defaultDrawingViewport(overlays = {}) {
-  return { mode: 'fit-page', zoom: null, rotation: 0, scrollLeft: 0, scrollTop: 0, selectedObservationId: '', highlightedRegion: null, overlays: { rooms: true, confirmed: true, candidates: true, equipment: true, keyedNotes: true, callouts: true, scheduleLinks: true, warnings: true, ...overlays } };
+  return { mode: 'fit-page', zoom: null, rotation: 0, scrollLeft: 0, scrollTop: 0, selectedObservationId: '', highlightedRegion: null, overlays: { rooms: true, confirmed: true, candidates: false, equipment: true, keyedNotes: true, callouts: true, scheduleLinks: true, warnings: true, ...overlays } };
 }
 
 export function drawingViewportKey(drawingSetId, sheetId) { return `${text(drawingSetId)}:${text(sheetId)}`; }
