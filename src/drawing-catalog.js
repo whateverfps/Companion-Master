@@ -1,4 +1,5 @@
 const STORAGE_KEY = 'mc-drawing-page-catalog-v1';
+import { isDrawingDocument } from './document-routing.js';
 const FIELDS = Object.freeze(['sheetNumber', 'sheetTitle', 'discipline', 'drawingType']);
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const list = value => Array.isArray(value) ? value : [];
@@ -58,7 +59,8 @@ export function createDrawingCatalog({ storage = globalThis.localStorage, onDiff
     recordsForDocument(documentId) {
       return Object.values(records).filter(item => item.documentId === text(documentId)).sort((a, b) => a.pdfPageNumber - b.pdfPageNumber).map(item => structuredClone(normalizedRecord(item)));
     },
-    reconcile({ documentId, drawingSetId = '', projectId = '', pageCount = 0, parserRecords = [], storedMetadata = [] } = {}) {
+    reconcile({ documentId, documentType = '', drawingSetId = '', projectId = '', pageCount = 0, parserRecords = [], storedMetadata = [] } = {}) {
+      if (documentType && !isDrawingDocument({ documentType })) return [];
       const parserByPage = new Map(list(parserRecords).filter(item => pageNumber(item)).map(item => [pageNumber(item), item]));
       const storedByPage = new Map(list(storedMetadata).filter(item => pageNumber(item)).map(item => [pageNumber(item), item]));
       const output = [];

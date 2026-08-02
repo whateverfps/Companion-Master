@@ -10,6 +10,10 @@ test('page model produces one ordered record per retained PDF page', () => {
   assert.equal(pages.every(page => page.identityStatus === 'fallback'), true);
 });
 
+test('specification source pages never enter the Drawing Page Model', () => {
+  assert.deepEqual(buildDrawingPageModel({ documentId: 'spec', documentType: 'specifications', pageCount: 2363 }), []);
+});
+
 test('authoritative metadata wins while partial and stored metadata fill gaps', () => {
   const pages = buildDrawingPageModel({ documentId: 'doc', drawingSetId: 'set', projectId: 'general', pageCount: 3,
     registryRecords: [{ pageNumber: 1, drawingId: 'drawing-1', sheetNumber: '61A-001', sheetTitle: 'Architectural Notes' }],

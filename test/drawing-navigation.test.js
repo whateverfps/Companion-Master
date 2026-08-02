@@ -19,7 +19,7 @@ test('resolveDrawingTarget preserves page and region context for exact drawing r
     region: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }
   });
 
-  const resolved = resolveDrawingTarget(target, { documents: [{ id: 'doc-1' }], analyses: [analysis] });
+  const resolved = resolveDrawingTarget(target, { documents: [{ id: 'doc-1', documentType: 'drawing-set' }], analyses: [analysis] });
 
   assert.equal(resolved.sheet?.sheetId, 'sheet-1');
   assert.equal(resolved.sheet?.pageNumber, 2);
@@ -32,7 +32,7 @@ test('resolveDrawingTarget uses the permanent drawing registry identity before s
     { drawingId: 'drawing-2', sheetId: 'sheet-2', pageNumber: 2 }
   ], observations: [] };
   const target = createDrawingTarget({ projectId: 'project-1', documentId: 'doc-1', drawingSetId: 'set-1', drawingId: 'drawing-2', sheetId: 'stale-sheet', pageNumber: 99 });
-  const resolved = resolveDrawingTarget(target, { documents: [{ id: 'doc-1', projectId: 'project-1' }], analyses: [analysis] });
+  const resolved = resolveDrawingTarget(target, { documents: [{ id: 'doc-1', projectId: 'project-1', documentType: 'drawing-set' }], analyses: [analysis] });
   assert.equal(resolved.sheet?.drawingId, 'drawing-2');
   assert.equal(resolved.sheet?.pageNumber, 2);
 });
@@ -57,7 +57,9 @@ test('resolveDrawingTarget prefers exact plan-object and region state over stale
     region: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 }
   });
 
-  const resolved = resolveDrawingTarget(target, { documents: [{ id: 'doc-2' }], analyses: [analysis] });
+  const resolved = resolveDrawingTarget(target, { documents: [{ id: 'doc-2', documentType: 'drawing-set' }], analyses: [analysis] });
+
+  assert.equal(resolveDrawingTarget({ documentId: 'spec' }, { documents: [{ id: 'spec', documentType: 'specifications' }], analyses: [] }).status, 'invalid-document-role');
 
   assert.equal(resolved.kind, 'plan-object');
   assert.equal(resolved.planObject?.occurrenceId, 'plan-1');

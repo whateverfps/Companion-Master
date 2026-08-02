@@ -189,10 +189,11 @@ test('drawing navigation resolves exact documents, sheets, pages, observations, 
   const analysis = buildDrawingAnalysis({ documentId: 'd1', projectId: 'p1', pages, analyzedAt: '2026-01-01' });
   const observation = analysis.observations[0];
   const target = createDrawingTarget({ projectId: 'p1', documentId: 'd1', drawingSetId: analysis.drawingSetId, sheetId: observation.sheetId, pageNumber: observation.pageNumber, observationId: observation.observationId, region: observation.region });
-  assert.equal(resolveDrawingTarget(target, { documents: [{ id: 'd1' }], analyses: [analysis] }).status, 'region');
-  assert.equal(resolveDrawingTarget({ ...target, observationId: 'missing' }, { documents: [{ id: 'd1' }], analyses: [analysis] }).status, 'missing-observation');
-  assert.equal(resolveDrawingTarget({ ...target, sheetId: 'missing', observationId: '' }, { documents: [{ id: 'd1' }], analyses: [analysis] }).status, 'missing-page');
-  assert.equal(resolveDrawingTarget({ ...target, documentId: 'missing' }, { documents: [{ id: 'd1' }], analyses: [analysis] }).status, 'missing-document');
+  const documents = [{ id: 'd1', documentType: 'drawing-set' }];
+  assert.equal(resolveDrawingTarget(target, { documents, analyses: [analysis] }).status, 'region');
+  assert.equal(resolveDrawingTarget({ ...target, observationId: 'missing' }, { documents, analyses: [analysis] }).status, 'missing-observation');
+  assert.equal(resolveDrawingTarget({ ...target, sheetId: 'missing', observationId: '' }, { documents, analyses: [analysis] }).status, 'missing-page');
+  assert.equal(resolveDrawingTarget({ ...target, documentId: 'missing' }, { documents, analyses: [analysis] }).status, 'missing-document');
   assert.match(drawingAnchorId('sheet', 'unsafe/id'), /^mc-drawing-sheet-/);
   assert.equal(drawingScrollOptions(true).behavior, 'auto');
   assert.equal(drawingReturnTarget(target, 'source').destination, 'source');

@@ -32,6 +32,7 @@ import { createPdfSourceRecord, inspectStorageCapacity } from './pdf-source.js';
 import { buildDrawingAnalysis } from './drawing-intelligence.js';
 import { classifyDrawingOrphans, validateDrawingOwnership } from './drawing-lifecycle.js';
 import { COMPACT_STATE_KEY, COMPACT_STATE_MAX_BYTES, compactStateCategorySizes, legacyLargeState, safeWriteCompactState } from './compact-state.js';
+import { isDrawingDocument, persistDocumentClassification } from './document-routing.js';
 
 const STATE_KEY = COMPACT_STATE_KEY;
 const DOC_DB = 'mc-master-documents-v2';
@@ -937,14 +938,31 @@ export const engine = {
 
   async documents(libraryId = null) {
     if (documentCache?.projectId !== state.activeProject) {
+      const persisted = await all('documents', 'projectId', state.activeProject);
+      const documents = persisted.map(item => persistDocumentClassification(item));
+      const changed = documents.filter((item, index) => item.documentType !== persisted[index].documentType || item.documentClassificationMethod !== persisted[index].documentClassificationMethod);
+      if (changed.length) await putMany('documents', changed);
       documentCache = {
         projectId: state.activeProject,
-        documents: await all('documents', 'projectId', state.activeProject)
+        documents
       };
     }
     return libraryId
       ? documentCache.documents.filter(document => document.libraryId === libraryId)
       : documentCache.documents;
+  },
+
+  async reclassifyDocument(documentId, patch = {}) {
+    const existing = await one('documents', documentId);
+    if (!existing) return { ok: false, reason: 'document-not-found' };
+    const updated = persistDocumentClassification({ ...existing, buildingAssociation: Object.hasOwn(patch, 'buildingAssociation') ? patch.buildingAssociation : existing.buildingAssociation, revision: Object.hasOwn(patch, 'revision') ? patch.revision : existing.revision }, patch.documentType);
+    if (patch.projectId && patch.projectId !== existing.projectId) {
+      if (!state.projects.some(project => project.id === patch.projectId)) return { ok: false, reason: 'project-not-found' };
+      updated.projectId = patch.projectId;
+    }
+    await putMany('documents', [updated]); invalidateKnowledgeCache();
+    logger.info('Document classification updated', { documentId, documentType: updated.documentType, projectId: updated.projectId });
+    return { ok: true, document: structuredClone(updated), sourcePreserved: Boolean(await one('sourceFiles', documentId)), indexedSectionCount: (await all('sections', 'documentId', documentId)).length };
   },
 
   async sourceFile(documentId) {
@@ -960,24 +978,30 @@ export const engine = {
   },
 
   async drawingAnalyses() {
-    return structuredClone(await all('drawingAnalyses', 'projectId', state.activeProject));
+    const [analyses, documents] = await Promise.all([all('drawingAnalyses', 'projectId', state.activeProject), all('documents', 'projectId', state.activeProject)]);
+    const drawingIds = new Set(documents.filter(isDrawingDocument).map(item => item.id));
+    return structuredClone(analyses.filter(item => drawingIds.has(item.documentId)));
   },
 
   async drawingRegistryAnalyses() {
-    return structuredClone(await all('drawingAnalyses'));
+    const [analyses, documents] = await Promise.all([all('drawingAnalyses'), all('documents')]);
+    const drawingIds = new Set(documents.filter(isDrawingDocument).map(item => item.id));
+    return structuredClone(analyses.filter(item => drawingIds.has(item.documentId)));
   },
 
   async drawingLifecycle(documentId = '', drawingSetId = '') {
     const document = documentId ? await one('documents', documentId) : null;
     const sourceFile = documentId ? await one('sourceFiles', documentId) : null;
     const analysis = drawingSetId ? await one('drawingAnalyses', drawingSetId) : (documentId ? (await all('drawingAnalyses', 'documentId', documentId))[0] || null : null);
+    if (document && !isDrawingDocument(document)) return { ok: false, status: 'unavailable', errorCode: 'invalid-document-role', warning: 'This document is not a drawing set.', document: structuredClone(document), sourceFile: sourceFile ? structuredClone(sourceFile) : null, analysis: null, owningProjectId: document.projectId || '' };
     const result = validateDrawingOwnership({ analysis, documents: document ? [document] : [], sourceFiles: sourceFile ? [sourceFile] : [], activeProjectId: state.activeProject, requireSource: document?.sourceAvailability === 'available' });
     return { ...result, document: result.document || (document ? structuredClone(document) : null), sourceFile: result.sourceFile || (sourceFile ? structuredClone(sourceFile) : null), owningProjectId: result.owningProjectId || document?.projectId || analysis?.projectId || '' };
   },
 
   async drawingLifecycleDiagnostics() {
     const [documents, analyses, sourceFiles] = await Promise.all([all('documents'), all('drawingAnalyses'), all('sourceFiles')]);
-    return classifyDrawingOrphans({ documents, analyses, sourceFiles, activeProjectId: state.activeProject });
+    const drawingDocuments = documents.filter(isDrawingDocument); const drawingIds = new Set(drawingDocuments.map(item => item.id));
+    return classifyDrawingOrphans({ documents: drawingDocuments, analyses: analyses.filter(item => drawingIds.has(item.documentId)), sourceFiles: sourceFiles.filter(item => drawingIds.has(item.documentId)), activeProjectId: state.activeProject });
   },
 
   async removeDrawingAnalysis(drawingSetId) {
@@ -995,6 +1019,7 @@ export const engine = {
     const document = analysis?.documentId ? await one('documents', analysis.documentId) : null;
     const sourceFile = analysis?.documentId ? await one('sourceFiles', analysis.documentId) : null;
     const existing = analysis?.drawingSetId ? await one('drawingAnalyses', analysis.drawingSetId) : null;
+    if (document && !isDrawingDocument(document)) return { ok: false, status: 'unavailable', errorCode: 'invalid-document-role', warning: 'Only drawing-set documents may own drawing analyses.', analysis: structuredClone(analysis || null), document: structuredClone(document), recoverable: false };
     if (existing && existing.documentId !== analysis?.documentId) return { ok: false, status: 'unavailable', errorCode: 'drawing-analysis-invalid', warning: 'Drawing-set ownership does not match the exact document.', analysis: structuredClone(analysis || null), document: document ? structuredClone(document) : null, recoverable: true };
     const validation = validateDrawingOwnership({ analysis, documents: document ? [document] : [], sourceFiles: sourceFile ? [sourceFile] : [], activeProjectId: state.activeProject, requireSource: document?.sourceAvailability === 'available' });
     if (!validation.ok) return validation;
@@ -1019,19 +1044,19 @@ export const engine = {
     const parsed = await parsePdfFile(file);
     const sourceBlob = file.type === 'application/pdf' ? file : new Blob([await file.arrayBuffer()], { type: 'application/pdf' });
     const sourceRecord = createPdfSourceRecord({ documentId, projectId: document.projectId, sourceBlob, contentHash: hash || document.contentHash || '', storedAt: new Date().toISOString() });
-    const analysis = buildDrawingAnalysis({ documentId, projectId: document.projectId, pages: parsed.pages, analyzedAt: new Date().toISOString() });
+    const analysis = isDrawingDocument(document) ? buildDrawingAnalysis({ documentId, projectId: document.projectId, pages: parsed.pages, analyzedAt: new Date().toISOString() }) : null;
     const db = await openDB();
     await new Promise((resolve, reject) => {
       const transaction = db.transaction(['documents', 'sourceFiles', 'drawingAnalyses'], 'readwrite');
-      transaction.objectStore('documents').put({ ...document, pageCount: parsed.pageCount, sourceAvailability: 'available', drawingAnalysisStatus: analysis.status });
+      transaction.objectStore('documents').put({ ...document, pageCount: parsed.pageCount, sourceAvailability: 'available', drawingAnalysisStatus: analysis?.status || 'not-applicable' });
       transaction.objectStore('sourceFiles').put(sourceRecord);
-      transaction.objectStore('drawingAnalyses').put(analysis);
+      if (analysis) transaction.objectStore('drawingAnalyses').put(analysis);
       transaction.oncomplete = () => { db.close(); resolve(); };
       transaction.onerror = () => { db.close(); reject(transaction.error); };
       transaction.onabort = () => { db.close(); reject(transaction.error || new Error('PDF reattachment transaction aborted.')); };
     });
     invalidateKnowledgeCache();
-    return { ok: true, status: 'saved', documentId, projectId: document.projectId, drawingSetId: analysis.drawingSetId, pageCount: parsed.pageCount };
+    return { ok: true, status: 'saved', documentId, projectId: document.projectId, drawingSetId: analysis?.drawingSetId || '', pageCount: parsed.pageCount, documentType: persistDocumentClassification(document).documentType };
   },
 
   async inspectionRecords({ includeArchived = false } = {}) {
@@ -1289,9 +1314,9 @@ export const engine = {
       for (const document of successfulDocuments.filter(item => item.extension === 'pdf')) {
         const source = successfulSourceFiles.find(item => item.documentId === document.id);
         const analysis = successfulDrawingAnalyses.find(item => item.documentId === document.id);
-        if (!source || !analysis) throw new Error(`Authoritative PDF source registration was unavailable for ${document.name}. Import was not registered.`);
+        if (!source || isDrawingDocument(document) && !analysis) throw new Error(`Authoritative PDF source registration was unavailable for ${document.name}. Import was not registered.`);
         document.sourceAvailability = 'available';
-        document.drawingAnalysisStatus = analysis.status;
+        document.drawingAnalysisStatus = analysis?.status || 'not-applicable';
       }
 
       successfulDocuments.forEach((document, index) => {
@@ -1912,7 +1937,7 @@ export const engine = {
       );
 
       const pdf = String(document.extension || '').toLowerCase() === 'pdf' || String(document.type || '').toLowerCase().includes('pdf');
-      return {
+      return persistDocumentClassification({
         ...document,
         id: newId,
         projectId: importedProject.id,
@@ -1920,7 +1945,7 @@ export const engine = {
           libraryIdMap.get(document.libraryId) ||
           fallbackLibraryId,
         ...(pdf ? { sourceAvailability: 'reattachment-required' } : {})
-      };
+      });
     });
 
     const sectionIdMap = new Map(
@@ -1973,7 +1998,7 @@ export const engine = {
     }));
     const importedDrawingAnalyses = (Array.isArray(data.drawingAnalyses) ? data.drawingAnalyses : []).flatMap(sourceAnalysis => {
       const mappedDocumentId = documentIdMap.get(sourceAnalysis.documentId);
-      if (!mappedDocumentId) return [];
+      if (!mappedDocumentId || !isDrawingDocument(importedDocuments.find(item => item.id === mappedDocumentId))) return [];
       const pages = (sourceAnalysis.sheets || []).map(sheet => ({
         pageNumber: sheet.pageNumber, width: sheet.pageWidth, height: sheet.pageHeight,
         rotation: sheet.rotation, textItems: sheet.textItems || []

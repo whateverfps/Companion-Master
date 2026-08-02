@@ -2,6 +2,7 @@ import { normalizeSectionNumber } from './data-model.js';
 import { createIdentifier } from './identifiers.js';
 import { createPdfSourceRecord, openPdfBlob, readPdfPage } from './pdf-source.js';
 import { buildDrawingAnalysis } from './drawing-intelligence.js';
+import { persistDocumentClassification } from './document-routing.js';
 
 const HIERARCHY_VERSION = 1;
 const TRADE_RULES = [
@@ -342,7 +343,7 @@ export async function parseFiles(files, projectId, onProgress = () => {}, librar
         .filter(part => part.hierarchyType === 'spec-section' && part.sectionNumber)
         .map(part => [part.sectionNumber.replace(/\D/g, ''), ids.get(part.key)]));
       const extension = (file.name.split('.').pop() || '').toLowerCase();
-      documents.push({
+      const documentRecord = persistDocumentClassification({
         id: documentId, projectId, libraryId, name: file.name,
         title: file.name.replace(/\.[^.]+$/, ''), type: file.type || extension, extension,
         size: file.size, lastModified: file.lastModified || null, category: categoryFor(file.name), tags: [],
@@ -353,8 +354,11 @@ export async function parseFiles(files, projectId, onProgress = () => {}, librar
         hierarchyVersion: HIERARCHY_VERSION, indexedAt: new Date().toISOString(), status: 'verified',
         ...(extension === 'pdf' ? { pageCount: parsedFile.pageCount, sourceAvailability: 'pending-registration', drawingAnalysisStatus: 'pending-registration' } : {}),
         health: text.length < 100 ? 'warning' : 'healthy',
+        retrievalChunkCount: parts.length,
+        specificationSectionCount: parts.filter(part => part.hierarchyType === 'spec-section' && part.sectionNumber).length,
         healthDetail: text.length < 100 ? 'Very little extractable text was found.' : 'Text extraction and hierarchy indexing completed.'
       });
+      documents.push(documentRecord);
       parts.forEach((part, order) => {
         const id = ids.get(part.key);
         const parentId = ids.get(part.parentKey) || null;
@@ -381,10 +385,10 @@ export async function parseFiles(files, projectId, onProgress = () => {}, librar
       if (extension === 'pdf') {
         const storedAt = new Date().toISOString();
         sourceFiles.push(createPdfSourceRecord({ documentId, projectId, sourceBlob: parsedFile.sourceBlob, storedAt }));
-        drawingAnalyses.push(buildDrawingAnalysis({ documentId, projectId, pages: parsedFile.pages, analyzedAt: storedAt }));
+        if (documentRecord.documentType === 'drawing-set') drawingAnalyses.push(buildDrawingAnalysis({ documentId, projectId, pages: parsedFile.pages, analyzedAt: storedAt }));
       }
     } catch (error) {
-      documents.push({
+      documents.push(persistDocumentClassification({
         id: createIdentifier(), projectId, libraryId, name: file.name,
         title: file.name.replace(/\.[^.]+$/, ''), type: file.type,
         extension: (file.name.split('.').pop() || '').toLowerCase(), size: file.size,
@@ -393,7 +397,7 @@ export async function parseFiles(files, projectId, onProgress = () => {}, librar
         indexedAt: new Date().toISOString(), status: 'error', health: 'error',
         healthDetail: error.message, error: error.message,
         errorStack: error.stack || ''
-      });
+      }));
     }
   }
   return { documents, sections, sourceFiles, drawingAnalyses };

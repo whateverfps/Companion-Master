@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseFiles, parsePdfFile } from '../src/parsers.js';
 
-function pdfFile() {
+function pdfFile(name = 'drawings.pdf') {
   const blob = new Blob(['%PDF fixture'], { type: 'application/pdf' });
-  Object.defineProperties(blob, { name: { value: 'drawings.pdf' }, lastModified: { value: 123 } });
+  Object.defineProperties(blob, { name: { value: name }, lastModified: { value: 123 } });
   return blob;
 }
 
@@ -34,6 +34,14 @@ test('parseFiles hands off one source Blob and one drawing analysis without chan
   assert.equal(result.sourceFiles[0].sourceBlob.type, 'application/pdf');
   assert.equal(result.drawingAnalyses.length, 1);
   assert.equal(result.drawingAnalyses[0].sheets.length, 2);
+});
+
+test('specification PDF retains its source and index without creating a drawing analysis', async () => {
+  const file = pdfFile('518-22-700.Bedford.MA.EHRM.Specifications.IFC.20260413.pdf');
+  const result = await parseFiles([file], 'p1', () => {}, 'l1', { pdfjs: pdfjs() });
+  assert.equal(result.documents[0].documentType, 'specifications');
+  assert.equal(result.documents[0].pageCount, 2); assert.equal(result.sourceFiles.length, 1); assert.equal(result.drawingAnalyses.length, 0);
+  assert.equal(result.documents[0].retrievalChunkCount, result.sections.length);
 });
 
 test('non-PDF parsing remains on the existing plain-text pathway', async () => {

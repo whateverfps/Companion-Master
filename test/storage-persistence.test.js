@@ -28,7 +28,7 @@ test('quota failures are contained without deleting or mutating in-memory projec
 
 test('drawing provider branch receives sections explicitly and degrades honestly', async () => {
   const loaded = await loadDrawingWorkspaceProviders({ loadSections: async () => [{ id: 'spec-section' }] });
-  assert.deepEqual(loaded, { sections: [{ id: 'spec-section' }], warnings: [] });
+  assert.deepEqual(loaded, { documents: [], sections: [{ id: 'spec-section' }], warnings: [] });
   const failures = []; const unavailable = await loadDrawingWorkspaceProviders({ loadSections: async () => { throw new Error('provider failed'); }, onFailure: failure => failures.push(failure) });
   assert.deepEqual(unavailable.sections, []); assert.equal(unavailable.warnings.length, 1); assert.equal(failures[0].provider, 'specification-sections');
 });

@@ -1,5 +1,6 @@
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const list = value => Array.isArray(value) ? value : [];
+import { isDrawingDocument } from './document-routing.js';
 
 export const normalizeDrawingPageSheetNumber = value => text(value).toUpperCase().replace(/[^A-Z0-9]+/g, '');
 
@@ -15,7 +16,8 @@ function usableSheetNumber(value) {
 
 function first(...values) { return values.map(text).find(Boolean) || ''; }
 
-export function buildDrawingPageModel({ documentId = '', drawingSetId = '', projectId = '', pageCount = 0, catalogRecords = [], registryRecords = [], partialSheets = [], storedPageMetadata = [] } = {}) {
+export function buildDrawingPageModel({ documentId = '', documentType = '', drawingSetId = '', projectId = '', pageCount = 0, catalogRecords = [], registryRecords = [], partialSheets = [], storedPageMetadata = [] } = {}) {
+  if (documentType && !isDrawingDocument({ documentType })) return [];
   const count = Math.max(0, Math.trunc(Number(pageCount) || 0));
   const byPage = records => new Map(list(records).filter(item => pageNumber(item)).map(item => [pageNumber(item), item]));
   const catalog = byPage(catalogRecords);

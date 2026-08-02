@@ -457,13 +457,15 @@ test('Drawing Workspace requirements panel keeps scope, evidence, trade, and exa
   assert.match(app, /drawingViewportContextService\.update/);
 });
 
-test('Drawing Workspace explicitly loads specification sections and contains provider failure', () => {
+test('Drawing Workspace loads routed document metadata without loading specification chunks and contains provider failure', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const wrapper = app.slice(app.indexOf("async function renderDrawingWorkspace(shell = 'professional')"), app.indexOf("async function renderDrawingWorkspaceWithProviders"));
   const renderer = app.slice(app.indexOf("async function renderDrawingWorkspaceWithProviders"), app.indexOf('async function renderMissionControlDashboard'));
   assert.match(wrapper, /loadDrawingWorkspaceProviders/);
-  assert.match(wrapper, /loadSections: \(\) => engine\.sections\(\)/);
-  assert.match(renderer, /\{ sections, warnings: providerWarnings = \[\] \}/);
-  assert.match(renderer, /sourceSections: sections\.filter/);
+  assert.match(wrapper, /loadDocuments: \(\) => engine\.documents\(\)/);
+  assert.match(renderer, /\{ documents: providerDocuments, warnings: providerWarnings = \[\] \}/);
   assert.match(renderer, /providerWarnings/);
+  assert.match(renderer, /const documents = allDocuments\.filter\(isDrawingDocumentRole\)/);
+  assert.match(renderer, /const specificationDocument = allDocuments\.find\(isSpecificationDocument\)/);
+  assert.doesNotMatch(renderer, /await engine\.sections\(\)/);
 });

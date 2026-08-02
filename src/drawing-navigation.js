@@ -1,5 +1,6 @@
 import { normalizeRegion } from './pdf-source.js';
 import { buildDrawingPageModel } from './drawing-page-model.js';
+import { isDrawingDocument } from './document-routing.js';
 
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const safe = value => [...text(value)].map(character => /^[a-zA-Z0-9_-]$/.test(character) ? character : `_${character.codePointAt(0).toString(16)}_`).join('') || 'unavailable';
@@ -45,11 +46,11 @@ export function assertDrawingPageConsistency({ selectedPage, renderedPage, targe
   return true;
 }
 
-export function createPdfPageViewerAnalysis({ documentId, projectId, pageCount, selectedPage = 1, pageWidth = 1, pageHeight = 1, rotation = 0, metadataAnalysis = null, catalogRecords = [] } = {}) {
+export function createPdfPageViewerAnalysis({ documentId, documentType = '', projectId, pageCount, selectedPage = 1, pageWidth = 1, pageHeight = 1, rotation = 0, metadataAnalysis = null, catalogRecords = [] } = {}) {
   const count = Math.max(0, Math.trunc(Number(pageCount) || 0));
   const activePage = Math.max(1, Math.min(count || 1, Math.trunc(Number(selectedPage) || 1)));
   const drawingSetId = text(metadataAnalysis?.drawingSetId) || `pdf-viewer-${safe(documentId)}`;
-  const pages = buildDrawingPageModel({ documentId, projectId, drawingSetId, pageCount: count, catalogRecords, registryRecords: metadataAnalysis?.drawingRegistry, partialSheets: metadataAnalysis?.sheets, storedPageMetadata: metadataAnalysis?.pageMetadata });
+  const pages = buildDrawingPageModel({ documentId, documentType, projectId, drawingSetId, pageCount: count, catalogRecords, registryRecords: metadataAnalysis?.drawingRegistry, partialSheets: metadataAnalysis?.sheets, storedPageMetadata: metadataAnalysis?.pageMetadata });
   const sheets = pages.map(page => {
     const partial = page.partialRecord || {};
     const registered = page.authoritativeRecord || {};
@@ -79,6 +80,7 @@ export function resolveDrawingTarget(target, { documents = [], analyses = [] } =
   if (!target?.documentId) return { status: 'none', document: null, analysis: null, sheet: null, observation: null, planObject: null, region: null, kind: 'none' };
   const document = documents.find(item => text(item?.id) === target.documentId) || null;
   if (!document) return { status: 'missing-document', document: null, analysis: null, sheet: null, observation: null, planObject: null, region: null, kind: 'missing-document' };
+  if (!isDrawingDocument(document)) return { status: 'invalid-document-role', document, analysis: null, sheet: null, observation: null, planObject: null, region: null, kind: 'invalid-document-role' };
   const analysis = analyses.find(item => text(item?.documentId) === target.documentId && (!target.drawingSetId || text(item.drawingSetId) === target.drawingSetId)) || null;
   if (!analysis) return { status: 'missing-analysis', document, analysis: null, sheet: null, observation: null, planObject: null, region: null, kind: 'missing-analysis' };
   const sheet = target.drawingId

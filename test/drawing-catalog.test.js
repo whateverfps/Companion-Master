@@ -82,3 +82,9 @@ test('catalog diagnostics report incomplete, duplicate, disputed, and fallback m
   assert.ok(diagnostics.parserDisagreements.length);
   assert.deepEqual(diagnostics.unknownIdentities, ['drawing-page:doc:3']);
 });
+
+test('catalog ignores specification documents without creating page identities', () => {
+  const catalog = createDrawingCatalog({ storage: memoryStorage() });
+  assert.deepEqual(catalog.reconcile({ documentId: 'spec', documentType: 'specifications', pageCount: 2363 }), []);
+  assert.deepEqual(catalog.recordsForDocument('spec'), []);
+});

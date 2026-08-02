@@ -689,3 +689,15 @@ test('reattachment and analysis saves use exact document ownership rather than a
   assert.match(saveAnalysis, /await one\('documents', analysis\.documentId\)/);
   assert.doesNotMatch(saveAnalysis, /await this\.documents/);
 });
+
+test('document reclassification preserves stable identity and indexed records', async () => {
+  const project = await engine.importProject({ manifest: { project: { name: 'Classification Fixture' } }, libraries: [], documents: [{ id: 'legacy-spec', name: 'project-manual.pdf', extension: 'pdf', pageCount: 2363 }], sections: [{ id: 'legacy-spec-section', documentId: 'legacy-spec', sectionNumber: '23 31 00', heading: 'HVAC Ducts' }] });
+  const [document] = await engine.documents(); const beforeId = document.id; const beforeSections = (await engine.sections()).length;
+  const result = await engine.reclassifyDocument(document.id, { documentType: 'specifications', revision: 'IFC' });
+  assert.equal(result.ok, true); assert.equal(result.document.id, beforeId); assert.equal(result.document.documentType, 'specifications'); assert.equal(result.document.revision, 'IFC');
+  assert.equal(result.indexedSectionCount, beforeSections); assert.equal((await engine.sections()).length, beforeSections);
+  const source = readFileSync(new URL('../src/engine.js', import.meta.url), 'utf8');
+  const method = source.slice(source.indexOf('async reclassifyDocument'), source.indexOf('async sourceFile'));
+  assert.doesNotMatch(method, /delete|remove/);
+  await engine.deleteProject(project.id);
+});

@@ -128,6 +128,7 @@ import { createDrawingViewportContextService, normalizedViewportBounds } from '.
 import { createDrawingTradeContext, DRAWING_TRADE_CHANNELS } from './drawing-trade-context.js';
 import { createDrawingRequirementsResolver } from './drawing-requirements-resolver.js';
 import { loadDrawingWorkspaceProviders } from './drawing-workspace-providers.js';
+import { documentIndexCounts, isDrawingDocument as isDrawingDocumentRole, isSpecificationDocument } from './document-routing.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -1515,7 +1516,7 @@ async function renderChiefWorkspace({ historyVisible = false } = {}) {
   const historyItems = engine.conversations();
   const projectDocuments = project ? await engine.documents() : [];
   const attachmentNames = new Map(projectDocuments.map(document => [document.id, document.name || document.title || document.id]));
-  const drawingSourceIds = new Set((await Promise.all(projectDocuments.filter(isPdfDocument).map(async document => [document.id, Boolean(await engine.sourceFile(document.id))]))).filter(([, available]) => available).map(([id]) => id));
+  const drawingSourceIds = new Set((await Promise.all(projectDocuments.filter(isDrawingDocumentRole).map(async document => [document.id, Boolean(await engine.sourceFile(document.id))]))).filter(([, available]) => available).map(([id]) => id));
   const drawingAnalyses = await currentDrawingAnalyses();
   if (!activeWorkPackage) {
     let packageMessageIndex = -1;
@@ -1613,7 +1614,7 @@ function renderConversationHistory() {
 async function renderMissionControlLibrary() {
   const project = missionControlProject();
   const documents = project ? await engine.documents() : [];
-  $('#missionControlContent').innerHTML = `<section class="mc-control-library" aria-labelledby="missionControlTitle"><header><div><span>PROJECT LIBRARY</span><h1 id="missionControlTitle" tabindex="-1">Project Library</h1><p>${project ? `Recent source documents for ${esc(project.name)}.` : 'Select a project to browse source documents.'}</p></div><label class="mc-control-attach"><input id="missionControlLibraryFiles" type="file" multiple accept=".pdf,.docx,.xls,.xlsx,.txt,.md,.csv,.json,.html,.htm,.xml,.log">Import documents</label></header>${documents.length ? `<ol>${documents.slice().sort((a,b) => String(b.importedAt || '').localeCompare(String(a.importedAt || ''))).map(document => `<li><button data-control-source-document="${esc(document.id)}"><strong>${esc(document.title || document.name || document.id)}</strong><span>${esc(document.type || document.extension || 'Document')} · ${fmt(document.sectionCount)} sections</span></button></li>`).join('')}</ol>` : missionControlEmpty(project ? 'No documents yet' : 'No project open', project ? 'Import a supported document to populate this project.' : 'Open a project from My Projects first.')}</section>`;
+  $('#missionControlContent').innerHTML = `<section class="mc-control-library" aria-labelledby="missionControlTitle"><header><div><span>PROJECT LIBRARY</span><h1 id="missionControlTitle" tabindex="-1">Project Library</h1><p>${project ? `Recent source documents for ${esc(project.name)}.` : 'Select a project to browse source documents.'}</p></div><label class="mc-control-attach"><input id="missionControlLibraryFiles" type="file" multiple accept=".pdf,.docx,.xls,.xlsx,.txt,.md,.csv,.json,.html,.htm,.xml,.log">Import documents</label></header>${documents.length ? `<ol>${documents.slice().sort((a,b) => String(b.importedAt || '').localeCompare(String(a.importedAt || ''))).map(document => { const counts = documentIndexCounts(document, []); return `<li><button data-control-source-document="${esc(document.id)}"><strong>${esc(document.title || document.name || document.id)}</strong><span>${esc(documentType(document))} · ${isSpecificationDocument(document) ? `${fmt(counts.sourcePageCount)} pages · ${fmt(counts.specificationSectionCount)} CSI sections · ${fmt(counts.retrievalChunkCount)} retrieval chunks` : `${fmt(document.sectionCount)} indexed records`}</span></button></li>`; }).join('')}</ol>` : missionControlEmpty(project ? 'No documents yet' : 'No project open', project ? 'Import a supported document to populate this project.' : 'Open a project from My Projects first.')}</section>`;
 }
 
 async function renderMissionControlInspections() {
@@ -1775,7 +1776,7 @@ function releaseDrawingSource() {
 }
 
 async function createRetainedPdfViewerAnalysis(documentRecord, source, requestedPage = 1, metadataAnalysis = null) {
-  if (!source?.sourceBlob || !documentRecord?.id) return null;
+  if (!source?.sourceBlob || !documentRecord?.id || !isDrawingDocumentRole(documentRecord)) return null;
   if (!activeDrawingPdf || activeDrawingDocumentId !== source.documentId) {
     activeDrawingPdf?.cleanup?.();
     activeDrawingPdf?.destroy?.();
@@ -1790,8 +1791,8 @@ async function createRetainedPdfViewerAnalysis(documentRecord, source, requested
   drawingViewerEngine.openDocument(documentRecord.id, pageCount, pageNumber);
   const page = await activeDrawingPdf.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 1, rotation: 0 });
-  const catalogRecords = drawingCatalog.reconcile({ documentId: documentRecord.id, projectId: documentRecord.projectId || state().activeProject, drawingSetId: metadataAnalysis?.drawingSetId || '', pageCount, parserRecords: [...(metadataAnalysis?.sheets || []), ...(metadataAnalysis?.drawingRegistry || [])], storedMetadata: metadataAnalysis?.pageMetadata || [] });
-  const analysis = createPdfPageViewerAnalysis({ documentId: documentRecord.id, projectId: documentRecord.projectId || state().activeProject, pageCount, selectedPage: pageNumber, pageWidth: viewport.width, pageHeight: viewport.height, rotation: page.rotate || viewport.rotation || 0, metadataAnalysis, catalogRecords });
+  const catalogRecords = drawingCatalog.reconcile({ documentId: documentRecord.id, documentType: documentRecord.documentType, projectId: documentRecord.projectId || state().activeProject, drawingSetId: metadataAnalysis?.drawingSetId || '', pageCount, parserRecords: [...(metadataAnalysis?.sheets || []), ...(metadataAnalysis?.drawingRegistry || [])], storedMetadata: metadataAnalysis?.pageMetadata || [] });
+  const analysis = createPdfPageViewerAnalysis({ documentId: documentRecord.id, documentType: documentRecord.documentType, projectId: documentRecord.projectId || state().activeProject, pageCount, selectedPage: pageNumber, pageWidth: viewport.width, pageHeight: viewport.height, rotation: page.rotate || viewport.rotation || 0, metadataAnalysis, catalogRecords });
   page.cleanup?.();
   return analysis;
 }
@@ -2154,11 +2155,11 @@ function drawingRecoveryMarkup(record = {}) {
 }
 
 async function renderDrawingWorkspace(shell = 'professional') {
-  const providers = await loadDrawingWorkspaceProviders({ loadSections: () => engine.sections(), onFailure: failure => logger.warning('Drawing workspace provider unavailable', failure) });
+  const providers = await loadDrawingWorkspaceProviders({ loadDocuments: () => engine.documents(), onFailure: failure => logger.warning('Drawing workspace provider unavailable', failure) });
   return renderDrawingWorkspaceWithProviders(shell, providers);
 }
 
-async function renderDrawingWorkspaceWithProviders(shell = 'professional', { sections, warnings: providerWarnings = [] } = {}) {
+async function renderDrawingWorkspaceWithProviders(shell = 'professional', { documents: providerDocuments, warnings: providerWarnings = [] } = {}) {
   const workspaceRenderRequest = ++drawingWorkspaceRenderRequest;
   const host = shell === 'mission-control' ? ($('#missionInlineDrawingViewer') || $('#missionDrawingViewer')) : $('#drawingInspector');
   if (!host) return;
@@ -2176,9 +2177,11 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { sec
       await selectProjectThroughProductionPath(exact.owningProjectId);
       if ($('#projectSelect')) $('#projectSelect').value = exact.owningProjectId;
     }
+    if (exact.errorCode === 'invalid-document-role') drawingTarget = null;
     if (!exact.document) { targetLifecycleUnavailable = { ...exact, errorCode: 'drawing-target-stale', warning: 'The selected drawing document is no longer available.' }; drawingTarget = null; }
   }
-  const documents = (await engine.documents()).filter(isPdfDocument);
+  const allDocuments = providerDocuments;
+  const documents = allDocuments.filter(isDrawingDocumentRole);
   const retainedAnalyses = await engine.drawingAnalyses();
   const analyses = await currentDrawingAnalyses();
   const orphanDiagnostics = await engine.drawingLifecycleDiagnostics();
@@ -2193,7 +2196,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { sec
     return;
   }
   const requestedDocument = drawingTarget?.documentId;
-  const selected = documents.find(item => item.id === requestedDocument) || documents.find(item => analysesByDocument.has(item.id) || retainedAnalysesByDocument.has(item.id)) || documents[0];
+  const selected = documents.find(item => item.id === requestedDocument) || documents.find(item => item.id === activeDrawingDocumentId) || documents.find(item => analysesByDocument.has(item.id) || retainedAnalysesByDocument.has(item.id)) || documents[0];
   const persistedAnalysis = retainedAnalysesByDocument.get(selected.id) || analysesByDocument.get(selected.id) || null;
   let analysis = analysesByDocument.get(selected.id) || null;
   const source = activeDrawingSourceRecord?.documentId === selected.id && activeDrawingSourceRecord.projectId === state().activeProject
@@ -2257,8 +2260,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { sec
   activeDrawingObjects = [...roomObjects, ...observationObjects, ...occurrenceObjects];
   if (selectedDrawingObject && !activeDrawingObjects.some(item => item.objectId === selectedDrawingObject.objectId && item.pageId === sheet?.pageId)) selectedDrawingObject = null;
   if (selectedDrawingObject) selectedDrawingObject = activeDrawingObjects.find(item => item.objectId === selectedDrawingObject.objectId) || selectedDrawingObject;
-  const specificationDocument = documents.find(item => /specification/i.test(`${item.documentType || item.category || ''} ${item.title || item.name || ''}`));
-  if (specificationDocument) specificationIndex.index({ document: { ...specificationDocument, projectId: specificationDocument.projectId || state().activeProject }, sourceSections: sections.filter(item => item.documentId === specificationDocument.id) });
+  const specificationDocument = allDocuments.find(isSpecificationDocument);
   if (selectedDrawingObject && specificationDocument) drawingSpecificationLinks.suggestForObject(selectedDrawingObject, { specificationDocumentId: specificationDocument.id });
   const currentSpecificationLinks = sheet ? drawingSpecificationLinks.forPage(sheet.pageId, selectedDrawingObject?.objectId) : [];
   const activeRelationshipContext = synchronizeActiveDrawingRelationships({ projectId: analysis?.projectId || selected.projectId || state().activeProject, document: selected, analysis, sheet, objects: activeDrawingObjects, specificationLinks: currentSpecificationLinks });
@@ -2733,7 +2735,7 @@ app.addEventListener('change', async event => {
     await renderDrawingWorkspace(shell);
   }
   if (event.target.id === 'mcDrawingReattach' && event.target.files?.[0]) {
-    const documentId = drawingTarget?.documentId || (await engine.documents()).find(isPdfDocument)?.id;
+    const documentId = drawingTarget?.documentId || (await engine.documents()).find(isDrawingDocumentRole)?.id;
     try {
       const result = await engine.reattachPdfSource(documentId, event.target.files[0]);
       if (!result.ok) { drawingLifecycleUnavailable = [result]; await renderDrawingWorkspace(shell); return; }
@@ -3511,14 +3513,14 @@ async function refresh() {
   `;
 
   const documents = await engine.documents();
-  const sections = await engine.sections();
+  const sections = experience === 'professional-workspace' ? await engine.sections() : [];
 
   $('#kDocs').textContent = fmt(documents.length);
   $('#kSections').textContent = fmt(sections.length);
 
   renderMessages(documents, sections);
   renderProjectWorkspace(documents, sections);
-  await renderKnowledgeWorkspace(documents);
+  await renderKnowledgeWorkspace(documents, sections);
   renderDemonstrationControls();
   if (experience === 'mission-control') await renderMissionControl(documents, sections);
 }
@@ -6275,11 +6277,12 @@ function knowledgeCatalogData(documents, sections, libraries) {
   };
 }
 
-async function renderKnowledgeWorkspace(prefetched = null) {
+async function renderKnowledgeWorkspace(prefetched = null, prefetchedSections = null) {
   const currentState = state();
   const libraries = engine.libraries();
   const allDocuments = prefetched || await engine.documents();
-  const allSections = await engine.sections();
+  const allSections = prefetchedSections ?? await engine.sections();
+  for (const document of allDocuments.filter(isSpecificationDocument)) specificationIndex.index({ document: { ...document, projectId: document.projectId || currentState.activeProject }, sourceSections: allSections.filter(item => item.documentId === document.id) });
   const catalog = knowledgeCatalogData(
     allDocuments,
     allSections,
@@ -6636,6 +6639,7 @@ function documentStatus(document) {
 }
 
 function documentType(document) {
+  if (document?.documentType) return document.documentType === 'drawing-set' ? 'Drawing Set' : document.documentType === 'specifications' ? 'Specifications' : document.documentType;
   return preferredText(
     document.extension?.toUpperCase(),
     document.type,
@@ -8321,7 +8325,7 @@ async function renderSources() {
     item.id === selected.libraryId
   );
   const [sourceDrawingAnalysis, sourcePdfRecord] = isPdfDocument(selected)
-    ? await Promise.all([engine.drawingAnalysis(selected.id), engine.sourceFile(selected.id)])
+    ? await Promise.all([isDrawingDocumentRole(selected) ? engine.drawingAnalysis(selected.id) : null, engine.sourceFile(selected.id)])
     : [null, null];
   const sourceTargetResolution = sourceNavigationTarget?.destination === 'sources' &&
     sourceNavigationTarget.documentId === selected.id
@@ -8443,7 +8447,7 @@ async function renderSources() {
       </p>
     </div>
 
-    ${isPdfDocument(selected) ? `<section class="mc-drawing-source-status"><div><span>AUTHORITATIVE DRAWING SOURCE</span><h3>${sourcePdfRecord ? 'Original PDF available' : 'Original PDF unavailable'}</h3><p>${sourcePdfRecord ? `${fmt(sourceDrawingAnalysis?.sheets?.length || 0)} deterministic sheet records are available.` : 'Reattach the exact original PDF to enable visual sheet review. Extracted text remains available.'}</p></div>${sourcePdfRecord ? '<button data-source-open-drawing>Open Drawing</button>' : '<label class="mc-drawing-reattach"><input id="sourcePdfReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label>'}</section>` : ''}
+    ${isDrawingDocumentRole(selected) ? `<section class="mc-drawing-source-status"><div><span>AUTHORITATIVE DRAWING SOURCE</span><h3>${sourcePdfRecord ? 'Original PDF available' : 'Original PDF unavailable'}</h3><p>${sourcePdfRecord ? `${fmt(sourceDrawingAnalysis?.sheets?.length || 0)} deterministic sheet records are available.` : 'Reattach the exact original PDF to enable visual sheet review. Extracted text remains available.'}</p></div>${sourcePdfRecord ? '<button data-source-open-drawing>Open Drawing</button>' : '<label class="mc-drawing-reattach"><input id="sourcePdfReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label>'}</section>` : isSpecificationDocument(selected) ? `<section class="mc-drawing-source-status"><div><span>AUTHORITATIVE SPECIFICATION SOURCE</span><h3>${sourcePdfRecord ? 'Source PDF available on demand' : 'Source PDF unavailable'}</h3><p>Specification sections and articles are the primary interface. Source pages load only through exact evidence navigation.</p></div></section>` : ''}
 
     <section class="mc-relationship-source-summary" aria-labelledby="sourceRelationshipTitle">
       <div>
@@ -8502,6 +8506,7 @@ async function renderSources() {
         <div><dt>Untitled sections</dt><dd>${fmt(verification.untitledSections.length)}</dd></div>
         <div><dt>Hierarchy version</dt><dd>${selected.hierarchyVersion ?? 'Unavailable'}</dd></div>
         <div><dt>Page metadata</dt><dd>${verification.pageMetadataAvailable ? 'Available' : 'Unavailable'}</dd></div>
+        ${isSpecificationDocument(selected) ? (() => { const counts = documentIndexCounts(selected, sections); return `<div><dt>Source pages</dt><dd>${fmt(counts.sourcePageCount)}</dd></div><div><dt>Retrieval chunks</dt><dd>${fmt(counts.retrievalChunkCount)}</dd></div><div><dt>CSI specification sections</dt><dd>${fmt(counts.specificationSectionCount)}</dd></div>`; })() : ''}
       </dl>
 
       ${verification.warnings.length
