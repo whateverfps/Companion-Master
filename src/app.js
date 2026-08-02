@@ -121,6 +121,8 @@ import { createDrawingContextService } from './drawing-context.js';
 import { createDrawingWorkspace } from './drawing-workspace.js';
 import { createDrawingCatalog } from './drawing-catalog.js';
 import { createDrawingObject, createDrawingObjectDecisionStore, createRoomObject, screenToNormalizedPoint, selectDrawingObject, validNormalizedRegion } from './drawing-object-model.js';
+import { hitTestDrawingObjects, nextDrawingObject, objectTypeForObservation, searchDrawingObjects, sharedDrawingObjectContext, updateDrawingObjectSelection } from './drawing-object-interaction.js';
+import { applyPageObjectEnrichment, enrichPageConstructionObjects, relatedObjectIdsForSelection } from './drawing-object-enrichment.js';
 import { createDrawingOverlay, overlayStyle, visibleDrawingOverlays } from './drawing-overlays.js';
 import { createSpecificationIndex } from './specification-index.js';
 import { createDrawingSpecificationLinkService } from './drawing-spec-links.js';
@@ -234,6 +236,9 @@ const drawingRequirementsResolver = createDrawingRequirementsResolver({ specific
 let activeDrawingObjects = [];
 let activeDrawingTransientRequirementCount = 0;
 let selectedDrawingObject = null;
+let selectedDrawingObjectIds = [];
+let hoveredDrawingObjectId = '';
+let drawingObjectSearchActiveIndex = -1;
 let drawingObjectChoices = [];
 let drawingLocationReturnViewport = null;
 let drawingRegionSelectionMode = false;
@@ -1838,7 +1843,7 @@ function captureDrawingViewport(overrides = {}) {
   const current = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(drawingTarget.pageNumber) };
   const stage = $('#mcDrawingStage');
   const canvas = stage?.querySelector('#mcDrawingCanvas');
-  const next = { ...current, zoom: drawingZoom, rotation: drawingRotation, scrollLeft: stage?.scrollLeft || current.scrollLeft || 0, scrollTop: stage?.scrollTop || current.scrollTop || 0, selectedObservationId: drawingTarget.observationId || current.selectedObservationId, highlightedRegion: drawingTarget.region || current.highlightedRegion, ...viewportOverrides, overlays: { ...current.overlays, ...(viewportOverrides.overlays || {}) } };
+  const next = { ...current, zoom: drawingZoom, rotation: drawingRotation, scrollLeft: stage?.scrollLeft || current.scrollLeft || 0, scrollTop: stage?.scrollTop || current.scrollTop || 0, selectedObservationId: drawingTarget.observationId || current.selectedObservationId, selectedObjectId: selectedDrawingObject?.objectId || null, selectedObjectIds: [...selectedDrawingObjectIds], highlightedRegion: drawingTarget.region || current.highlightedRegion, ...viewportOverrides, overlays: { ...current.overlays, ...(viewportOverrides.overlays || {}) } };
   drawingViewerEngine.restoreViewport(drawingTarget.pageNumber, next);
   const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget.pageNumber));
   if (sheet?.pageId && stage && canvas) {
@@ -1869,11 +1874,17 @@ function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
     const overlay = document.createElement('button');
     overlay.type = 'button';
     overlay.className = `mc-drawing-object-overlay ${record.verificationState === 'confirmed' ? 'confirmed' : 'candidate'} ${record.type === 'selected' ? 'selected' : ''}`;
+    if (record.styleToken) overlay.classList.add(record.styleToken);
     overlay.dataset.overlayLayer = record.type;
     overlay.dataset.overlayId = record.overlayId;
+    if (record.metadata?.selected) overlay.dataset.selectionNumber = String(selectedDrawingObjectIds.indexOf(record.overlayId)+1);
+    overlay.classList.toggle('search-match', Boolean(record.metadata?.searchMatch));
+    overlay.classList.toggle('multi-selected', Boolean(record.metadata?.selected));
     overlay.setAttribute('aria-label', `${record.verificationState === 'confirmed' ? 'Confirmed' : 'Candidate'} ${record.label}`);
     overlay.title = record.label;
     Object.assign(overlay.style, overlayStyle(record));
+    overlay.onpointerenter = () => { hoveredDrawingObjectId = record.overlayId; overlay.classList.add('hovered'); logger.debug('Drawing object interaction', { operation:'hover', objectId:record.overlayId }); };
+    overlay.onpointerleave = () => { if (hoveredDrawingObjectId === record.overlayId) hoveredDrawingObjectId = ''; overlay.classList.remove('hovered'); };
     layer.append(overlay);
   }
 }
@@ -1978,15 +1989,16 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       stage.scrollTop = next.scrollTop;
       void paintDrawingPage(source, sheet, observation, overlayRecords);
     };
-    let pan = null;
+    let pan = null; let suppressObjectClick = false;
     stage.onpointerdown = event => {
       if (event.button !== 0 || event.target.closest('button')) return;
-      pan = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop };
+      pan = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop }; suppressObjectClick = false;
       stage.setPointerCapture?.(event.pointerId);
       stage.classList.add('is-panning');
     };
     stage.onpointermove = event => {
       if (!pan || pan.pointerId !== event.pointerId) return;
+      if (Math.hypot(event.clientX-pan.x,event.clientY-pan.y)>3) suppressObjectClick = true;
       stage.scrollLeft = pan.left - (event.clientX - pan.x);
       stage.scrollTop = pan.top - (event.clientY - pan.y);
     };
@@ -1995,6 +2007,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
     stage.onpointercancel = stopPan;
     stage.onclick = event => {
       if (event.target !== canvas) return;
+      if (suppressObjectClick) { suppressObjectClick=false; return; }
       const bounds = canvas.getBoundingClientRect();
       const point = screenToNormalizedPoint({ clientX: event.clientX, clientY: event.clientY, bounds, contentWidth: bounds.width, contentHeight: bounds.height, rotation: nextIdentity.rotation });
       if (drawingRegionSelectionMode) {
@@ -2009,11 +2022,11 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
         void renderDrawingWorkspace(experience === 'mission-control' ? 'mission-control' : 'professional'); return;
       }
       const selectionStartedAt = globalThis.performance?.now?.() ?? Date.now();
-      const result = selectDrawingObject(activeDrawingObjects, point);
-      logger.debug('Project object registry performance', { operation: 'selection-resolution', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - selectionStartedAt), activePageObjectCount: activeDrawingObjects.length, result: result.status });
-      if (result.status === 'selected') { selectedDrawingObject = result.object; drawingObjectChoices = []; drawingViewportContextService.update({ projectId: drawingTarget.projectId, documentId: drawingTarget.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, zoom: drawingZoom, rotation: drawingRotation, selectedRegion: result.object.region, selectedRoomId: result.object.type === 'room' ? result.object.roomId : null, selectedObjectId: result.object.objectId, activeTradeChannel: drawingTradeContext.current().key, source: result.object.type === 'room' ? 'room-selection' : 'object-selection' }, { immediate: true }); }
-      else if (result.status === 'ambiguous') { selectedDrawingObject = null; drawingObjectChoices = result.choices; }
-      else { selectedDrawingObject = null; drawingObjectChoices = []; drawingViewportContextService.update({ projectId: drawingTarget.projectId, documentId: drawingTarget.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, zoom: drawingZoom, rotation: drawingRotation, selectedObjectId: null, selectedRoomId: null, activeTradeChannel: drawingTradeContext.current().key, source: drawingTarget?.region ? 'manual-selection' : 'page-context' }, { immediate: true }); }
+      const result = hitTestDrawingObjects(activeDrawingObjects, point);
+      logger.debug('Drawing object interaction', { operation: 'hit-test', durationMs: result.durationMs, selectableObjects: activeDrawingObjects.length, clickableRegions: result.candidates.length, result: result.status, missedClick: result.status === 'empty' });
+      if (result.object) { selectedDrawingObjectIds = updateDrawingObjectSelection(selectedDrawingObjectIds, result.object.objectId, { additive:event.shiftKey }); selectedDrawingObject = activeDrawingObjects.find(item=>item.objectId===selectedDrawingObjectIds.at(-1)) || null; drawingObjectChoices = result.candidates.slice(1,5).map(item=>item.object); drawingViewportContextService.update({ projectId: drawingTarget.projectId, documentId: drawingTarget.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, zoom: drawingZoom, rotation: drawingRotation, selectedRegion: result.object.region, selectedRoomId: result.object.type === 'room' ? result.object.roomId : null, selectedObjectId: result.object.objectId, selectedObjectIds:[...selectedDrawingObjectIds], activeTradeChannel: drawingTradeContext.current().key, source: result.object.type === 'room' ? 'room-selection' : 'object-selection' }, { immediate: true }); }
+      else { selectedDrawingObject = null; selectedDrawingObjectIds = []; drawingObjectChoices = []; drawingViewportContextService.update({ projectId: drawingTarget.projectId, documentId: drawingTarget.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, zoom: drawingZoom, rotation: drawingRotation, selectedObjectId: null, selectedObjectIds:[], selectedRoomId: null, activeTradeChannel: drawingTradeContext.current().key, source: drawingTarget?.region ? 'manual-selection' : 'page-context' }, { immediate: true }); }
+      captureDrawingViewport({ selectedObjectId:selectedDrawingObject?.objectId||null, selectedObjectIds:[...selectedDrawingObjectIds], highlightedRegion:selectedDrawingObject?.region||null, contextSource:selectedDrawingObject?'object-selection':'page-context' });
       void renderDrawingWorkspace(experience === 'mission-control' ? 'mission-control' : 'professional');
     };
     stage.onkeydown = event => {
@@ -2142,7 +2155,7 @@ function constructionIntelligencePanelMarkup(model) {
   }
   const object = model.object;
   const specs = [...model.specifications.confirmed, ...model.specifications.suggested];
-  const objectHeader = `<div class="mc-ci-object-hero"><strong class="mc-ci-object-name">${esc(object.name)}</strong>${object.room ? `<span>Room ${esc(object.room)}</span>` : ''}<div><span class="mc-ci-badge ${esc(object.verificationState)}">${esc(object.statusLabel)}</span><strong>${Math.round(object.confidence * 100)}%</strong></div></div><dl><div><dt>Construction Type</dt><dd>${esc(object.type)}</dd></div>${object.trade ? `<div><dt>Trade</dt><dd>${esc(object.trade)}</dd></div>` : ''}${object.system ? `<div><dt>System</dt><dd>${esc(object.system)}</dd></div>` : ''}<div><dt>Location</dt><dd>${esc(object.location)}</dd></div><div><dt>Record ID</dt><dd>${esc(object.objectId)}</dd></div></dl><div class="mc-ci-actions">${object.hasLocation ? '<button data-drawing-object-location>Show Location</button>' : ''}${object.verificationState === 'candidate' ? '<button data-project-object-confirm>Confirm</button><button data-project-object-reject>Reject</button>' : ''}<button data-project-object-edit>Edit</button><button class="subtle" data-drawing-clear-object>Clear Selection</button></div>`;
+  const objectHeader = `<div class="mc-ci-object-hero"><strong class="mc-ci-object-name">${esc(object.name)}</strong>${object.selectionCount > 1 ? `<span>${fmt(object.selectionCount)} selected</span>` : object.room ? `<span>Room ${esc(object.room)}</span>` : ''}<div><span class="mc-ci-badge ${esc(object.verificationState)}">${esc(object.statusLabel)}</span><strong>${Math.round(object.confidence * 100)}%</strong></div></div><dl><div><dt>Construction Type</dt><dd>${esc(object.type)}</dd></div>${object.trade ? `<div><dt>Trade</dt><dd>${esc(object.trade)}</dd></div>` : ''}${object.system ? `<div><dt>System</dt><dd>${esc(object.system)}</dd></div>` : ''}<div><dt>Location</dt><dd>${esc(object.location)}</dd></div><div><dt>Record ID</dt><dd>${esc(object.objectId)}</dd></div></dl><div class="mc-ci-actions">${object.hasLocation ? '<button data-drawing-object-location>Show Location</button>' : ''}${object.verificationState === 'candidate' ? '<button data-project-object-confirm>Confirm</button><button data-project-object-reject>Reject</button>' : ''}<button data-project-object-edit>Edit</button><button class="subtle" data-drawing-clear-object>Clear Selection</button></div>`;
   const history = model.history.length ? `<ul>${model.history.map(item => `<li><strong>${esc(item.label)}</strong><span>${esc(item.value)}${item.note ? ` · ${esc(item.note)}` : ''}</span></li>`).join('')}</ul>` : '';
   const projectStatus = relationshipGroups({ ...model.pmis, schedule: model.schedule, procurement: model.procurement });
   const relatedInformation = relationshipGroups({ relatedDrawings: model.relatedDrawings, relatedWork: model.relatedObjects, ...model.documents });
@@ -2377,12 +2390,19 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const sheetOccurrences = (analysis?.candidateOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
   if (sheetOccurrences.length) logger.debug('Candidate occurrence diagnostics', { pageId: sheet?.pageId || '', count: sheetOccurrences.length });
   const observationObjects = observations.filter(item => item.kind !== 'room-number-text').map(item => drawingObjectDecisions.apply(createDrawingObject({ ...objectBase, objectId: item.observationId, observationId: item.observationId,
-    type: item.kind === 'equipment-tag-text' ? 'equipment-tag' : item.kind?.includes('keyed') ? 'keynote' : item.kind?.includes('detail') ? 'detail-reference' : item.kind?.includes('callout') ? 'callout' : 'generic-candidate-object',
+    type: objectTypeForObservation(item.kind, 'generic-drawing-object'),
     label: `${observationKindLabel(item.kind)} ${item.value}`, evidenceText: item.value, region: item.region, confidence: item.confidence, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : item.verification?.status === 'Rejected' ? 'rejected' : 'candidate' })));
   const occurrenceObjects = sheetOccurrences.map(item => drawingObjectDecisions.apply(createDrawingObject({ ...objectBase, objectId: item.occurrenceId, type: item.type || 'generic-candidate-object', subtype: item.subtype, label: item.label || 'Plan object occurrence', evidenceText: item.evidenceText, region: item.region, confidence: item.confidence, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : item.verification?.status === 'Rejected' ? 'rejected' : 'candidate' })));
   for (const item of [...roomObjects, ...observationObjects, ...occurrenceObjects]) containedConstructionIntelligence('object-observations', null, () => projectObjectRegistry.mergeObservation({ observationId: item.sourceObservationIds?.[0] || item.objectId, projectId: objectBase.projectId, documentId: objectBase.documentId, pageId: objectBase.pageId, source: 'drawing-analysis', text: item.evidenceText || item.label, region: item.region, detectedType: item.type === 'equipment-tag' ? 'equipment' : item.type === 'generic-candidate-object' ? 'generic-drawing-object' : item.type, detectedTag: item.tag || item.roomNumber || String(item.label || '').split(' ').at(-1), confidence: item.confidence, parserVersion: String(analysis?.analysisVersion || '') }), { pageId: objectBase.pageId });
+  const enrichment = containedConstructionIntelligence('object-enrichment', { objects:[], diagnostics:{} }, () => enrichPageConstructionObjects({ ...objectBase, observations, schedules:sheetSchedules, legends:sheetLegends, occurrences:sheetOccurrences, keyedNotes:sheetKeyedNotes }), { pageId:objectBase.pageId });
+  const enrichmentResult = containedConstructionIntelligence('object-enrichment-persistence', { objects:[], diagnostics:enrichment.diagnostics }, () => applyPageObjectEnrichment(projectObjectRegistry,enrichment), { pageId:objectBase.pageId });
+  logger.debug('Drawing object coverage', { pageId:objectBase.pageId, ...enrichmentResult.diagnostics });
   activeDrawingObjects = containedConstructionIntelligence('project-objects', [], () => projectObjectRegistry.getObjectsForPage(sheet?.pageId || '', { projectId: objectBase.projectId })).map(item => ({ ...item, documentId: item.drawingDocumentId, pageId: item.drawingPageId, type: item.objectType, subtype: item.objectSubtype, region: item.graphicalRegion, evidenceText: item.sourceText }));
-  if (selectedDrawingObject && !activeDrawingObjects.some(item => item.objectId === selectedDrawingObject.objectId && item.pageId === sheet?.pageId)) { selectedDrawingObject = null; drawingObjectRegionAdjustmentId = ''; drawingRegionSelectionMode = false; }
+  const restoredObjectIds = drawingViewerEngine.getViewport(sheet?.pageNumber)?.selectedObjectIds || [];
+  selectedDrawingObjectIds = selectedDrawingObjectIds.filter(id=>activeDrawingObjects.some(item=>item.objectId===id));
+  if (!selectedDrawingObjectIds.length && restoredObjectIds.length) selectedDrawingObjectIds = restoredObjectIds.filter(id=>activeDrawingObjects.some(item=>item.objectId===id));
+  if (selectedDrawingObject && !activeDrawingObjects.some(item => item.objectId === selectedDrawingObject.objectId && item.pageId === sheet?.pageId)) { selectedDrawingObject = null; selectedDrawingObjectIds = []; drawingObjectRegionAdjustmentId = ''; drawingRegionSelectionMode = false; }
+  if (!selectedDrawingObject && selectedDrawingObjectIds.length) selectedDrawingObject = activeDrawingObjects.find(item=>item.objectId===selectedDrawingObjectIds.at(-1)) || null;
   if (selectedDrawingObject) selectedDrawingObject = activeDrawingObjects.find(item => item.objectId === selectedDrawingObject.objectId) || selectedDrawingObject;
   const specificationDocument = allDocuments.find(isSpecificationDocument);
   let vocabularyCandidateCount = 0; let relationshipWriteCount = 0;
@@ -2415,6 +2435,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     }
   } } catch (error) { logger.warning('Construction intelligence provider failure', { provider: 'specification-vocabulary', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }); }
   const currentSpecificationLinks = sheet ? drawingSpecificationLinks.forPage(sheet.pageId, selectedDrawingObject ? selectedDrawingObject.objectId : null) : [];
+  const selectedSpecificationLinks = sheet && selectedDrawingObjectIds.length > 1 ? selectedDrawingObjectIds.flatMap(objectId=>drawingSpecificationLinks.forPage(sheet.pageId,objectId)) : currentSpecificationLinks;
   if (sheet) logger.debug('Drawing requirement evidence resolution', { pageId: sheet.pageId, selectedObjectId: selectedDrawingObject?.objectId || null, vocabularyMatches: vocabularyCandidateCount, relationshipWrites: relationshipWriteCount, rejectedOrSuppressedCandidates: currentSpecificationLinks.filter(item => item.status === 'rejected').length });
   let activeRelationshipContext;
   try { activeRelationshipContext = synchronizeActiveDrawingRelationships({ projectId: analysis?.projectId || selected.projectId || state().activeProject, document: selected, analysis, sheet, objects: activeDrawingObjects, specificationLinks: currentSpecificationLinks }); }
@@ -2436,8 +2457,10 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const returnLabel = shell === 'professional' && returnAction?.kind === 'mission-control' ? 'Return to Chief' : returnAction?.label;
   const focusTarget = drawingFocusTarget({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion });
   const announcementText = sheet ? drawingAnnouncementText({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion }) : 'No drawing selected';
+  const objectSearchMatchIds = new Set(drawingFilter ? searchDrawingObjects(activeDrawingObjects,drawingFilter).map(item=>item.objectId) : []);
+  const relatedDrawingObjectIds = new Set(relatedObjectIdsForSelection(selectedDrawingObject,activeDrawingObjects));
   const overlayRecords = [
-    ...activeDrawingObjects.filter(item => item.verificationState !== 'rejected').map(item => createDrawingOverlay({ overlayId: item.objectId, ...objectBase, type: item.objectId === selectedDrawingObject?.objectId ? 'selected' : item.type === 'room' ? 'rooms' : item.verificationState === 'confirmed' ? 'confirmed' : item.type === 'equipment-tag' ? 'equipment' : item.type === 'keynote' ? 'keyedNotes' : item.type === 'callout' ? 'callouts' : 'candidates', label: item.label, region: item.region, confidence: item.confidence, verificationState: item.verificationState, metadata: { objectId: item.objectId } })),
+    ...activeDrawingObjects.filter(item => item.verificationState !== 'rejected').flatMap(item => (item.graphicalRegions?.length ? item.graphicalRegions : [item.region]).map((region,regionIndex) => createDrawingOverlay({ overlayId: item.objectId, ...objectBase, type: selectedDrawingObjectIds.includes(item.objectId) ? 'selected' : item.type === 'room' ? 'rooms' : item.verificationState === 'confirmed' ? 'confirmed' : ['equipment','diffuser','telecom-outlet','fire-protection-device'].includes(item.type) ? 'equipment' : item.type === 'keynote' ? 'keyedNotes' : ['callout','detail-reference'].includes(item.type) ? 'callouts' : item.type === 'schedule-entry' ? 'scheduleLinks' : 'candidates', label: item.label, region, geometry:item.geometry, confidence: item.confidence, verificationState: item.verificationState, styleToken:relatedDrawingObjectIds.has(item.objectId)?'related':item.status==='blocked'?'blocked':item.status==='completed'?'completed':item.type==='room'?'room':undefined, metadata: { objectId: item.objectId, regionIndex, selected:selectedDrawingObjectIds.includes(item.objectId), selectionIndex:selectedDrawingObjectIds.indexOf(item.objectId)+1, related:relatedDrawingObjectIds.has(item.objectId), searchMatch:objectSearchMatchIds.has(item.objectId) } }))),
     ...sheetKeyedNotes.map(item => createDrawingOverlay({ overlayId: item.keyedNoteOccurrenceId, ...objectBase, type: 'keyedNotes', label: `Keyed note ${item.identifier}`, region: item.region, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : 'candidate' }))
   ].filter(Boolean);
   const enrichSpecification = item => {
@@ -2451,7 +2474,8 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     requirements: { ...requirements, confirmedSpecifications: (requirements.confirmedSpecifications || []).map(enrichSpecification), suggestedSpecifications: (requirements.suggestedSpecifications || []).map(enrichSpecification) }, specificationLinks: currentSpecificationLinks.map(enrichSpecification),
     objectHistory: selectedDrawingObject ? containedConstructionIntelligence('object-history', [], () => projectObjectRegistry.getObjectHistory(selectedDrawingObject.objectId), { pageId: sheet?.pageId || '', objectId: selectedDrawingObject.objectId }) : [], viewportContext: activeViewportContext,
     sourceEntityId: activeRelationshipContext.sourceEntityId, hasPossibleDuplicates: selectedDrawingObject ? containedConstructionIntelligence('object-duplicates', [], () => projectObjectRegistry.possibleDuplicates(selectedDrawingObject.objectId), { pageId: sheet?.pageId || '', objectId: selectedDrawingObject.objectId }).length > 0 : false,
-    canLinkSpecification: Boolean(selectedDrawingObject && specificationDocument), graphSummary: activeRelationshipContext.graphSummary || null
+    canLinkSpecification: Boolean(selectedDrawingObject && specificationDocument), graphSummary: activeRelationshipContext.graphSummary || null,
+    multiSelection: sharedDrawingObjectContext(activeDrawingObjects.filter(item=>selectedDrawingObjectIds.includes(item.objectId)), { specificationLinks:selectedSpecificationLinks })
   });
   const constructionIntelligencePanel = buildIntelligencePanel(pendingRequirements);
   host.innerHTML = `
@@ -2464,6 +2488,14 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       <aside class="mc-drawing-evidence" aria-label="Construction Intelligence">${constructionIntelligencePanelMarkup(constructionIntelligencePanel)}</aside>
     </div>${drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list" aria-label="Unavailable drawing lifecycle records"><h2>Drawing records requiring attention</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : ''}`;
   const placeholderCanvas = host.querySelector('#mcDrawingCanvas');
+  const drawingStageForObjectTools = host.querySelector('#mcDrawingStage');
+  if (drawingStageForObjectTools && activeDrawingObjects.length) {
+    const tools = document.createElement('nav');
+    tools.className = 'mc-drawing-object-tools';
+    tools.setAttribute('aria-label', 'Drawing object navigation');
+    tools.innerHTML = `<button data-drawing-object-nav="previous">Previous Object</button><button data-drawing-object-nav="next">Next Object</button><button data-drawing-object-nav="room">Next Room</button><button data-drawing-object-nav="equipment">Next Equipment</button><button data-drawing-object-nav="finish">Next Finish</button>${validNormalizedRegion(selectedDrawingObject?.region) ? '<button data-drawing-object-center>Center on Object</button><button data-drawing-object-location>Zoom to Object</button>' : ''}`;
+    drawingStageForObjectTools.before(tools);
+  }
   const preserveCanvas = Boolean(preservedCanvas && placeholderCanvas && preservedCanvas.dataset.drawingDocument === selected.id);
   if (preserveCanvas) placeholderCanvas.replaceWith(preservedCanvas);
   if (preserveCanvas) portableDrawingCanvas = null;
@@ -2871,6 +2903,9 @@ $('#missionControlContent').addEventListener('change', event => {
 app.addEventListener('input', event => {
   if (event.target.id !== 'mcDrawingSearch') return;
   drawingFilter = event.target.value;
+  drawingObjectSearchActiveIndex = -1;
+  const matches = new Set(searchDrawingObjects(activeDrawingObjects, drawingFilter).map(item=>item.objectId));
+  $$('.mc-drawing-object-overlay').forEach(item=>item.classList.toggle('search-match',matches.has(item.dataset.overlayId)));
   void updateDrawingSearchResults();
 });
 
@@ -2885,6 +2920,12 @@ app.addEventListener('toggle', event => {
 app.addEventListener('keydown', event => {
   if (event.target.id !== 'mcDrawingSearch' || !['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', 'Enter', 'Escape'].includes(event.key)) return;
   event.preventDefault();
+  const objectMatches = searchDrawingObjects(activeDrawingObjects, drawingFilter);
+  if (event.key === 'Enter' && objectMatches.length) {
+    drawingObjectSearchActiveIndex = (drawingObjectSearchActiveIndex + 1) % objectMatches.length;
+    selectedDrawingObject = objectMatches[drawingObjectSearchActiveIndex]; selectedDrawingObjectIds = [selectedDrawingObject.objectId]; drawingObjectChoices = []; captureDrawingViewport({selectedObjectId:selectedDrawingObject.objectId,selectedObjectIds:[selectedDrawingObject.objectId],highlightedRegion:selectedDrawingObject.region,contextSource:'object-selection'});
+    void renderDrawingWorkspace(experience === 'mission-control' ? 'mission-control' : 'professional'); return;
+  }
   const buttons = $$('#mcDrawingResults button');
   const action = drawingResultKeyTarget(event.key, { sheetIds: drawingMatchingSheetIds, activeIndex: drawingSearchActiveIndex });
   if (action.clear) {
@@ -3046,9 +3087,11 @@ app.addEventListener('click', async event => {
     if (target) { drawingWorkspace.open(target); drawingTarget = createDrawingTarget(target); await renderDrawingWorkspace(shell); }
     return;
   }
-  if (button.dataset.overlayId) { selectedDrawingObject = activeDrawingObjects.find(item => item.objectId === button.dataset.overlayId) || null; drawingObjectChoices = []; await renderDrawingWorkspace(shell); return; }
-  if (button.dataset.drawingSelectObject) { selectedDrawingObject = activeDrawingObjects.find(item => item.objectId === button.dataset.drawingSelectObject) || null; drawingObjectChoices = []; await renderDrawingWorkspace(shell); return; }
-  if (button.hasAttribute('data-drawing-clear-object')) { selectedDrawingObject = null; drawingObjectChoices = []; const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber)); if (sheet) drawingViewportContextService.update({ projectId: drawingTarget?.projectId || activeDrawingViewerAnalysis?.projectId, documentId: drawingTarget?.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, selectedObjectId: null, selectedRoomId: null, activeTradeChannel: drawingTradeContext.current().key, source: drawingTarget?.region ? 'manual-selection' : 'page-context' }, { immediate: true }); await renderDrawingWorkspace(shell); return; }
+  if (button.dataset.drawingObjectNav) { const type={room:'room',equipment:'equipment',finish:'finish'}[button.dataset.drawingObjectNav]||''; const next=nextDrawingObject(activeDrawingObjects,selectedDrawingObject?.objectId||'',{direction:button.dataset.drawingObjectNav==='previous'?-1:1,type}); if(next){selectedDrawingObject=next;selectedDrawingObjectIds=[next.objectId];drawingObjectChoices=[];captureDrawingViewport({selectedObjectId:next.objectId,selectedObjectIds:[next.objectId],highlightedRegion:next.region,contextSource:'object-selection'});await renderDrawingWorkspace(shell);} return; }
+  if (button.hasAttribute('data-drawing-object-center') && validNormalizedRegion(selectedDrawingObject?.region)) { const stage=$('#mcDrawingStage'),canvas=stage?.querySelector('#mcDrawingCanvas'),region=selectedDrawingObject.region;if(stage&&canvas){stage.scrollLeft=Math.max(0,region.x*(canvas.clientWidth||canvas.width)-(stage.clientWidth/2));stage.scrollTop=Math.max(0,region.y*(canvas.clientHeight||canvas.height)-(stage.clientHeight/2));captureDrawingViewport({highlightedRegion:region,contextSource:'object-selection'});} return; }
+  if (button.dataset.overlayId) { const object=activeDrawingObjects.find(item => item.objectId === button.dataset.overlayId) || null; selectedDrawingObjectIds=object?updateDrawingObjectSelection(selectedDrawingObjectIds,object.objectId,{additive:event.shiftKey}):[];selectedDrawingObject=activeDrawingObjects.find(item=>item.objectId===selectedDrawingObjectIds.at(-1))||null; drawingObjectChoices = []; captureDrawingViewport({selectedObjectId:selectedDrawingObject?.objectId||null,selectedObjectIds:[...selectedDrawingObjectIds],highlightedRegion:selectedDrawingObject?.region||null,contextSource:selectedDrawingObject?'object-selection':'page-context'});await renderDrawingWorkspace(shell); return; }
+  if (button.dataset.drawingSelectObject) { selectedDrawingObject = activeDrawingObjects.find(item => item.objectId === button.dataset.drawingSelectObject) || null; selectedDrawingObjectIds=selectedDrawingObject?[selectedDrawingObject.objectId]:[];drawingObjectChoices = []; captureDrawingViewport({selectedObjectId:selectedDrawingObject?.objectId||null,selectedObjectIds:[...selectedDrawingObjectIds],highlightedRegion:selectedDrawingObject?.region||null,contextSource:selectedDrawingObject?'object-selection':'page-context'});await renderDrawingWorkspace(shell); return; }
+  if (button.hasAttribute('data-drawing-clear-object')) { selectedDrawingObject = null; selectedDrawingObjectIds=[]; drawingObjectChoices = []; const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber)); if (sheet) drawingViewportContextService.update({ projectId: drawingTarget?.projectId || activeDrawingViewerAnalysis?.projectId, documentId: drawingTarget?.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, selectedObjectId: null, selectedObjectIds:[], selectedRoomId: null, activeTradeChannel: drawingTradeContext.current().key, source: drawingTarget?.region ? 'manual-selection' : 'page-context' }, { immediate: true }); captureDrawingViewport({selectedObjectId:null,selectedObjectIds:[]});await renderDrawingWorkspace(shell); return; }
   if (button.hasAttribute('data-drawing-object-location') && validNormalizedRegion(selectedDrawingObject?.region)) {
     const stage = $('#mcDrawingStage');
     const selectedSheet = activeDrawingViewerAnalysis?.sheets.find(item => item.pageNumber === drawingTarget?.pageNumber);

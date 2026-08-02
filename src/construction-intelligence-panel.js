@@ -144,7 +144,11 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
   }
 
   const groups = input.relationshipGroups || {};
-  const specifications = specificationRecords(input.requirements, input.specificationLinks, { mode: 'object', objectId: object.objectId });
+  let specifications = specificationRecords(input.requirements, input.specificationLinks, { mode: 'object', objectId: object.objectId });
+  if (Number(input.multiSelection?.selectionCount) > 1) {
+    const sharedKeys = new Set(list(input.multiSelection?.sharedSpecifications).map(item=>`${text(item.specificationDocumentId)}:${text(item.sectionNumber).replace(/\D/g,'')}`));
+    specifications = specifications.filter(item=>sharedKeys.has(`${text(item.specificationDocumentId)}:${text(item.sectionNumber).replace(/\D/g,'')}`));
+  }
   const fields = Object.entries(input.requirements?.fieldRequirements || {}).flatMap(([category, items]) => list(items).map(item => ({ ...item, category })));
   const objectInsights = relationshipRecords(groups, ['chiefInsights', 'insights', 'recommendations']);
   const relatedDrawings = relationshipRecords(groups, ['relatedDrawings']);
@@ -157,7 +161,7 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
       location: text(sheet.sheetNumber) || `Page ${Number(sheet.pageNumber) || 1}`,
       building: text(object.buildingId || sheet.building), room: text(object.roomId), trade: text(object.trade), system: text(object.system),
       confidence: Number(object.confidence) || 0, revision: text(object.revision || object.metadata?.revision), verificationState: text(object.verificationState),
-      statusLabel: object.verificationState === 'candidate' ? 'Suggested' : object.verificationState === 'confirmed' ? 'Confirmed' : object.verificationState === 'rejected' ? 'Rejected' : text(object.verificationState || 'Unverified'),
+      statusLabel: object.verificationState === 'candidate' ? 'Suggested' : object.verificationState === 'confirmed' ? 'Confirmed' : object.verificationState === 'rejected' ? 'Rejected' : text(object.verificationState || 'Unverified'), selectionCount: Math.max(1, Number(input.multiSelection?.selectionCount) || 1),
       hasLocation: Boolean(object.region || object.graphicalRegion), hasPossibleDuplicates: Boolean(input.hasPossibleDuplicates), hasMergedObjects: Boolean(object.mergedObjectIds?.length), canLinkSpecification: Boolean(input.canLinkSpecification)
     },
     specifications: {
