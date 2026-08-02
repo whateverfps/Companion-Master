@@ -17,7 +17,7 @@ function polygonPoints(object) {
   return points.map(point => Array.isArray(point) ? { x:Number(point[0]), y:Number(point[1]) } : { x:Number(point?.x), y:Number(point?.y) }).filter(point => Number.isFinite(point.x) && Number.isFinite(point.y));
 }
 
-function objectRegions(object) { return list(object?.graphicalRegions).filter(validNormalizedRegion).length ? object.graphicalRegions.filter(validNormalizedRegion) : [object?.region].filter(validNormalizedRegion); }
+function objectRegions(object) { const multiple=list(object?.graphicalRegions).filter(validNormalizedRegion);return multiple.length?multiple:[object?.region].filter(validNormalizedRegion); }
 
 function pointInPolygon(point, polygon) {
   if (polygon.length < 3) return false;
@@ -45,23 +45,23 @@ function hitPriority(object, contained, polygonContained) {
   return 100;
 }
 
-export function deduplicateSelectableObjects(objects = []) {
+export function deduplicateSelectableObjects(objects = [], { sort = true } = {}) {
   const selected = new Map();
   for (const object of list(objects)) {
     if (!object?.objectId || object.verificationState === 'rejected' || !validNormalizedRegion(object.region)) continue;
     const current = selected.get(object.objectId);
     if (!current || object.verificationState === 'confirmed' && current.verificationState !== 'confirmed' || Number(object.confidence) > Number(current.confidence)) selected.set(object.objectId, object);
   }
-  return [...selected.values()].sort((a,b) => (a.region.y-b.region.y)||(a.region.x-b.region.x)||a.objectId.localeCompare(b.objectId));
+  const values=[...selected.values()];return sort?values.sort((a,b) => (a.region.y-b.region.y)||(a.region.x-b.region.x)||a.objectId.localeCompare(b.objectId)):values;
 }
 
 export function hitTestDrawingObjects(objects = [], point = {}, { maximumDistance = .025, visibleObjectIds = null } = {}) {
   const started = globalThis.performance?.now?.() ?? Date.now();
-  const candidates = deduplicateSelectableObjects(objects).filter(object => !visibleObjectIds || visibleObjectIds.has(object.objectId)).map(object => {
+  const candidates = deduplicateSelectableObjects(objects,{sort:false}).filter(object => !visibleObjectIds || visibleObjectIds.has(object.objectId)).map(object => {
     const regions=objectRegions(object);const contained=regions.some(region=>point.x>=region.x&&point.x<=region.x+region.width&&point.y>=region.y&&point.y<=region.y+region.height);
-    const polygons=list(object.geometry?.polygons).length?object.geometry.polygons:[polygonPoints(object)];const polygonContained=polygons.some(polygon=>pointInPolygon(point,polygon));
+    const geometryPolygons=list(object.geometry?.polygons),singlePolygon=geometryPolygons.length?[]:polygonPoints(object),polygons=geometryPolygons.length?geometryPolygons:[singlePolygon];const polygonContained=!contained&&polygons.some(polygon=>pointInPolygon(point,polygon));
     const distance=Math.min(...regions.map(region=>distanceToRegion(point,region)));
-    return { object, contained, polygonContained, distance, priority:hitPriority(object,contained,polygonContained), score:hitPriority(object,contained,polygonContained)+(object.verificationState==='confirmed'?25:0)+(Number(object.confidence)||0)*10-distance*100 };
+    const priority=hitPriority(object,contained,polygonContained);return { object, contained, polygonContained, distance, priority, score:priority+(object.verificationState==='confirmed'?25:0)+(Number(object.confidence)||0)*10-distance*100 };
   }).filter(item => item.contained || item.polygonContained || item.distance <= maximumDistance).sort((a,b)=>b.score-a.score||a.distance-b.distance||a.object.objectId.localeCompare(b.object.objectId));
   return { object:candidates[0]?.object||null, candidates, status:candidates.length?'selected':'empty', durationMs:Math.max(0,(globalThis.performance?.now?.()??Date.now())-started) };
 }
