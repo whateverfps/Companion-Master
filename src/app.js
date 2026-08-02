@@ -145,6 +145,7 @@ import { answerChiefDrawingContextQuestion, buildChiefDrawingContext, createChie
 import { classifyChiefDrawingCommand, resolveChiefDrawingCommand } from './chief-drawing-command-router.js';
 import { buildChiefDrawingCards } from './chief-drawing-cards.js';
 import { building61DrawingCatalogFor } from './building-61-drawing-catalog.js';
+import { generatedDrawingCatalogFor } from './generated-drawing-catalogs.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -1864,7 +1865,8 @@ async function createRetainedPdfViewerAnalysis(documentRecord, source, requested
   drawingViewerEngine.openDocument(documentRecord.id, pageCount, pageNumber);
   const page = await activeDrawingPdf.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 1, rotation: 0 });
-  const catalogRecords = drawingCatalog.reconcile({ documentId: documentRecord.id, documentType: documentRecord.documentType, projectId: documentRecord.projectId || state().activeProject, drawingSetId: metadataAnalysis?.drawingSetId || '', pageCount, parserRecords: [...(metadataAnalysis?.sheets || []), ...(metadataAnalysis?.drawingRegistry || [])], storedMetadata: metadataAnalysis?.pageMetadata || [], authoritativeRecords:building61DrawingCatalogFor(documentRecord,pageCount) });
+  const generatedCatalog = await generatedDrawingCatalogFor(documentRecord,pageCount);
+  const catalogRecords = drawingCatalog.reconcile({ documentId: documentRecord.id, documentType: documentRecord.documentType, projectId: documentRecord.projectId || state().activeProject, drawingSetId: metadataAnalysis?.drawingSetId || '', pageCount, parserRecords: [...(metadataAnalysis?.sheets || []), ...(metadataAnalysis?.drawingRegistry || [])], storedMetadata: metadataAnalysis?.pageMetadata || [], authoritativeRecords:generatedCatalog.length?generatedCatalog:building61DrawingCatalogFor(documentRecord,pageCount) });
   const analysis = createPdfPageViewerAnalysis({ documentId: documentRecord.id, documentType: documentRecord.documentType, projectId: documentRecord.projectId || state().activeProject, pageCount, selectedPage: pageNumber, pageWidth: viewport.width, pageHeight: viewport.height, rotation: page.rotate || viewport.rotation || 0, metadataAnalysis, catalogRecords });
   page.cleanup?.();
   return analysis;
