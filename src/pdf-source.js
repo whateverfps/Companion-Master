@@ -170,6 +170,7 @@ export async function renderPdfPage(pdf, pageNumber, canvas, { scale = 1, rotati
     viewport,
     promise: task.promise,
     cancel() { try { task.cancel(); } catch {} },
+    releasePage() { page.cleanup?.(); },
     release() { canvas.width = 0; canvas.height = 0; page.cleanup?.(); }
   };
 }

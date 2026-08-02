@@ -106,6 +106,7 @@ import {
   textValue
 } from './data-model.js';
 import { openPdfBlob, readPdfPageGraphics, renderPdfPage } from './pdf-source.js';
+import { createSpecificationSourceViewer } from './specification-source-viewer.js';
 import { extractLegendCandidates, matchLegendOccurrences } from './drawing-legends.js';
 import { applyObservationVerification, drawingAnalysisRequiresUpgrade, drawingWarningPresentation, DRAWING_ANALYSIS_VERSION, groupDrawingObservations, observationKindLabel, reanalyzeDrawingAnalysis, upgradeDrawingAnalysis } from './drawing-intelligence.js';
 import { assertDrawingPageConsistency, calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingWheelZoom, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
@@ -210,6 +211,7 @@ let drawingRotation = 0;
 const drawingViewportBySet = new Map();
 const drawingViewerEngine = createDrawingViewerEngine({ viewportStore: drawingViewportBySet, onMetric: metric => logger.debug('Drawing viewer performance', metric) });
 const drawingRenderCache = createDrawingRenderCache({ maxEntries: 6, onMetric: metric => logger.debug('Drawing viewer performance', metric) });
+const specificationSourceViewer = createSpecificationSourceViewer({ openPdf: openPdfBlob, renderPage: renderPdfPage, onDiagnostic: metric => logger.debug('Specification source viewer lifecycle', metric) });
 const drawingCatalog = createDrawingCatalog({ onDifference: difference => logger.warning('Drawing catalog parser difference', difference), onDiagnostics: diagnostics => logger.debug('Drawing catalog diagnostics', diagnostics) });
 const drawingContextService = createDrawingContextService();
 const drawingWorkspace = createDrawingWorkspace({ viewerEngine: drawingViewerEngine, contextService: drawingContextService });
@@ -251,6 +253,8 @@ let drawingLifecycleUnavailable = [];
 let drawingWorkspacePanels = drawingWorkspaceLayout();
 let drawingWorkspaceBeforeExpand = null;
 let activeChiefLocationPresentation = null;
+let specificationDrawingReturnTarget = null;
+let specificationSourceTarget = null;
 
 app.innerHTML = `
 <a id="skipLink" class="mc-skip-link" href="#missionControlMain">Skip to workspace</a>
@@ -655,6 +659,10 @@ app.innerHTML = `
           </div>
         </section>
       </div>
+    </section>
+
+    <section id="specification-source" class="view">
+      <div id="specificationSourceEvidence" class="panel source-detail"></div>
     </section>
 
     <section id="drawings" class="view">
@@ -1111,6 +1119,10 @@ const titles = {
     'Source Inspector',
     'Review exactly what Mission Companion indexed.'
   ],
+  'specification-source': [
+    'Specification Source Evidence',
+    'Review one exact source page without changing the active drawing.'
+  ],
   drawings: [
     'Drawing Set Inspector',
     'Review authoritative PDF sheets, deterministic observations, and analysis warnings.'
@@ -1154,7 +1166,10 @@ const titles = {
 };
 
 function show(name) {
-  if (name !== 'drawings') releaseDrawingSource();
+  const preserveDrawingForSpecification = Boolean(specificationDrawingReturnTarget) && ['knowledge', 'specification-source'].includes(name);
+  if (name !== 'drawings' && !preserveDrawingForSpecification) releaseDrawingSource();
+  if (name !== 'specification-source') void specificationSourceViewer.close('workspace-changed');
+  if (!['knowledge', 'specification-source'].includes(name)) specificationDrawingReturnTarget = null;
   view = name;
   if (experience === 'professional-workspace') lastProfessionalView = name;
 
@@ -1192,6 +1207,7 @@ function show(name) {
     );
     renderSources();
   }
+  if (name === 'specification-source') void renderSpecificationSourceEvidence();
   if (name === 'drawings') void renderDrawingWorkspace('professional');
 
   if (name === 'evidence') {
@@ -1273,6 +1289,10 @@ async function switchExperience(nextExperience, { destination = '', focus = true
   if (!force && !$('#modal').hidden) {
     alert('Finish or cancel the open form before switching experiences.');
     return false;
+  }
+  if (next === 'mission-control' && view === 'specification-source') {
+    await specificationSourceViewer.close('workspace-changed');
+    specificationSourceTarget = null;
   }
   experience = next;
   const missionControl = next === 'mission-control';
@@ -2805,7 +2825,10 @@ app.addEventListener('click', async event => {
   if (button.hasAttribute('data-requirement-return')) { $('#mcDrawingStage')?.focus({ preventScroll: true }); return; }
   if (button.dataset.requirementOpen) {
     const section = specificationIndex.get(button.dataset.requirementOpen, button.dataset.requirementSection);
-    if (section) await openProfessionalDestination({ view: 'knowledge', destination: 'knowledge', projectId: section.projectId, documentId: section.documentId, sectionId: section.specificationSectionId, pageNumber: section.startPdfPage, origin: 'drawing-requirement' });
+    if (section) {
+      specificationDrawingReturnTarget = drawingTarget ? { target: structuredClone(drawingTarget), viewport: drawingViewerEngine.getViewport(drawingTarget.pageNumber) } : null;
+      await openProfessionalDestination({ view: 'knowledge', destination: 'knowledge', projectId: section.projectId, documentId: section.documentId, sectionId: section.specificationSectionId, pageNumber: section.startPdfPage, origin: 'drawing-requirement' });
+    }
     return;
   }
   if (button.dataset.requirementOpenDrawing) {
@@ -2838,7 +2861,7 @@ app.addEventListener('click', async event => {
     drawingSpecificationLinks.link({ projectId: state().activeProject, drawingDocumentId: drawingTarget?.documentId, drawingPageId: selectedDrawingObject.pageId, objectId: selectedDrawingObject.objectId, specificationDocumentId: section.documentId, sectionNumber: section.sectionNumber, evidenceSource: 'manual-selection', evidenceText: selectedDrawingObject.evidenceText, confidence: 1, status: 'confirmed', origin: 'manual', note });
     drawingRequirementsResolver.invalidate(); await renderDrawingWorkspace(shell); return;
   }
-  if (button.dataset.drawingOpenSpec) { const pageId = drawingTarget?.pageId || activeDrawingViewerAnalysis?.sheets.find(item => item.pageNumber === drawingTarget?.pageNumber)?.pageId; const link = drawingSpecificationLinks.forPage(pageId).find(item => item.linkId === button.dataset.drawingOpenSpec); const target = drawingSpecificationLinks.openTarget(link); if (target) await openProfessionalDestination(target); return; }
+  if (button.dataset.drawingOpenSpec) { const pageId = drawingTarget?.pageId || activeDrawingViewerAnalysis?.sheets.find(item => item.pageNumber === drawingTarget?.pageNumber)?.pageId; const link = drawingSpecificationLinks.forPage(pageId).find(item => item.linkId === button.dataset.drawingOpenSpec); const target = drawingSpecificationLinks.openTarget(link); if (target) { specificationDrawingReturnTarget = drawingTarget ? { target: structuredClone(drawingTarget), viewport: drawingViewerEngine.getViewport(drawingTarget.pageNumber) } : null; await openProfessionalDestination(target); } return; }
   if (button.dataset.drawingRecoveryAction) {
     const recoveryAction = button.dataset.drawingRecoveryAction;
     if (recoveryAction === 'open-owning-project' && button.dataset.owningProjectId && state().projects.some(item => item.id === button.dataset.owningProjectId)) {
@@ -7982,6 +8005,7 @@ function renderDocumentMetadata(document, allSections = []) {
           <article><span>Provenance</span><strong>${esc(submittalResolution ? submittalResolution.provenance || 'Unavailable' : rfiResolution ? rfiResolution.provenance || 'Unavailable' : specificationResolution.sectionProvenance || 'Unavailable')}</strong></article>
         </div>
         <pre>${esc(submittalResolution ? submittalResolution.sectionText || sectionTextValue(objectTargetSection) : rfiResolution ? rfiResolution.sectionText || sectionTextValue(objectTargetSection) : specificationResolution.sectionText || sectionTextValue(objectTargetSection))}</pre>
+        ${specificationResolution?.available && isSpecificationDocument(document) && Number(specificationResolution.target?.pageNumber) > 0 ? `<button type="button" data-specification-view-source-page="${fmt(specificationResolution.target.pageNumber)}">View Source Page</button>` : ''}
       </section>
     ` : ''}
 
@@ -8172,6 +8196,20 @@ function renderDocumentMetadata(document, allSections = []) {
   $('[data-object-workflow]')?.addEventListener('click', () =>
     void seedWorkflowFromDocument(document.id, objectTargetSection?.id || '', 'knowledge')
   );
+  $('[data-specification-view-source-page]')?.addEventListener('click', event => {
+    const exactPage = Number(event.currentTarget.dataset.specificationViewSourcePage) || 0;
+    if (!exactPage || !specificationResolution?.available || !isSpecificationDocument(document)) return;
+    specificationSourceTarget = {
+      documentId: document.id,
+      projectId: document.projectId || state().activeProject,
+      pageNumber: exactPage,
+      sectionNumber: specificationResolution.sectionNumber,
+      sectionTitle: specificationResolution.sectionTitle,
+      articleReference: specificationResolution.target?.articleReference || '',
+      returnTarget: specificationDrawingReturnTarget ? 'drawings' : 'knowledge'
+    };
+    show('specification-source');
+  });
 
   if (objectTargetSection) {
     revealNavigationTarget(
@@ -8200,6 +8238,40 @@ function formatBytes(bytes = 0) {
   }
 
   return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+async function renderSpecificationSourceEvidence() {
+  const host = $('#specificationSourceEvidence');
+  if (!host) return;
+  const target = specificationSourceTarget;
+  if (!target?.documentId || !Number(target.pageNumber)) {
+    host.innerHTML = '<div class="empty">No exact specification source page was requested.</div>';
+    return;
+  }
+  const documents = await engine.documents();
+  const documentRecord = documents.find(item => item.id === target.documentId);
+  if (!isSpecificationDocument(documentRecord)) {
+    host.innerHTML = '<div class="empty">The requested source is not an authoritative specification document.</div>';
+    return;
+  }
+  const source = await engine.sourceFile(documentRecord.id);
+  if (!source?.sourceBlob) {
+    host.innerHTML = '<div class="empty">The retained specification source PDF is unavailable. Indexed section content remains available.</div>';
+    return;
+  }
+  host.innerHTML = `<header class="source-title"><span>SPECIFICATION SOURCE EVIDENCE</span><h2>${esc(target.sectionNumber)} — ${esc(target.sectionTitle)}</h2><p>Exact source page ${fmt(target.pageNumber)} · one-page evidence view</p></header><div><button type="button" data-specification-source-return>${target.returnTarget === 'drawings' ? 'Return to Drawing' : 'Return to Specification'}</button></div><div class="mc-specification-source-stage"><canvas id="specificationSourceCanvas" aria-label="Specification ${esc(target.sectionNumber)} source page ${fmt(target.pageNumber)}"></canvas></div>`;
+  const result = await specificationSourceViewer.open({ document: documentRecord, sourceBlob: source.sourceBlob, pageNumber: target.pageNumber, sectionNumber: target.sectionNumber, sectionTitle: target.sectionTitle, articleReference: target.articleReference, returnTarget: specificationDrawingReturnTarget, canvas: $('#specificationSourceCanvas') });
+  if (!result.ok) host.insertAdjacentHTML('beforeend', `<p role="status">Source page unavailable: ${esc(result.status)}</p>`);
+  $('[data-specification-source-return]')?.addEventListener('click', async () => {
+    await specificationSourceViewer.close('return');
+    specificationSourceTarget = null;
+    if (specificationDrawingReturnTarget?.target) {
+      drawingTarget = structuredClone(specificationDrawingReturnTarget.target);
+      drawingViewerEngine.restoreViewport(drawingTarget.pageNumber, specificationDrawingReturnTarget.viewport || {});
+      specificationDrawingReturnTarget = null;
+      show('drawings');
+    } else show('knowledge');
+  });
 }
 
 async function renderSources() {
@@ -10117,6 +10189,8 @@ window.addEventListener(
 
 async function renderDiagnostics() {
   const [data, storage] = await Promise.all([runHealthChecks(engine), engine.storageDiagnostics()]);
+  const specificationResources = specificationSourceViewer.diagnostics();
+  const drawingResources = drawingViewerEngine.snapshot();
   storage.relationshipCount = new Set(projectRelationshipEngine.entities({ projectId: state().activeProject, verificationStates: ['confirmed', 'suggested', 'rejected', 'historical'] }).flatMap(entity => projectRelationshipEngine.getRelationships(entity.entityId, { projectId: state().activeProject, includeRejected: true, limit: 500 }).map(item => item.relationshipId))).size;
 
   const healthy = data.checks.filter(check =>
@@ -10153,6 +10227,9 @@ async function renderDiagnostics() {
     <article><span>COMPACT STATE</span><strong>${fmt(storage.compactStateBytes)} bytes</strong></article>
     <article><span>INDEXEDDB RECORDS</span><strong>${fmt(storage.indexedDbDocumentCount)} documents · ${fmt(storage.indexedDbKnowledgeChunkCount)} chunks</strong></article>
     <article><span>DRAWING / RELATIONSHIPS</span><strong>${fmt(storage.drawingAnalysisCount)} analyses · ${fmt(storage.relationshipCount)} links</strong></article>
+    <article><span>SPECIFICATION SOURCE PDF</span><strong>${specificationResources.specificationPdfProxyActive ? `Page ${fmt(specificationResources.specificationSourcePage)} active` : 'Inactive'} · ${fmt(specificationResources.sourceViewCacheEntryCount)} cached</strong></article>
+    <article><span>SPECIFICATION SOURCE MEMORY</span><strong>${fmt(specificationResources.retainedSpecificationPageRecordsInMemory)} page record · ${specificationResources.sourceViewCanvasPixels.width}×${specificationResources.sourceViewCanvasPixels.height}px</strong></article>
+    <article><span>ACTIVE DRAWING PDF</span><strong>${esc(drawingResources.documentId || 'Inactive')} · ${fmt(drawingRenderCache.size())} cached bitmaps</strong></article>
     <article><span>STATE MIGRATION</span><strong>${esc(storage.compactStateMigrationStatus)}</strong></article>
     ${storage.lastPersistenceFailure ? `<article><span>LAST PERSISTENCE FAILURE</span><strong>${esc(storage.lastPersistenceFailure.reason || storage.lastPersistenceFailure.message || 'Unavailable')}</strong></article>` : ''}
   `;
