@@ -129,7 +129,7 @@ import { createDrawingViewportContextService, normalizedViewportBounds } from '.
 import { createDrawingTradeContext, DRAWING_TRADE_CHANNELS } from './drawing-trade-context.js';
 import { createDrawingRequirementsResolver } from './drawing-requirements-resolver.js';
 import { createProjectObjectRegistry } from './project-object-registry.js';
-import { buildConstructionIntelligencePanelModel } from './construction-intelligence-panel.js';
+import { buildConstructionIntelligencePanelModel, loadConstructionIntelligencePanelState, saveConstructionIntelligencePanelState } from './construction-intelligence-panel.js';
 import { BEDFORD_PROJECT_SPECIFICATION_VOCABULARY, createProjectSpecificationVocabulary } from './project-specification-vocabulary.js';
 import { preserveProjectObjectMerge, registerProjectObjectRelationships } from './project-object-operations.js';
 import { loadDrawingWorkspaceProviders } from './drawing-workspace-providers.js';
@@ -221,7 +221,7 @@ const drawingContextService = createDrawingContextService();
 const drawingWorkspace = createDrawingWorkspace({ viewerEngine: drawingViewerEngine, contextService: drawingContextService });
 const drawingObjectDecisions = createDrawingObjectDecisionStore();
 const specificationIndex = createSpecificationIndex();
-const drawingSpecificationLinks = createDrawingSpecificationLinkService({ index: specificationIndex });
+const drawingSpecificationLinks = createDrawingSpecificationLinkService({ index: specificationIndex, persistence: engine.drawingSpecificationLinkPersistence(), onDiagnostic: metric => logger.debug('Drawing specification link persistence', metric) });
 const projectRelationshipEngine = createProjectRelationshipEngine();
 const projectObjectRegistry = createProjectObjectRegistry({ persistence: engine.projectObjectPersistence(), onDiagnostic: metric => logger.debug('Project object registry performance', metric) });
 const projectSpecificationVocabulary = createProjectSpecificationVocabulary({ specificationIndex, onDiagnostic: metric => logger.debug('Drawing requirement vocabulary', metric) });
@@ -230,6 +230,7 @@ const drawingViewportContextService = createDrawingViewportContextService({ onCh
 const drawingTradeContext = createDrawingTradeContext();
 const drawingRequirementsResolver = createDrawingRequirementsResolver({ specificationIndex, relationshipEngine: projectRelationshipEngine, onMetric: metric => logger.debug('Drawing requirements performance', metric) });
 let activeDrawingObjects = [];
+let activeDrawingTransientRequirementCount = 0;
 let selectedDrawingObject = null;
 let drawingObjectChoices = [];
 let drawingLocationReturnViewport = null;
@@ -264,6 +265,8 @@ let activeChiefLocationPresentation = null;
 let loadedProjectObjectRegistryId = '';
 let specificationDrawingReturnTarget = null;
 let specificationSourceTarget = null;
+let constructionIntelligenceExpanded = new Set(loadConstructionIntelligencePanelState().expanded);
+const constructionIntelligenceScroll = { page: 0, object: 0 };
 
 app.innerHTML = `
 <a id="skipLink" class="mc-skip-link" href="#missionControlMain">Skip to workspace</a>
@@ -1878,6 +1881,8 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
   if (!canvas || !stage || !source || !sheet) return;
   stage.tabIndex = 0;
   stage.setAttribute('aria-label', 'Interactive drawing canvas. Use arrow keys to change pages, plus or minus to zoom, and zero to reset view.');
+  let loadingKey = '';
+  const clearCurrentLoading = () => { if (loadingKey && stage.dataset.renderLoadingKey === loadingKey) { stage.classList.remove('is-loading'); delete stage.dataset.renderLoadingKey; } };
   try {
     drawingViewportDocumentId = source.documentId;
     if (!activeDrawingPdf || activeDrawingDocumentId !== source.documentId) {
@@ -1913,10 +1918,13 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       let renderCanvas = drawingRenderCache.get(cacheKey);
       if (!renderCanvas) {
         renderCanvas = document.createElement('canvas');
+        loadingKey = cacheKey;
+        stage.dataset.renderLoadingKey = loadingKey;
         stage.classList.add('is-loading');
         const renderOutcome = await drawingViewerEngine.renderSelectedPage(pageNumber => renderPdfPage(activeDrawingPdf, pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation }));
         if (!renderOutcome.committed || !canvas.isConnected || drawingTarget?.pageNumber !== sheet.pageNumber) {
           renderOutcome.task?.release?.();
+          clearCurrentLoading();
           return;
         }
         drawingRenderCache.set(cacheKey, renderCanvas);
@@ -1931,7 +1939,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       canvas.dataset.drawingPage = String(sheet.pageNumber);
       canvas.dataset.renderReason = decision.reason;
       activeDrawingRenderIdentity = nextIdentity;
-      stage.classList.remove('is-loading');
+      clearCurrentLoading();
     }
     stage.scrollLeft = restored.scrollLeft || 0;
     stage.scrollTop = restored.scrollTop || 0;
@@ -2027,6 +2035,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       activeDrawingResizeStage = stage;
     }
   } catch (error) {
+    clearCurrentLoading();
     if (drawingTarget?.pageNumber !== sheet.pageNumber) return;
     stage.classList.remove('is-loading');
     canvas.insertAdjacentHTML('afterend', `<div class="mc-drawing-render-error" role="status"><strong>Drawing page could not be updated.</strong><p>${esc(error.message)}</p><small>The previously rendered sheet remains available when possible.</small></div>`);
@@ -2105,28 +2114,40 @@ function projectObjectPresentation(item) {
 }
 
 function constructionIntelligencePanelMarkup(model) {
+  const group = (key, title, content, { force = false } = {}) => !force && !content ? '' : `<details class="mc-ci-group" data-ci-group="${esc(key)}" ${constructionIntelligenceExpanded.has(key) ? 'open' : ''}><summary><span>${esc(title)}</span><span aria-hidden="true">⌄</span></summary><div class="mc-ci-group-body">${content || '<p>No governing specification has been confirmed.</p>'}</div></details>`;
+  const recordList = items => `<ul class="mc-ci-record-list">${items.map(item => `<li><strong>${esc(item.label)}</strong>${item.relationship ? `<span class="mc-ci-badge">${esc(item.relationship.verificationState)}</span>` : ''}${item.target ? `<button data-project-relationship-open="${esc(item.relationship.relationshipId)}">Open</button>` : ''}</li>`).join('')}</ul>`;
+  const relationshipGroups = groups => Object.entries(groups || {}).filter(([, items]) => items?.length).map(([title, items]) => `<div class="mc-ci-subgroup"><h5>${esc(title.replace(/([A-Z])/g, ' $1'))}</h5>${recordList(items)}</div>`).join('');
+  const specificationCards = items => `<ol class="mc-ci-specifications">${items.map(item => `<li><div><strong>${esc(item.sectionNumber)}</strong><span>${esc(item.sectionTitle)}</span></div><div class="mc-ci-spec-meta"><span class="mc-ci-badge ${esc(item.status)}">${esc(item.status)}</span><span>${Math.round((Number(item.confidence) || 0) * 100)}% confidence</span><span>${fmt(item.evidenceCount)} evidence</span></div>${item.evidenceText ? `<p>${esc(item.evidenceText)}</p>` : ''}<div class="mc-ci-actions">${item.canOpen ? `<button data-requirement-open="${esc(item.specificationDocumentId)}" data-requirement-section="${esc(item.sectionNumber)}">Open Section</button>` : ''}${item.canShowSource ? `<button data-object-spec-source="${esc(item.specificationDocumentId)}" data-object-spec-page="${item.sourcePageNumber}" data-object-spec-section="${esc(item.sectionNumber)}">Show Source Page</button>` : ''}${item.evidenceText ? `<details><summary>Review Evidence</summary><p>${esc(item.reason || item.evidenceText)}</p></details>` : ''}${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject</button>` : ''}</div></li>`).join('')}</ol>`;
+  const fieldGroups = items => Object.entries(items.reduce((groups, item) => { const key = item.category === 'quality' ? 'quality control' : item.category; (groups[key] ||= []).push(item); return groups; }, {})).map(([category, records]) => `<div class="mc-ci-subgroup"><h5>${esc(category)}</h5><ul>${records.map(item => `<li>${esc(item.article?.heading || `${item.sectionNumber} — ${item.sectionTitle}`)}</li>`).join('')}</ul></div>`).join('');
   if (model.mode === 'page') {
     const page = model.page;
     const counts = Object.entries(page.objectCounts || {});
-    const pageSpecifications = items => `<ol>${items.map(item => `<li><strong>${esc(item.label)}</strong><span>${esc(item.applicabilityScope || 'page-wide')} · ${esc(item.status)}</span>${item.evidenceText ? `<p>${esc(item.evidenceText)}</p><details><summary>Review Evidence</summary><p>${esc(item.reason || item.evidenceText)}</p></details>` : ''}${item.canOpen ? `<button data-requirement-open="${esc(item.specificationDocumentId)}" data-requirement-section="${esc(item.sectionNumber)}">Open Specification</button>` : ''}${item.canShowSource ? `<button data-object-spec-source="${esc(item.specificationDocumentId)}" data-object-spec-page="${item.sourcePageNumber}" data-object-spec-section="${esc(item.sectionNumber)}">View Source Page</button>` : ''}${item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm Relationship</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject Suggestion</button>` : ''}</li>`).join('')}</ol>`;
-    return `<div class="mc-construction-intelligence" data-panel-mode="page"><header><span>CONSTRUCTION INTELLIGENCE</span><h3>Drawing Context</h3></header><section><dl><div><dt>Drawing</dt><dd>${esc(page.drawing)}</dd></div><div><dt>Sheet</dt><dd>${esc(page.sheet)}</dd></div><div><dt>Discipline</dt><dd>${esc(page.discipline)}</dd></div><div><dt>Active Trade</dt><dd>${esc(page.activeTrade)}</dd></div><div><dt>Page Status</dt><dd>${esc(page.pageStatus)}</dd></div></dl>${page.drawingNotes.length ? `<h4>Drawing Notes</h4><ul>${page.drawingNotes.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}${counts.length ? `<h4>Object Counts</h4><ul>${counts.map(([label, count]) => `<li><strong>${esc(label)}</strong><span>${fmt(count)}</span></li>`).join('')}</ul>` : ''}</section>${model.specifications.confirmed.length || model.specifications.suggested.length ? `<section><h4>Applicable Specifications</h4>${model.specifications.confirmed.length ? `<h5>Confirmed</h5>${pageSpecifications(model.specifications.confirmed)}` : ''}${model.specifications.suggested.length ? `<h5>Suggested</h5>${pageSpecifications(model.specifications.suggested)}` : ''}</section>` : ''}${model.fieldRequirements.length ? `<section><h4>Field Requirements</h4><ul>${model.fieldRequirements.map(item => `<li><strong>${esc(item.category)}</strong><span>${esc(item.article?.heading || `${item.sectionNumber} — ${item.sectionTitle}`)}</span></li>`).join('')}</ul></section>` : ''}${model.projectWideRequirements.length ? `<section><h4>Project-Wide Requirements</h4><ul>${model.projectWideRequirements.map(item => `<li>${esc(item.sectionNumber)} — ${esc(item.sectionTitle)}</li>`).join('')}</ul></section>` : ''}</div>`;
+    const specs = [...model.specifications.confirmed, ...model.specifications.suggested];
+    const current = `<dl><div><dt>Building</dt><dd>${esc(page.building || 'Not identified')}</dd></div><div><dt>Sheet Number</dt><dd>${esc(page.sheet)}</dd></div>${page.sheetTitle ? `<div><dt>Sheet Title</dt><dd>${esc(page.sheetTitle)}</dd></div>` : ''}<div><dt>Discipline</dt><dd>${esc(page.discipline)}</dd></div><div><dt>Trade</dt><dd>${esc(page.activeTrade)}</dd></div><div><dt>Current Status</dt><dd>${esc(page.pageStatus)}</dd></div></dl>`;
+    const drawingContent = `${page.drawingNotes.length ? `<div class="mc-ci-subgroup"><h5>Drawing Notes</h5><ul>${page.drawingNotes.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>` : ''}${counts.length ? `<div class="mc-ci-counts">${counts.map(([label, count]) => `<div><strong>${fmt(count)}</strong><span>${esc(label)}</span></div>`).join('')}</div>` : ''}`;
+    return `<div class="mc-construction-intelligence" data-panel-mode="page"><header><span>CONSTRUCTION INTELLIGENCE</span><h3>Page Context</h3><p>What governs this drawing sheet?</p></header>
+      ${group('current', 'Current Drawing', current, { force: true })}
+      ${group('specifications', 'Applicable Specifications', specs.length ? specificationCards(specs) : '', { force: true })}
+      ${group('field-requirements', 'Field Requirements', fieldGroups(model.fieldRequirements))}
+      ${group('drawing-content', 'Drawing Content', drawingContent)}
+      ${group('project-information', 'Project Information', relationshipGroups(model.projectInformation))}
+      ${group('related-drawings', 'Related Drawings', model.relatedDrawings.length ? recordList(model.relatedDrawings) : '')}
+      ${group('chief-insights', 'Chief Insights', model.chiefInsights.length ? recordList(model.chiefInsights) : '')}
+      ${model.diagnostics.length ? `<details class="mc-ci-developer" data-ci-group="developer-diagnostics" hidden><summary>Developer Diagnostics</summary></details>` : ''}</div>`;
   }
   const object = model.object;
-  const recordList = items => `<ul>${items.map(item => `<li><strong>${esc(item.label)}</strong>${item.relationship ? `<span>${esc(item.relationship.verificationState)}</span>` : ''}${item.target ? `<button data-project-relationship-open="${esc(item.relationship.relationshipId)}">Open</button>` : ''}</li>`).join('')}</ul>`;
-  const relationshipSection = (title, items) => items?.length ? `<section><h4>${title}</h4>${recordList(items)}</section>` : '';
-  const specificationCards = items => `<ol>${items.map(item => `<li><strong>${esc(item.label)}</strong>${item.article?.heading ? `<span>${esc(item.article.heading)}</span>` : ''}<div>${item.canOpen ? `<button data-requirement-open="${esc(item.specificationDocumentId)}" data-requirement-section="${esc(item.sectionNumber)}">Open Specification</button>` : ''}${item.canShowSource ? `<button data-object-spec-source="${esc(item.specificationDocumentId)}" data-object-spec-page="${item.sourcePageNumber}" data-object-spec-section="${esc(item.sectionNumber)}">Show Source Page</button>` : ''}${item.evidenceText ? `<details><summary>Review Evidence</summary><p>${esc(item.evidenceText)}</p></details>` : ''}${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm Link</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject Suggestion</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm Link</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject Suggestion</button>` : ''}</div></li>`).join('')}</ol>`;
-  const pmis = Object.entries(model.pmis || {}).filter(([, items]) => items.length);
-  const documents = Object.entries(model.documents || {}).filter(([, items]) => items.length);
-  return `<div class="mc-construction-intelligence" data-panel-mode="object" data-project-object-id="${esc(object.objectId)}" data-project-relationship-source="${esc(model.sourceEntityId)}"><header><span>CONSTRUCTION INTELLIGENCE</span><h3>Selected Project Object</h3></header>
-    <section><h4>Object</h4><strong class="mc-ci-object-name">${esc(object.name)}</strong><dl><div><dt>Type</dt><dd>${esc(object.type)}</dd></div><div><dt>Permanent Object ID</dt><dd>${esc(object.objectId)}</dd></div>${object.building ? `<div><dt>Building</dt><dd>${esc(object.building)}</dd></div>` : ''}${object.room ? `<div><dt>Room</dt><dd>${esc(object.room)}</dd></div>` : ''}${object.trade ? `<div><dt>Trade</dt><dd>${esc(object.trade)}</dd></div>` : ''}${object.system ? `<div><dt>System</dt><dd>${esc(object.system)}</dd></div>` : ''}<div><dt>Confidence</dt><dd>${Math.round(object.confidence * 100)}%</dd></div>${object.revision ? `<div><dt>Revision</dt><dd>${esc(object.revision)}</dd></div>` : ''}<div><dt>Verified Status</dt><dd>${esc(object.verificationState)}</dd></div></dl><div class="mc-ci-actions">${object.hasLocation ? '<button data-drawing-object-location>Show Location</button>' : ''}${object.verificationState === 'candidate' ? '<button data-project-object-confirm>Confirm Object</button><button data-project-object-reject>Reject Candidate</button>' : ''}<button data-project-object-edit>Edit Object</button><button data-project-object-adjust-region>Adjust Region</button><button data-project-object-alias>Add Alias</button>${object.canLinkSpecification ? '<button data-drawing-link-spec>Link Specification</button>' : ''}${object.hasPossibleDuplicates ? '<button data-project-object-merge>Merge Objects</button><button data-project-object-keep-separate>Keep Separate</button>' : ''}${object.hasMergedObjects ? '<button data-project-object-split>Split Incorrect Merge</button>' : ''}<button data-project-object-history>View History</button><button class="subtle" data-drawing-clear-object>Clear Selection</button></div></section>
-    ${model.specifications.confirmed.length || model.specifications.suggested.length || model.specifications.articles.length ? `<section><h4>Governing Specifications</h4>${model.specifications.confirmed.length ? `<h5>Confirmed Specifications</h5>${specificationCards(model.specifications.confirmed)}` : ''}${model.specifications.suggested.length ? `<h5>Suggested Specifications</h5>${specificationCards(model.specifications.suggested)}` : ''}${model.specifications.articles.length ? `<h5>Specification Articles</h5><ul>${model.specifications.articles.map(item => `<li>${esc(item.heading || item.title)}</li>`).join('')}</ul>` : ''}</section>` : ''}
-    ${model.fieldRequirements.length ? `<section><h4>Field Requirements</h4><ul>${model.fieldRequirements.map(item => `<li><strong>${esc(item.category)}</strong><span>${esc(item.article?.heading || `${item.sectionNumber} — ${item.sectionTitle}`)}</span></li>`).join('')}</ul></section>` : ''}
-    ${pmis.length ? `<section><h4>PMIS Status</h4>${pmis.map(([title, items]) => `<h5>${esc(title)}</h5>${recordList(items)}`).join('')}</section>` : ''}
-    ${relationshipSection('Project Schedule', model.schedule)}${relationshipSection('Procurement', model.procurement)}
-    ${documents.length ? `<section><h4>Documents</h4>${documents.map(([title, items]) => `<h5>${esc(title)}</h5>${recordList(items)}`).join('')}</section>` : ''}
-    ${model.history.length ? `<section><h4>History</h4><ul>${model.history.map(item => `<li><strong>${esc(item.label)}</strong><span>${esc(item.value)}${item.note ? ` · ${esc(item.note)}` : ''}</span></li>`).join('')}</ul></section>` : ''}
-    <section><h4>Chief</h4><button data-project-object-ask-chief="${esc(object.objectId)}">Ask Chief about this object</button></section>
-  </div>`;
+  const specs = [...model.specifications.confirmed, ...model.specifications.suggested];
+  const objectHeader = `<strong class="mc-ci-object-name">${esc(object.name)}</strong><dl><div><dt>Type</dt><dd>${esc(object.type)}</dd></div><div><dt>Permanent Object ID</dt><dd>${esc(object.objectId)}</dd></div>${object.room ? `<div><dt>Room</dt><dd>${esc(object.room)}</dd></div>` : ''}${object.system ? `<div><dt>System</dt><dd>${esc(object.system)}</dd></div>` : ''}${object.trade ? `<div><dt>Trade</dt><dd>${esc(object.trade)}</dd></div>` : ''}<div><dt>Verification</dt><dd>${esc(object.verificationState)}</dd></div></dl><div class="mc-ci-actions">${object.hasLocation ? '<button data-drawing-object-location>Show Location</button>' : ''}${object.verificationState === 'candidate' ? '<button data-project-object-confirm>Confirm Object</button><button data-project-object-reject>Reject Candidate</button>' : ''}<button data-project-object-edit>Edit Object</button><button class="subtle" data-drawing-clear-object>Clear Selection</button></div>`;
+  const history = model.history.length ? `<ul>${model.history.map(item => `<li><strong>${esc(item.label)}</strong><span>${esc(item.value)}${item.note ? ` · ${esc(item.note)}` : ''}</span></li>`).join('')}</ul>` : '';
+  return `<div class="mc-construction-intelligence" data-panel-mode="object" data-project-object-id="${esc(object.objectId)}" data-project-relationship-source="${esc(model.sourceEntityId)}"><header><span>CONSTRUCTION INTELLIGENCE</span><h3>Object Context</h3><p>What governs this thing?</p></header>
+    ${group('current', 'Object', objectHeader, { force: true })}
+    ${group('specifications', 'Specifications', specs.length ? specificationCards(specs) : '', { force: true })}
+    ${group('field-requirements', 'Field Requirements', fieldGroups(model.fieldRequirements))}
+    ${group('pmis', 'PMIS', relationshipGroups(model.pmis))}
+    ${group('related-data', 'Related Data', relationshipGroups(model.documents))}
+    ${group('history', 'History', history)}
+    ${group('chief-insights', 'Chief', `${model.chiefInsights.length ? recordList(model.chiefInsights) : ''}<button data-project-object-ask-chief="${esc(object.objectId)}">Ask Chief about this object</button>`)}
+    ${model.diagnostics.length ? `<details class="mc-ci-developer" data-ci-group="developer-diagnostics" hidden><summary>Developer Diagnostics</summary></details>` : ''}</div>`;
 }
 
 function relationshipGroupsMarkup(groups, sourceEntityId = '') {
@@ -2233,6 +2254,8 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const preservedStage = host.querySelector('#mcDrawingStage');
   const preservedViewport = { scrollLeft: preservedStage?.scrollLeft || 0, scrollTop: preservedStage?.scrollTop || 0 };
   const preservedBrowserScroll = host.querySelector('.mc-drawing-index')?.scrollTop || 0;
+  const priorIntelligence = host.querySelector('.mc-drawing-evidence');
+  if (priorIntelligence?.querySelector('[data-panel-mode]')) constructionIntelligenceScroll[priorIntelligence.querySelector('[data-panel-mode]').dataset.panelMode] = priorIntelligence.scrollTop;
   const focusedElement = host.contains(document.activeElement) ? document.activeElement : null;
   const preservedFocusSelector = focusedElement?.id ? `#${CSS.escape(focusedElement.id)}` : focusedElement?.dataset?.drawingSheet ? `[data-drawing-sheet="${CSS.escape(focusedElement.dataset.drawingSheet)}"]` : focusedElement?.dataset?.drawingZoom ? `[data-drawing-zoom="${CSS.escape(focusedElement.dataset.drawingZoom)}"]` : focusedElement?.dataset?.drawingFit ? `[data-drawing-fit="${CSS.escape(focusedElement.dataset.drawingFit)}"]` : '';
   let targetLifecycleUnavailable = null;
@@ -2317,6 +2340,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     await projectObjectRegistry.load(activeProjectObjectId);
     loadedProjectObjectRegistryId = activeProjectObjectId;
   }
+  await drawingSpecificationLinks.load(activeProjectObjectId);
   const objectBase = { projectId: analysis?.projectId || state().activeProject, documentId: selected.id, pageId: sheet?.pageId || '' };
   const roomObjects = observations.filter(item => item.kind === 'room-number-text').map(item => drawingObjectDecisions.apply(createRoomObject({ ...objectBase, objectId: item.observationId, observationId: item.observationId, roomNumber: item.value, sourceText: item.value, region: item.region, confidence: item.confidence, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : item.verification?.status === 'Rejected' ? 'rejected' : 'candidate' })));
   const exactRooms = roomObjects.filter(item => item.accepted && item.verificationState !== 'rejected');
@@ -2385,6 +2409,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const visibleRooms = activeViewportContext ? drawingViewportContextService.visibleRooms(activeViewportContext, exactRooms) : [];
   const resolvedRequirements = drawingRequirementsResolver.resolve({ projectId: analysis?.projectId || selected.projectId || state().activeProject, pageEntityId: activeRelationshipContext.sourceEntityId && !selectedDrawingObject ? activeRelationshipContext.sourceEntityId : `drawing-page:${sheet?.pageId || ''}`, selectedObjectEntityId: selectedDrawingObject ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedRoomEntityId: selectedDrawingObject?.type === 'room' ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedObjectId: selectedDrawingObject?.objectId || '', viewportContext: activeViewportContext, tradeChannel: activeTrade, drawingSpecLinks: currentSpecificationLinks, projectWideRequirements: [] });
   const activeRequirements = { ...resolvedRequirements, warnings: [...(resolvedRequirements.warnings || []), ...providerWarnings] };
+  activeDrawingTransientRequirementCount = activeRequirements.requirements?.length || 0;
   const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
   const returnLabel = shell === 'professional' && returnAction?.kind === 'mission-control' ? 'Return to Chief' : returnAction?.label;
   const focusTarget = drawingFocusTarget({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion });
@@ -2428,6 +2453,8 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   if (nextStage && preserveCanvas) { nextStage.scrollLeft = preservedViewport.scrollLeft; nextStage.scrollTop = preservedViewport.scrollTop; }
   const nextBrowser = host.querySelector('.mc-drawing-index');
   if (nextBrowser) nextBrowser.scrollTop = preservedBrowserScroll;
+  const nextIntelligence = host.querySelector('.mc-drawing-evidence');
+  if (nextIntelligence) nextIntelligence.scrollTop = constructionIntelligenceScroll[constructionIntelligencePanel.mode] || 0;
   if (source && sheet) await paintDrawingPage(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), overlayRecords);
   const restoredFocus = preservedFocusSelector ? host.querySelector(preservedFocusSelector) : null;
   if (restoredFocus) restoredFocus.focus({ preventScroll: true });
@@ -2816,6 +2843,14 @@ app.addEventListener('input', event => {
   drawingFilter = event.target.value;
   void updateDrawingSearchResults();
 });
+
+app.addEventListener('toggle', event => {
+  const group = event.target.closest?.('.mc-construction-intelligence details[data-ci-group]');
+  if (!group || group.hidden) return;
+  if (group.open) constructionIntelligenceExpanded.add(group.dataset.ciGroup);
+  else constructionIntelligenceExpanded.delete(group.dataset.ciGroup);
+  saveConstructionIntelligencePanelState([...constructionIntelligenceExpanded]);
+}, true);
 
 app.addEventListener('keydown', event => {
   if (event.target.id !== 'mcDrawingSearch' || !['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', 'Enter', 'Escape'].includes(event.key)) return;
@@ -10344,6 +10379,7 @@ async function renderDiagnostics() {
   const specificationResources = specificationSourceViewer.diagnostics();
   const drawingResources = drawingViewerEngine.snapshot();
   const objectResources = projectObjectRegistry.diagnostics();
+  const drawingSpecResources = drawingSpecificationLinks.diagnostics();
   storage.relationshipCount = new Set(projectRelationshipEngine.entities({ projectId: state().activeProject, verificationStates: ['confirmed', 'suggested', 'rejected', 'historical'] }).flatMap(entity => projectRelationshipEngine.getRelationships(entity.entityId, { projectId: state().activeProject, includeRejected: true, limit: 500 }).map(item => item.relationshipId))).size;
 
   const healthy = data.checks.filter(check =>
@@ -10386,6 +10422,11 @@ async function renderDiagnostics() {
     <article><span>PROJECT OBJECTS</span><strong>${fmt(objectResources.activePageObjectCount || 0)} active-page · ${fmt(objectResources.viewportCandidateCount || 0)} viewport candidates</strong></article>
     <article><span>OBJECT QUERY</span><strong>${Number(objectResources.objectQueryDurationMs || 0).toFixed(2)} ms · ${fmt(objectResources.duplicateCandidateCount || 0)} duplicate candidates</strong></article>
     <article><span>OBJECT WRITE / MERGE</span><strong>${Number(objectResources.persistenceDurationMs || 0).toFixed(2)} ms · ${Number(objectResources.objectMergeDurationMs || 0).toFixed(2)} ms</strong></article>
+    <article><span>DRAWING-SPEC PERSISTENCE</span><strong>${esc(drawingSpecResources.backend)} · ${fmt(drawingSpecResources.recordCount)} records · ${fmt(drawingSpecResources.localStorageDrawingSpecBytes)} local bytes</strong></article>
+    <article><span>DRAWING-SPEC MIGRATION</span><strong>${fmt(drawingSpecResources.migratedLegacyRecordCount)} migrated · ${fmt(drawingSpecResources.duplicateRecordsRemoved)} duplicates removed</strong></article>
+    <article><span>DRAWING-SPEC WRITES</span><strong>${Number(drawingSpecResources.lastWriteDurationMs || 0).toFixed(2)} ms · ${fmt(drawingSpecResources.pendingRetryCount)} pending · history limit ${fmt(drawingSpecResources.auditHistoryLimit)}</strong></article>
+    <article><span>ACTIVE REQUIREMENTS</span><strong>${fmt(activeDrawingTransientRequirementCount)} transient · ${fmt(drawingSpecResources.rejectedOrSuppressedRecordCount)} rejected/suppressed</strong></article>
+    ${drawingSpecResources.lastWriteFailure ? `<article><span>LAST DRAWING-SPEC FAILURE</span><strong>${esc(drawingSpecResources.lastWriteFailure.message)}</strong></article>` : ''}
     <article><span>STATE MIGRATION</span><strong>${esc(storage.compactStateMigrationStatus)}</strong></article>
     ${storage.lastPersistenceFailure ? `<article><span>LAST PERSISTENCE FAILURE</span><strong>${esc(storage.lastPersistenceFailure.reason || storage.lastPersistenceFailure.message || 'Unavailable')}</strong></article>` : ''}
   `;

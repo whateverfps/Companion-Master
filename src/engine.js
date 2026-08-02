@@ -528,7 +528,7 @@ export const engine = {
   async storageDiagnostics() {
     const [documents, sections, drawingAnalyses, stateRecords] = await Promise.all([all('documents'), all('sections'), all('drawingAnalyses'), all('stateRecords')]);
     const compact = localStorage.getItem(STATE_KEY) || '';
-    const missionKeys = new Set([STATE_KEY, 'mission-companion:specification-index:v1', 'mc-drawing-page-catalog-v1', 'mission-companion:project-relationships:v1']);
+    const missionKeys = new Set([STATE_KEY, 'mission-companion:specification-index:v1', 'mc-drawing-page-catalog-v1', 'mission-companion:project-relationships:v1', 'mission-companion:drawing-spec-links:v1']);
     const keyBytes = {};
     for (const key of missionKeys) { const value = localStorage.getItem(key); if (value !== null) keyBytes[key] = new TextEncoder().encode(value).byteLength; }
     return {
@@ -540,6 +540,9 @@ export const engine = {
       specificationSectionCount: sections.filter(item => /specification/i.test(`${item.category || ''} ${item.documentType || ''} ${item.metadata?.documentType || ''}`) || /^\d{2}\s?\d{2}\s?\d{2}/.test(String(item.sectionNumber || item.number || ''))).length,
       drawingAnalysisCount: drawingAnalyses.length,
       relationshipCount: 0,
+      drawingSpecificationLinkCount: stateRecords.filter(item => item.kind === 'drawing-spec-link').length,
+      drawingSpecificationLinkBackend: 'IndexedDB',
+      drawingSpecificationLinkLocalStorageBytes: keyBytes['mission-companion:drawing-spec-links:v1'] || 0,
       largeStateRecordCount: stateRecords.length,
       lastPersistenceFailure: persistenceStatus.lastFailure,
       compactStateMigrationStatus: persistenceStatus.migration,
@@ -978,6 +981,14 @@ export const engine = {
     const record = await one('sourceFiles', documentId);
     if (record?.projectId !== state.activeProject) return null;
     return record ? structuredClone(record) : null;
+  },
+
+  drawingSpecificationLinkPersistence() {
+    return {
+      loadLinks: async (projectId = state.activeProject) => (await all('stateRecords')).filter(item => item.kind === 'drawing-spec-link' && (!projectId || item.projectId === projectId)).map(item => structuredClone(item.record)),
+      putLink: async record => putMany('stateRecords', [{ id: `drawing-spec-link:${record.linkId}`, kind: 'drawing-spec-link', projectId: record.projectId, pageId: record.drawingPageId, objectId: record.objectId, activeKey: record.activeKey, record: structuredClone(record), updatedAt: record.updatedAt }]),
+      deleteLink: async linkId => tx('stateRecords', 'readwrite', store => store.delete(`drawing-spec-link:${linkId}`))
+    };
   },
 
   async drawingAnalysis(documentId) {

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildConstructionIntelligencePanelModel } from '../src/construction-intelligence-panel.js';
+import { readFileSync } from 'node:fs';
+import { buildConstructionIntelligencePanelModel, loadConstructionIntelligencePanelState, saveConstructionIntelligencePanelState } from '../src/construction-intelligence-panel.js';
 
 const sheet = { pageId: 'page-1', pageNumber: 12, sheetNumber: '61IN101', discipline: 'Interiors', identityStatus: 'authoritative', building: '61' };
 
@@ -48,4 +49,50 @@ test('page context exposes page-wide specifications and section-scoped articles 
   const model = buildConstructionIntelligencePanelModel({ sheet, requirements: { confirmedSpecifications: [], suggestedSpecifications: [requirement], fieldRequirements: { installation: [{ ...requirement, article: { id: 'install', heading: '3.2 INSTALLATION' } }] }, projectWideRequirements: [] }, specificationLinks: [{ ...requirement, linkId: 'link' }] });
   assert.equal(model.specifications.suggested.length, 1); assert.equal(model.specifications.suggested[0].applicabilityScope, 'page-wide');
   assert.deepEqual(model.fieldRequirements.map(item => item.article.heading), ['3.2 INSTALLATION']);
+});
+
+test('page context restores only populated sheet relationships and drawing content', () => {
+  const related = { entity: { entityId: 'drawing-2', label: '61IN102', metadata: { navigationTarget: { pageNumber: 2 } } }, relationship: { relationshipId: 'rel-drawing', verificationState: 'confirmed' } };
+  const model = buildConstructionIntelligencePanelModel({ sheet: { ...sheet, sheetTitle: 'Interior Finish Plan' }, pageObjects: [{ objectId: 'finish', type: 'finish', verificationState: 'confirmed' }], relationshipGroups: { relatedDrawings: [related], photos: [], risks: [] } });
+  assert.equal(model.page.sheetTitle, 'Interior Finish Plan');
+  assert.deepEqual(model.drawingContent, { finish: 1 });
+  assert.equal(model.relatedDrawings.length, 1);
+  assert.equal(model.projectInformation.photos.length, 0);
+});
+
+test('object context excludes page-wide specifications and swaps by permanent object identity', () => {
+  const page = { specificationDocumentId: 'spec', sectionNumber: '10 14 00', sectionTitle: 'Signage', status: 'suggested', applicabilityScope: 'page-wide' };
+  const object = { specificationDocumentId: 'spec', sectionNumber: '09 91 00', sectionTitle: 'Painting', status: 'confirmed', applicabilityScope: 'object-specific', objectId: 'p1' };
+  const model = buildConstructionIntelligencePanelModel({ sheet, selectedObject: { objectId: 'p1', label: 'Finish P-1', type: 'finish' }, requirements: { confirmedSpecifications: [object], suggestedSpecifications: [page] }, specificationLinks: [page, object] });
+  assert.deepEqual(model.specifications.confirmed.map(item => item.sectionNumber), ['09 91 00']);
+  assert.deepEqual(model.specifications.suggested, []);
+});
+
+test('collapsible state uses commercial defaults and persists a bounded UI preference', () => {
+  const values = new Map(); const storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) };
+  assert.deepEqual(loadConstructionIntelligencePanelState(storage).expanded, ['current', 'specifications', 'field-requirements']);
+  saveConstructionIntelligencePanelState(['current', 'history', 'history'], storage);
+  assert.deepEqual(loadConstructionIntelligencePanelState(storage).expanded, ['current', 'history']);
+});
+
+test('developer diagnostics remain separate from operational panel records', () => {
+  const model = buildConstructionIntelligencePanelModel({ sheet, developerDiagnostics: [{ kind: 'ocr-ambiguity', value: 'P-l' }] });
+  assert.equal(model.diagnostics.length, 1);
+  assert.equal(JSON.stringify(model.page).includes('ocr-ambiguity'), false);
+  assert.equal(JSON.stringify(model.specifications).includes('ocr-ambiguity'), false);
+});
+
+test('Chief insights appear only when backed by an explicit page relationship', () => {
+  const insight = { entity: { entityId: 'insight-1', label: 'Awaiting RFI 18.' }, relationship: { relationshipId: 'rel-insight', verificationState: 'confirmed' } };
+  assert.equal(buildConstructionIntelligencePanelModel({ sheet }).chiefInsights.length, 0);
+  assert.deepEqual(buildConstructionIntelligencePanelModel({ sheet, relationshipGroups: { chiefInsights: [insight] } }).chiefInsights.map(item => item.label), ['Awaiting RFI 18.']);
+});
+
+test('production panel preserves two-mode scroll, restores blank-click page context, and never owns PDF rendering', () => {
+  const source = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const markup = source.slice(source.indexOf('function constructionIntelligencePanelMarkup'), source.indexOf('function relationshipGroupsMarkup'));
+  assert.match(markup, /data-panel-mode=\"page\"/); assert.match(markup, /data-panel-mode=\"object\"/);
+  assert.match(markup, /Developer Diagnostics[^]*hidden/); assert.doesNotMatch(markup, /paintDrawingPage|renderPdfPage|PDFDocumentProxy/);
+  assert.match(source, /constructionIntelligenceScroll\[priorIntelligence\.querySelector\('\[data-panel-mode\]'\)\.dataset\.panelMode\]/);
+  assert.match(source, /data-drawing-clear-object[^]*selectedDrawingObject = null[^]*renderDrawingWorkspace/);
 });
