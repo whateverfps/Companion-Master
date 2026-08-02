@@ -430,3 +430,40 @@ test('Drawing Workspace context panel is page-scoped and exposes honest empty se
   for (const heading of ['Summary', 'Specifications', 'Related Drawings', 'Inspection Items', 'Equipment', 'Rooms', 'Photos', 'Documents', 'Issues', 'History']) assert.match(app, new RegExp(`<h3>${heading}<\\/h3>`));
   assert.match(app, /No linked data\./);
 });
+
+test('Drawing Workspace relationship groups separate trust states and delegate valid actions', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  for (const heading of ['Confirmed Specifications', 'Suggested Specifications', 'Related Drawings', 'Rooms', 'Equipment', 'Inspections', 'Photos', 'Issues', 'Risks', 'RFIs', 'Submittals', 'Shutdowns', 'Commissioning', 'History']) assert.match(app, new RegExp(`'${heading}'`));
+  assert.match(app, /relationship\.verificationState === 'suggested'/);
+  assert.match(app, /data-project-relationship-confirm/);
+  assert.match(app, /data-project-relationship-reject/);
+  assert.match(app, /entity\.metadata\?\.navigationTarget/);
+  assert.match(app, /projectRelationshipEngine\.registerRelationship/);
+  assert.match(app, /drawingWorkspace\.open\(target\)/);
+});
+
+test('Drawing Workspace requirements panel keeps scope, evidence, trade, and exact actions explicit', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  for (const heading of ['Current Context', 'Governing Drawings', 'Field Requirements', 'Project-Wide Requirements']) assert.match(app, new RegExp(`<h3>${heading}<\\/h3>`));
+  assert.match(app, /<h3>Applicable Specifications — Confirmed<\/h3>/);
+  assert.match(app, /<h3>Applicable Specifications — Suggested<\/h3>/);
+  assert.match(app, /data-drawing-trade/);
+  assert.match(app, /data-drawing-select-region/);
+  assert.match(app, /data-drawing-clear-region/);
+  assert.match(app, /data-requirement-open=/);
+  assert.match(app, /data-requirement-open-drawing/);
+  assert.match(app, /Review Evidence/);
+  assert.match(app, /drawingRequirementsResolver\.invalidate\(\)/);
+  assert.match(app, /drawingViewportContextService\.update/);
+});
+
+test('Drawing Workspace explicitly loads specification sections and contains provider failure', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const wrapper = app.slice(app.indexOf("async function renderDrawingWorkspace(shell = 'professional')"), app.indexOf("async function renderDrawingWorkspaceWithProviders"));
+  const renderer = app.slice(app.indexOf("async function renderDrawingWorkspaceWithProviders"), app.indexOf('async function renderMissionControlDashboard'));
+  assert.match(wrapper, /loadDrawingWorkspaceProviders/);
+  assert.match(wrapper, /loadSections: \(\) => engine\.sections\(\)/);
+  assert.match(renderer, /\{ sections, warnings: providerWarnings = \[\] \}/);
+  assert.match(renderer, /sourceSections: sections\.filter/);
+  assert.match(renderer, /providerWarnings/);
+});

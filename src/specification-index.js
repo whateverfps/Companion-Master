@@ -18,7 +18,7 @@ export function createSpecificationIndex({ storage = globalThis.localStorage, st
       for (const item of list(saved.sections)) sections.set(keyFor(item.documentId, item.sectionNumber), item);
     } catch { /* optional intelligence remains empty */ }
   };
-  const save = () => storage?.setItem?.(storageKey, JSON.stringify({ documents: [...documents.values()], sections: [...sections.values()] }));
+  const save = () => { try { storage?.setItem?.(storageKey, JSON.stringify({ documents: [...documents.values()], sections: [...sections.values()] })); return true; } catch { return false; } };
   load();
   return {
     index({ document = {}, sourceSections = [], tocRows = [], revisionSource = null } = {}) {

@@ -31,10 +31,11 @@ import { analyzeCorpus } from './core/reasoning.js';
 import { createPdfSourceRecord, inspectStorageCapacity } from './pdf-source.js';
 import { buildDrawingAnalysis } from './drawing-intelligence.js';
 import { classifyDrawingOrphans, validateDrawingOwnership } from './drawing-lifecycle.js';
+import { COMPACT_STATE_KEY, COMPACT_STATE_MAX_BYTES, compactStateCategorySizes, legacyLargeState, safeWriteCompactState } from './compact-state.js';
 
-const STATE_KEY = 'mc-master-state-v2';
+const STATE_KEY = COMPACT_STATE_KEY;
 const DOC_DB = 'mc-master-documents-v2';
-const DOC_DB_VERSION = 5;
+const DOC_DB_VERSION = 6;
 const APP_VERSION = '2.8.1';
 const STARTUP_EXPERIENCES = new Set(['mission-control', 'professional-workspace']);
 const normalizeStartupExperience = value => STARTUP_EXPERIENCES.has(value) ? value : 'mission-control';
@@ -73,6 +74,9 @@ const defaults = {
   evaluations: []
 };
 
+let pendingLegacyLargeState = null;
+let persistenceQueue = Promise.resolve();
+let persistenceStatus = { migration: 'not-required', lastFailure: null, compactBytes: 0 };
 let state = loadState();
 let sectionCache = null;
 let documentCache = null;
@@ -95,6 +99,7 @@ logger.info('Application state loaded', {
 function loadState() {
   try {
     const stored = JSON.parse(localStorage.getItem(STATE_KEY) || '{}');
+    const legacy = legacyLargeState(stored);
 
     const loaded = {
       ...structuredClone(defaults),
@@ -112,6 +117,7 @@ function loadState() {
     loaded.projects = Array.isArray(loaded.projects)
       ? loaded.projects
       : structuredClone(defaults.projects);
+    if (!loaded.projects.some(project => project.id === loaded.activeProject)) loaded.activeProject = loaded.projects.find(project => project.id === 'general')?.id || loaded.projects[0]?.id || '';
 
     loaded.libraries = Array.isArray(loaded.libraries)
       ? loaded.libraries
@@ -131,6 +137,10 @@ function loadState() {
     loaded.evaluations = Array.isArray(loaded.evaluations)
       ? loaded.evaluations
       : [];
+    if (legacy.conversations.length || legacy.evaluations.length || legacy.chat.length) {
+      pendingLegacyLargeState = { conversations: loaded.conversations, evaluations: loaded.evaluations };
+      persistenceStatus.migration = 'legacy-large-state-pending';
+    }
 
     for (const project of loaded.projects) {
       const hasLibrary = loaded.libraries.some(
@@ -162,6 +172,10 @@ function loadState() {
         )?.id || null;
     }
 
+    if (!pendingLegacyLargeState) {
+      const compactWrite = safeWriteCompactState(localStorage, loaded, { onFailure: failure => { persistenceStatus.lastFailure = failure; } });
+      persistenceStatus.compactBytes = compactWrite.bytes;
+    }
     return loaded;
   } catch (error) {
     logger.warning('Stored state could not be loaded', {
@@ -173,9 +187,17 @@ function loadState() {
 }
 
 function save() {
-  const { chat: compatibilityChat, ...persistedState } = state;
-  void compatibilityChat;
-  localStorage.setItem(STATE_KEY, JSON.stringify(persistedState));
+  const write = safeWriteCompactState(localStorage, state, { onFailure: failure => {
+    persistenceStatus.lastFailure = { ...failure, at: new Date().toISOString() };
+    logger.warning('Compact state persistence was rejected', persistenceStatus.lastFailure);
+  } });
+  persistenceStatus.compactBytes = write.bytes;
+  const snapshot = { id: 'application-large-state', conversations: structuredClone(state.conversations), evaluations: structuredClone(state.evaluations), updatedAt: new Date().toISOString() };
+  persistenceQueue = persistenceQueue.then(() => putMany('stateRecords', [snapshot])).catch(error => {
+    persistenceStatus.lastFailure = { reason: 'indexeddb-large-state-write-failed', message: error?.message || String(error), at: new Date().toISOString() };
+    logger.warning('Large application state could not be persisted', persistenceStatus.lastFailure);
+  });
+  return write;
 }
 
 async function contentHash(file) {
@@ -283,6 +305,8 @@ function openDB() {
       if (!drawingAnalyses.indexNames.contains('documentId')) drawingAnalyses.createIndex('documentId', 'documentId');
       if (!drawingAnalyses.indexNames.contains('analysisVersion')) drawingAnalyses.createIndex('analysisVersion', 'analysisVersion');
       if (!drawingAnalyses.indexNames.contains('status')) drawingAnalyses.createIndex('status', 'status');
+
+      if (!db.objectStoreNames.contains('stateRecords')) db.createObjectStore('stateRecords', { keyPath: 'id' });
     };
 
     request.onsuccess = () => resolve(request.result);
@@ -466,6 +490,63 @@ async function delByIndex(store, index, key) {
 }
 
 export const engine = {
+  async initialize() {
+    const retained = await one('stateRecords', 'application-large-state').catch(error => {
+      persistenceStatus.lastFailure = { reason: 'indexeddb-large-state-read-failed', message: error?.message || String(error), at: new Date().toISOString() };
+      return null;
+    });
+    let compactLegacyState = true;
+    if (pendingLegacyLargeState) {
+      state.conversations = pendingLegacyLargeState.conversations;
+      state.evaluations = pendingLegacyLargeState.evaluations;
+      try {
+        await putMany('stateRecords', [{ id: 'application-large-state', conversations: structuredClone(state.conversations), evaluations: structuredClone(state.evaluations), updatedAt: new Date().toISOString() }]);
+        persistenceStatus.migration = 'legacy-large-state-migrated'; pendingLegacyLargeState = null;
+      } catch (error) {
+        compactLegacyState = false;
+        persistenceStatus.migration = 'legacy-large-state-retained';
+        persistenceStatus.lastFailure = { reason: 'legacy-state-migration-failed', message: error?.message || String(error), at: new Date().toISOString() };
+        logger.warning('Legacy large state remains available for manual recovery', persistenceStatus.lastFailure);
+      }
+    } else if (retained) {
+      state.conversations = Array.isArray(retained.conversations) ? retained.conversations : [];
+      state.evaluations = Array.isArray(retained.evaluations) ? retained.evaluations : [];
+      persistenceStatus.migration = 'indexeddb-large-state-restored';
+    }
+    const active = selectActiveConversation(state.conversations, state.activeConversationId);
+    if (!active && state.conversations.length) state.activeConversationId = sortConversations(state.conversations)[0]?.conversationId || '';
+    state.chat = selectActiveConversation(state.conversations, state.activeConversationId)?.messages || [];
+    const write = compactLegacyState ? safeWriteCompactState(localStorage, state, { onFailure: failure => { persistenceStatus.lastFailure = { ...failure, at: new Date().toISOString() }; } }) : { ok: false, bytes: new TextEncoder().encode(localStorage.getItem(STATE_KEY) || '').byteLength };
+    persistenceStatus.compactBytes = write.bytes;
+    logger.info('Compact state startup migration complete', { status: persistenceStatus.migration, compactBytes: write.bytes, conversations: state.conversations.length });
+    return { ok: true, migration: persistenceStatus.migration, compactBytes: write.bytes };
+  },
+
+  async flushPersistence() { await persistenceQueue; return structuredClone(persistenceStatus); },
+
+  async storageDiagnostics() {
+    const [documents, sections, drawingAnalyses, stateRecords] = await Promise.all([all('documents'), all('sections'), all('drawingAnalyses'), all('stateRecords')]);
+    const compact = localStorage.getItem(STATE_KEY) || '';
+    const missionKeys = new Set([STATE_KEY, 'mission-companion:specification-index:v1', 'mc-drawing-page-catalog-v1', 'mission-companion:project-relationships:v1']);
+    const keyBytes = {};
+    for (const key of missionKeys) { const value = localStorage.getItem(key); if (value !== null) keyBytes[key] = new TextEncoder().encode(value).byteLength; }
+    return {
+      localStorageMissionCompanionBytes: Object.values(keyBytes).reduce((sum, value) => sum + value, 0),
+      compactStateBytes: new TextEncoder().encode(compact).byteLength,
+      compactStateLimitBytes: COMPACT_STATE_MAX_BYTES,
+      indexedDbDocumentCount: documents.length,
+      indexedDbKnowledgeChunkCount: sections.length,
+      specificationSectionCount: sections.filter(item => /specification/i.test(`${item.category || ''} ${item.documentType || ''} ${item.metadata?.documentType || ''}`) || /^\d{2}\s?\d{2}\s?\d{2}/.test(String(item.sectionNumber || item.number || ''))).length,
+      drawingAnalysisCount: drawingAnalyses.length,
+      relationshipCount: 0,
+      largeStateRecordCount: stateRecords.length,
+      lastPersistenceFailure: persistenceStatus.lastFailure,
+      compactStateMigrationStatus: persistenceStatus.migration,
+      localStorageCategoryBytes: keyBytes,
+      categoryBytes: compactStateCategorySizes(state)
+    };
+  },
+
   state() {
     const active = selectActiveConversation(state.conversations, state.activeConversationId);
     return structuredClone({ ...state, chat: active?.messages || [] });

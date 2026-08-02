@@ -243,17 +243,17 @@ const {
 } = await import('../src/demo-project.js');
 const { retrieve } = await import('../src/retrieval.js');
 
-test('schema version 5 preserves existing settings and all prior stores', async () => {
+test('schema version 6 adds large state records while preserving existing settings and all prior stores', async () => {
   await engine.documents();
-  assert.match(readFileSync(new URL('../src/engine.js', import.meta.url), 'utf8'), /const DOC_DB_VERSION = 5;/);
+  assert.match(readFileSync(new URL('../src/engine.js', import.meta.url), 'utf8'), /const DOC_DB_VERSION = 6;/);
   assert.equal(engine.state().settings.startupExperience, 'mission-control');
-  assert.deepEqual(database.storeNames(), ['documents', 'drawingAnalyses', 'inspectionRecords', 'sections', 'sourceFiles']);
+  assert.deepEqual(database.storeNames(), ['documents', 'drawingAnalyses', 'inspectionRecords', 'sections', 'sourceFiles', 'stateRecords']);
   engine.saveSettings({ startupExperience: 'professional-workspace' });
   assert.equal(engine.state().settings.startupExperience, 'professional-workspace');
   assert.equal(JSON.parse(globalThis.localStorage.getItem('mc-master-state-v2')).settings.startupExperience, 'professional-workspace');
   engine.saveSettings({ startupExperience: 'unsupported' });
   assert.equal(engine.state().settings.startupExperience, 'mission-control');
-  assert.deepEqual(database.storeNames(), ['documents', 'drawingAnalyses', 'inspectionRecords', 'sections', 'sourceFiles']);
+  assert.deepEqual(database.storeNames(), ['documents', 'drawingAnalyses', 'inspectionRecords', 'sections', 'sourceFiles', 'stateRecords']);
 });
 
 test('successful imports atomically register one document and its sections', async () => {
@@ -574,13 +574,17 @@ test('ordinary import remains backward compatible when Inspection Records are ab
   assert.deepEqual(await engine.inspectionRecords({ includeArchived: true }), []);
 });
 
-test('conversations persist in existing localStorage and active chat remains compatible', () => {
+test('conversations persist in IndexedDB while compact localStorage retains only the active pointer', async () => {
   const conversation = engine.createConversation({ projectId: engine.state().activeProject, now: '2026-07-31T12:00:00Z' });
   engine.appendConversationMessage({ id: 'conversation-user-message', role: 'user', content: 'Persist this thread', createdAt: '2026-07-31T12:01:00Z' }, conversation.conversationId);
   engine.addConversationAttachment('stable-document-reference', conversation.conversationId);
   const stored = JSON.parse(globalThis.localStorage.getItem('mc-master-state-v2'));
   assert.equal(stored.activeConversationId, conversation.conversationId);
-  assert.equal(stored.conversations.find(item => item.conversationId === conversation.conversationId).messages.length, 1);
+  assert.equal(Object.hasOwn(stored, 'conversations'), false);
+  assert.equal(Object.hasOwn(stored, 'evaluations'), false);
+  await engine.flushPersistence();
+  const diagnostics = await engine.storageDiagnostics();
+  assert.equal(diagnostics.largeStateRecordCount, 1);
   assert.deepEqual(engine.state().chat.map(item => item.id), ['conversation-user-message']);
   assert.deepEqual(engine.activeConversation().attachmentDocumentIds, ['stable-document-reference']);
   engine.clearChat();
@@ -601,9 +605,10 @@ test('attachment scope constrains eligible sections without changing ordinary se
 test('legacy flat chat migrates once into the active conversation compatibility view', async () => {
   const legacyStorage = createLocalStorage();
   legacyStorage.setItem('mc-master-state-v2', JSON.stringify({
-    projects: [{ id: 'general', name: 'General' }],
-    libraries: [{ id: 'general-library', projectId: 'general', name: 'General Library', enabled: true }],
-    activeProject: 'general', activeLibrary: 'general-library',
+    settings: { startupExperience: 'professional-workspace' },
+    projects: [{ id: 'general', name: 'General' }, { id: 'bedford', name: 'Bedford VAMC' }],
+    libraries: [{ id: 'general-library', projectId: 'general', name: 'General Library', enabled: true }, { id: 'bedford-library', projectId: 'bedford', name: 'Bedford Library', enabled: true }],
+    activeProject: 'bedford', activeLibrary: 'bedford-library',
     chat: [{ id: 'legacy-message', role: 'user', content: 'Legacy retained message', createdAt: '2026-01-01T00:00:00Z' }]
   }));
   const originalStorage = globalThis.localStorage;
@@ -612,13 +617,30 @@ test('legacy flat chat migrates once into the active conversation compatibility 
     const { engine: migratedEngine } = await import(`../src/engine.js?legacy-migration=${Date.now()}`);
     assert.equal(migratedEngine.conversations().length, 1);
     assert.deepEqual(migratedEngine.state().chat.map(item => item.id), ['legacy-message']);
-    migratedEngine.saveSettings({ topK: 10 });
+    await migratedEngine.initialize();
+    migratedEngine.saveSettings({ topK: 10 }); await migratedEngine.flushPersistence();
     const stored = JSON.parse(legacyStorage.getItem('mc-master-state-v2'));
-    assert.equal(stored.conversations.length, 1);
-    assert.equal(stored.activeConversationId, stored.conversations[0].conversationId);
+    assert.equal(Object.hasOwn(stored, 'conversations'), false);
+    assert.ok(stored.activeConversationId);
+    assert.equal(stored.activeProject, 'bedford');
+    assert.equal(stored.settings.startupExperience, 'professional-workspace');
   } finally {
     globalThis.localStorage = originalStorage;
   }
+});
+
+test('localStorage quota failure does not abort initialization or conversation creation', async () => {
+  const quotaStorage = { getItem: () => null, removeItem() {}, setItem() { const error = new Error('Storage quota exceeded'); error.name = 'QuotaExceededError'; throw error; } };
+  const originalStorage = globalThis.localStorage; globalThis.localStorage = quotaStorage;
+  try {
+    const { engine: quotaEngine } = await import(`../src/engine.js?quota-recovery=${Date.now()}`);
+    const startup = await quotaEngine.initialize(); assert.equal(startup.ok, true);
+    const conversation = quotaEngine.createConversation({ projectId: 'general' });
+    quotaEngine.appendConversationMessage({ role: 'user', content: 'In-memory work remains available.' }, conversation.conversationId);
+    await quotaEngine.flushPersistence();
+    assert.equal(quotaEngine.activeConversation().messages.length, 1);
+    assert.equal((await quotaEngine.storageDiagnostics()).lastPersistenceFailure.reason, 'quota-exceeded');
+  } finally { globalThis.localStorage = originalStorage; }
 });
 
 test('drawing lifecycle save resolves exact ownership globally while General is active', async () => {

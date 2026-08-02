@@ -123,6 +123,11 @@ import { createDrawingObject, createDrawingObjectDecisionStore, createRoomObject
 import { createDrawingOverlay, overlayStyle, visibleDrawingOverlays } from './drawing-overlays.js';
 import { createSpecificationIndex } from './specification-index.js';
 import { createDrawingSpecificationLinkService } from './drawing-spec-links.js';
+import { adaptDrawingSpecificationLinks, createProjectRelationshipEngine, relationshipContextGroups } from './project-relationship-engine.js';
+import { createDrawingViewportContextService, normalizedViewportBounds } from './drawing-viewport-context.js';
+import { createDrawingTradeContext, DRAWING_TRADE_CHANNELS } from './drawing-trade-context.js';
+import { createDrawingRequirementsResolver } from './drawing-requirements-resolver.js';
+import { loadDrawingWorkspaceProviders } from './drawing-workspace-providers.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -210,10 +215,15 @@ const drawingWorkspace = createDrawingWorkspace({ viewerEngine: drawingViewerEng
 const drawingObjectDecisions = createDrawingObjectDecisionStore();
 const specificationIndex = createSpecificationIndex();
 const drawingSpecificationLinks = createDrawingSpecificationLinkService({ index: specificationIndex });
+const projectRelationshipEngine = createProjectRelationshipEngine();
+const drawingViewportContextService = createDrawingViewportContextService({ onChange: context => logger.debug('Drawing viewport context updated', { pageId: context.pageId, source: context.source }) });
+const drawingTradeContext = createDrawingTradeContext();
+const drawingRequirementsResolver = createDrawingRequirementsResolver({ specificationIndex, relationshipEngine: projectRelationshipEngine, onMetric: metric => logger.debug('Drawing requirements performance', metric) });
 let activeDrawingObjects = [];
 let selectedDrawingObject = null;
 let drawingObjectChoices = [];
 let drawingLocationReturnViewport = null;
+let drawingRegionSelectionMode = false;
 let drawingViewportDocumentId = '';
 let activeDrawingPdf = null;
 let activeDrawingDocumentId = '';
@@ -1788,9 +1798,19 @@ async function createRetainedPdfViewerAnalysis(documentRecord, source, requested
 
 function captureDrawingViewport(overrides = {}) {
   if (!drawingTarget?.documentId || !drawingTarget?.pageNumber) return;
+  const { contextSource = 'viewport-inference', ...viewportOverrides } = overrides;
   const current = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(drawingTarget.pageNumber) };
   const stage = $('#mcDrawingStage');
-  drawingViewerEngine.restoreViewport(drawingTarget.pageNumber, { ...current, zoom: drawingZoom, rotation: drawingRotation, scrollLeft: stage?.scrollLeft || current.scrollLeft || 0, scrollTop: stage?.scrollTop || current.scrollTop || 0, selectedObservationId: drawingTarget.observationId || current.selectedObservationId, highlightedRegion: drawingTarget.region || current.highlightedRegion, ...overrides, overlays: { ...current.overlays, ...(overrides.overlays || {}) } });
+  const canvas = stage?.querySelector('#mcDrawingCanvas');
+  const next = { ...current, zoom: drawingZoom, rotation: drawingRotation, scrollLeft: stage?.scrollLeft || current.scrollLeft || 0, scrollTop: stage?.scrollTop || current.scrollTop || 0, selectedObservationId: drawingTarget.observationId || current.selectedObservationId, highlightedRegion: drawingTarget.region || current.highlightedRegion, ...viewportOverrides, overlays: { ...current.overlays, ...(viewportOverrides.overlays || {}) } };
+  drawingViewerEngine.restoreViewport(drawingTarget.pageNumber, next);
+  const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget.pageNumber));
+  if (sheet?.pageId && stage && canvas) {
+    const trade = drawingTradeContext.current({ discipline: sheet.discipline, objectType: selectedDrawingObject?.subtype || selectedDrawingObject?.type, title: sheet.sheetTitle });
+    drawingViewportContextService.update({ projectId: drawingTarget.projectId || activeDrawingViewerAnalysis?.projectId, documentId: drawingTarget.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber,
+      bounds: normalizedViewportBounds({ scrollLeft: Math.max(0, next.scrollLeft - canvas.offsetLeft), scrollTop: Math.max(0, next.scrollTop - canvas.offsetTop), viewportWidth: stage.clientWidth, viewportHeight: stage.clientHeight, contentWidth: canvas.clientWidth || canvas.width, contentHeight: canvas.clientHeight || canvas.height, rotation: drawingRotation }),
+      zoom: drawingZoom, rotation: drawingRotation, selectedRegion: next.highlightedRegion || null, selectedRoomId: selectedDrawingObject?.type === 'room' ? selectedDrawingObject.roomId : null, selectedObjectId: selectedDrawingObject?.objectId || null, activeTradeChannel: trade.key, source: contextSource });
+  }
 }
 
 function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
@@ -1888,7 +1908,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
     drawingViewerEngine.restoreViewport(sheet.pageNumber, { ...restored, zoom: drawingZoom, rotation: drawingRotation, selectedObservationId: observation?.observationId || restored.selectedObservationId, highlightedRegion: observation?.region || restored.highlightedRegion });
     logger.debug('Drawing viewer performance', { operation: 'viewport-restore', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - viewportRestoreStartedAt), pageNumber: sheet.pageNumber, mode: restored.mode });
     let scrollFrame = 0;
-    stage.onscroll = () => { if (scrollFrame) return; scrollFrame = requestAnimationFrame(() => { scrollFrame = 0; captureDrawingViewport(); }); };
+    stage.onscroll = () => { if (scrollFrame) return; scrollFrame = requestAnimationFrame(() => { scrollFrame = 0; captureDrawingViewport({ contextSource: 'viewport-inference' }); }); };
     stage.onwheel = event => {
       const bounds = stage.getBoundingClientRect();
       const next = drawingWheelZoom({
@@ -1929,15 +1949,22 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [])
       stage.scrollLeft = pan.left - (event.clientX - pan.x);
       stage.scrollTop = pan.top - (event.clientY - pan.y);
     };
-    const stopPan = event => { if (!pan || event?.pointerId !== undefined && pan.pointerId !== event.pointerId) return; pan = null; stage.classList.remove('is-panning'); captureDrawingViewport(); };
+    const stopPan = event => { if (!pan || event?.pointerId !== undefined && pan.pointerId !== event.pointerId) return; pan = null; stage.classList.remove('is-panning'); captureDrawingViewport({ contextSource: 'viewport-inference' }); };
     stage.onpointerup = stopPan;
     stage.onpointercancel = stopPan;
     stage.onclick = event => {
       if (event.target !== canvas) return;
       const bounds = canvas.getBoundingClientRect();
       const point = screenToNormalizedPoint({ clientX: event.clientX, clientY: event.clientY, bounds, contentWidth: bounds.width, contentHeight: bounds.height, rotation: nextIdentity.rotation });
+      if (drawingRegionSelectionMode) {
+        drawingRegionSelectionMode = false; selectedDrawingObject = null; drawingObjectChoices = [];
+        const selectedRegion = { x: Math.max(0, Math.min(.98, point.x - .01)), y: Math.max(0, Math.min(.98, point.y - .01)), width: .02, height: .02 };
+        drawingTarget = createDrawingTarget({ ...drawingTarget, region: selectedRegion });
+        drawingViewportContextService.selectRegion({ projectId: drawingTarget.projectId, documentId: drawingTarget.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, zoom: drawingZoom, rotation: drawingRotation, activeTradeChannel: drawingTradeContext.current().key }, selectedRegion);
+        void renderDrawingWorkspace(experience === 'mission-control' ? 'mission-control' : 'professional'); return;
+      }
       const result = selectDrawingObject(activeDrawingObjects, point);
-      if (result.status === 'selected') { selectedDrawingObject = result.object; drawingObjectChoices = []; }
+      if (result.status === 'selected') { selectedDrawingObject = result.object; drawingObjectChoices = []; drawingViewportContextService.update({ projectId: drawingTarget.projectId, documentId: drawingTarget.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, zoom: drawingZoom, rotation: drawingRotation, selectedRegion: result.object.region, selectedRoomId: result.object.type === 'room' ? result.object.roomId : null, selectedObjectId: result.object.objectId, activeTradeChannel: drawingTradeContext.current().key, source: result.object.type === 'room' ? 'room-selection' : 'object-selection' }, { immediate: true }); }
       else if (result.status === 'ambiguous') { selectedDrawingObject = null; drawingObjectChoices = result.choices; }
       else drawingObjectChoices = [];
       void renderDrawingWorkspace(experience === 'mission-control' ? 'mission-control' : 'professional');
@@ -2036,6 +2063,80 @@ function drawingContextMarkup(context, selectedObject = null, choices = [], spec
   </div>`;
 }
 
+function relationshipGroupsMarkup(groups, sourceEntityId = '') {
+  const render = (title, items, empty, actionKind = '') => `<section><h3>${title}</h3>${items?.length ? `<ol>${items.map(item => {
+    const entity = item.entity; const relationship = item.relationship;
+    const navigation = actionKind === 'specification' && entity.metadata?.navigationTarget ? `<button data-project-relationship-open="${esc(relationship.relationshipId)}">Open Specification</button>` : actionKind === 'drawing' && entity.metadata?.navigationTarget ? `<button data-project-relationship-open="${esc(relationship.relationshipId)}">Open Drawing</button>` : '';
+    return `<li><strong>${esc(entity.label)}</strong><span>${esc(relationship.verificationState)} · ${esc(relationship.relationshipType)}</span>${navigation}${relationship.verificationState === 'suggested' ? `<button data-project-relationship-confirm="${esc(relationship.relationshipId)}">Confirm Relationship</button><button data-project-relationship-reject="${esc(relationship.relationshipId)}">Reject Suggestion</button>` : ''}${relationship.evidence?.length ? `<details><summary>Review Evidence</summary><ul>${relationship.evidence.map(evidence => `<li>${esc(evidence.sourceText || evidence.confidenceReason || evidence.evidenceType)}</li>`).join('')}</ul></details>` : ''}</li>`;
+  }).join('')}</ol>` : `<p>${esc(empty)}</p>`}</section>`;
+  return `<div class="mc-project-relationship-context" data-project-relationship-source="${esc(sourceEntityId)}">
+    <h3>Project Relationships</h3>
+    ${render('Confirmed Specifications', groups?.confirmedSpecifications, 'No confirmed specification relationships.', 'specification')}
+    ${render('Suggested Specifications', groups?.suggestedSpecifications, 'No suggested specification relationships.', 'specification')}
+    ${render('Related Drawings', groups?.relatedDrawings, 'No related drawings.', 'drawing')}
+    ${render('Rooms', groups?.rooms, 'No related rooms.')}${render('Equipment', groups?.equipment, 'No related equipment.')}
+    ${render('Inspections', groups?.inspections, 'No related inspections.')}${render('Photos', groups?.photos, 'No related photos.')}
+    ${render('Issues', groups?.issues, 'No related issues.')}${render('Risks', groups?.risks, 'No related risks.')}
+    ${render('RFIs', groups?.rfis, 'No related RFIs.')}${render('Submittals', groups?.submittals, 'No related submittals.')}
+    ${render('Shutdowns', groups?.shutdowns, 'No related shutdowns.')}${render('Commissioning', groups?.commissioning, 'No related commissioning records.')}
+    ${render('History', groups?.history, 'No relationship history records.')}
+    ${groups?.providerErrors?.length ? '<p>Some relationship providers are unavailable. Available relationships remain shown.</p>' : ''}
+    ${sourceEntityId ? '<button class="subtle" data-project-relationship-link>Link Related Record</button>' : ''}
+  </div>`;
+}
+
+function drawingRequirementsMarkup({ sheet, viewportContext, trade, visibleRooms = [], selectedObject, result } = {}) {
+  const requirementCards = items => items?.length ? `<ol>${items.map(item => `<li><strong>${esc(item.sectionNumber)} — ${esc(item.sectionTitle)}</strong><span>${esc(item.applicabilityScope)} · ${esc(item.status)}</span><p>${esc(item.reason)}</p><button data-requirement-open="${esc(item.specificationDocumentId)}" data-requirement-section="${esc(item.sectionNumber)}">Open Specification</button>${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm Link</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject Suggestion</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm Link</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject Suggestion</button>` : ''}<details><summary>Review Evidence</summary><p>${esc(item.evidenceText)}</p><small>${esc(item.evidenceType)} · ${Math.round(item.confidence * 100)}%</small></details></li>`).join('')}</ol>` : '<p>No supported requirements in this context.</p>';
+  const field = Object.entries(result?.fieldRequirements || {}).filter(([, items]) => items.length);
+  return `<div class="mc-drawing-requirements" aria-label="Drawing-centered requirements">
+    <section><h3>Current Context</h3><dl><div><dt>Building</dt><dd>${esc(sheet?.building || 'Unavailable')}</dd></div><div><dt>Sheet</dt><dd>${esc(sheet?.sheetNumber || `Page ${sheet?.pageNumber || ''}`)}</dd></div><div><dt>Room or region</dt><dd>${viewportContext?.selectedRoomId ? esc(viewportContext.selectedRoomId) : viewportContext?.selectedRegion ? 'Selected drawing region' : 'Page context'}</dd></div><div><dt>Selected object</dt><dd>${esc(selectedObject?.label || 'None')}</dd></div><div><dt>Active trade</dt><dd>${esc(trade?.label || 'All Trades')} · ${esc(trade?.status || 'default')}</dd></div><div><dt>Context confidence</dt><dd>${selectedObject?.verificationState === 'confirmed' || viewportContext?.selectedRoomId ? 'Confirmed selection' : viewportContext?.selectedRegion ? 'Selected region candidate' : 'Page context'}</dd></div></dl>
+      <label>Trade channel<select data-drawing-trade>${DRAWING_TRADE_CHANNELS.map(item => `<option value="${esc(item.key)}" ${item.key === trade?.key ? 'selected' : ''}>${esc(item.label)}</option>`).join('')}</select></label>
+      ${visibleRooms.length ? `<p>${esc(visibleRooms[0].label || visibleRooms[0].roomNumber)} is visible in the current view.</p><button data-drawing-use-visible-room="${esc(visibleRooms[0].objectId)}">Use Visible Room</button>` : ''}
+      <button class="subtle" data-drawing-select-region>${drawingRegionSelectionMode ? 'Click the drawing to place region' : 'Select Region'}</button>${viewportContext?.selectedRegion ? '<button class="subtle" data-drawing-clear-region>Clear Region</button>' : ''}<button class="subtle" data-requirement-return>Return to Drawing View</button>
+    </section>
+    <section><h3>Governing Drawings</h3>${result?.governingDrawings?.length ? `<ol>${result.governingDrawings.map(item => `<li><strong>${esc(item.entity.label)}</strong><span>${esc(item.reason)}</span>${item.entity.metadata?.navigationTarget ? `<button data-requirement-open-drawing="${esc(item.entity.entityId)}">Open Drawing</button>` : ''}</li>`).join('')}</ol>` : '<p>No related governing drawings.</p>'}</section>
+    <section><h3>Applicable Specifications — Confirmed</h3>${requirementCards(result?.confirmedSpecifications)}</section>
+    <section><h3>Applicable Specifications — Suggested</h3>${requirementCards(result?.suggestedSpecifications)}</section>
+    <section><h3>Field Requirements</h3>${field.length ? `<ul>${field.map(([key, items]) => `<li><strong>${esc(key)}</strong><span>${fmt(items.length)} exact indexed requirement${items.length === 1 ? '' : 's'}</span></li>`).join('')}</ul>` : '<p>No linked field-requirement articles.</p>'}</section>
+    <section><h3>Project-Wide Requirements</h3>${requirementCards(result?.projectWideRequirements)}</section>
+    ${result?.warnings?.length ? `<section><h3>Context Limitations</h3><ul>${result.warnings.map(item => `<li>${esc(item)}</li>`).join('')}</ul></section>` : ''}
+  </div>`;
+}
+
+function synchronizeActiveDrawingRelationships({ projectId, document, analysis, sheet, objects = [], specificationLinks = [] } = {}) {
+  if (!projectId || !document?.id || !sheet?.pageId) return { sourceEntityId: '', groups: relationshipContextGroups(projectRelationshipEngine, '') };
+  const projectEntityId = `project:${projectId}`;
+  const documentEntityId = `document:${document.id}`;
+  const drawingSetEntityId = `drawing-set:${analysis?.drawingSetId || document.id}`;
+  const pageEntityId = `drawing-page:${sheet.pageId}`;
+  projectRelationshipEngine.registerEntities([
+    { entityId: projectEntityId, projectId, entityType: 'project', label: state().projects.find(item => item.id === projectId)?.name || projectId, verificationState: 'confirmed', origin: 'system' },
+    { entityId: documentEntityId, projectId, entityType: 'document', sourceDocumentId: document.id, label: document.title || document.name || document.id, verificationState: 'confirmed', origin: 'imported', metadata: { documentType: 'drawing-set' } },
+    { entityId: drawingSetEntityId, projectId, entityType: 'drawing-set', sourceDocumentId: document.id, label: document.title || document.name || analysis?.drawingSetId, verificationState: 'confirmed', origin: 'imported' },
+    { entityId: pageEntityId, projectId, entityType: 'drawing-page', sourceDocumentId: document.id, sourcePageId: sheet.pageId, normalizedKey: sheet.normalizedSheetNumber || sheet.sheetNumber, label: sheet.sheetNumber ? `${sheet.sheetNumber} — ${sheet.sheetTitle || 'Title unavailable'}` : `Page ${sheet.pageNumber}`, verificationState: sheet.identityStatus === 'authoritative' ? 'confirmed' : 'suggested', origin: sheet.identityStatus === 'manual' ? 'manual' : 'parser', metadata: { navigationTarget: createDrawingTarget({ projectId, documentId: document.id, drawingSetId: analysis?.drawingSetId, drawingId: sheet.drawingId, sheetId: sheet.sheetId, pageId: sheet.pageId, pageNumber: sheet.pageNumber }) } },
+    ...objects.map(object => ({ entityId: `drawing-object:${object.objectId}`, projectId, entityType: object.type === 'room' ? 'room' : object.type === 'equipment-tag' ? 'equipment' : 'drawing-object', sourceDocumentId: document.id, sourcePageId: sheet.pageId, sourceObjectId: object.objectId, normalizedKey: object.tag || object.label, label: object.label, verificationState: object.verificationState === 'confirmed' ? 'confirmed' : object.verificationState === 'rejected' ? 'rejected' : 'suggested', origin: object.manualDecision ? 'manual' : 'parser', metadata: { region: object.region, objectType: object.type, subtype: object.subtype } }))
+  ]);
+  const importedLink = (sourceEntityId, targetEntityId, relationshipType) => projectRelationshipEngine.registerRelationship({ projectId, sourceEntityId, targetEntityId, relationshipType, verificationState: 'confirmed', origin: 'imported' });
+  importedLink(documentEntityId, projectEntityId, 'belongs-to');
+  importedLink(drawingSetEntityId, documentEntityId, 'belongs-to');
+  importedLink(drawingSetEntityId, pageEntityId, 'contains');
+  const objectEntityIds = new Map();
+  for (const object of objects) {
+    const objectEntityId = `drawing-object:${object.objectId}`;
+    objectEntityIds.set(object.objectId, objectEntityId);
+    projectRelationshipEngine.registerRelationship({ projectId, sourceEntityId: pageEntityId, targetEntityId: objectEntityId, relationshipType: 'contains', verificationState: object.verificationState === 'confirmed' ? 'confirmed' : 'suggested', origin: object.manualDecision ? 'manual' : 'parser', sourceDocumentId: document.id, sourcePageId: sheet.pageId, sourceObjectId: object.objectId,
+      evidence: object.manualDecision ? [] : [{ evidenceType: 'drawing-observation', sourceText: object.evidenceText, sourceObservationId: object.sourceObservationIds?.[0], graphicalRegion: object.region, sourceDocumentId: document.id, sourcePageId: sheet.pageId, confidenceReason: object.acceptanceReason || 'Deterministic drawing-object evidence.' }] });
+  }
+  for (const link of specificationLinks) {
+    const section = specificationIndex.get(link.specificationDocumentId, link.sectionNumber);
+    if (!section || section.projectId !== projectId) continue;
+    projectRelationshipEngine.registerEntity({ entityId: `specification-section:${section.documentId}:${section.normalizedSectionNumber}`, projectId, entityType: 'specification-section', sourceDocumentId: section.documentId, normalizedKey: section.normalizedSectionNumber, label: `${section.sectionNumber} — ${section.sectionTitle}`, verificationState: 'confirmed', origin: 'imported', metadata: { navigationTarget: drawingSpecificationLinks.openTarget(link), startPdfPage: section.startPdfPage, endPdfPage: section.endPdfPage } });
+  }
+  adaptDrawingSpecificationLinks(projectRelationshipEngine, specificationLinks, { pageEntityId, objectEntityIds });
+  const sourceEntityId = selectedDrawingObject ? objectEntityIds.get(selectedDrawingObject.objectId) : pageEntityId;
+  return { sourceEntityId, groups: relationshipContextGroups(projectRelationshipEngine, sourceEntityId) };
+}
+
 function drawingRecoveryMarkup(record = {}) {
   const projectName = state().projects.find(item => item.id === record.owningProjectId)?.name || record.owningProjectId || 'Unavailable';
   const activeName = state().projects.find(item => item.id === state().activeProject)?.name || state().activeProject || 'Unavailable';
@@ -2053,6 +2154,11 @@ function drawingRecoveryMarkup(record = {}) {
 }
 
 async function renderDrawingWorkspace(shell = 'professional') {
+  const providers = await loadDrawingWorkspaceProviders({ loadSections: () => engine.sections(), onFailure: failure => logger.warning('Drawing workspace provider unavailable', failure) });
+  return renderDrawingWorkspaceWithProviders(shell, providers);
+}
+
+async function renderDrawingWorkspaceWithProviders(shell = 'professional', { sections, warnings: providerWarnings = [] } = {}) {
   const workspaceRenderRequest = ++drawingWorkspaceRenderRequest;
   const host = shell === 'mission-control' ? ($('#missionInlineDrawingViewer') || $('#missionDrawingViewer')) : $('#drawingInspector');
   if (!host) return;
@@ -2155,12 +2261,20 @@ async function renderDrawingWorkspace(shell = 'professional') {
   if (specificationDocument) specificationIndex.index({ document: { ...specificationDocument, projectId: specificationDocument.projectId || state().activeProject }, sourceSections: sections.filter(item => item.documentId === specificationDocument.id) });
   if (selectedDrawingObject && specificationDocument) drawingSpecificationLinks.suggestForObject(selectedDrawingObject, { specificationDocumentId: specificationDocument.id });
   const currentSpecificationLinks = sheet ? drawingSpecificationLinks.forPage(sheet.pageId, selectedDrawingObject?.objectId) : [];
+  const activeRelationshipContext = synchronizeActiveDrawingRelationships({ projectId: analysis?.projectId || selected.projectId || state().activeProject, document: selected, analysis, sheet, objects: activeDrawingObjects, specificationLinks: currentSpecificationLinks });
   drawingWorkspace.setPages((analysis?.sheets || []).map(item => ({ ...item, documentId: item.documentId || selected.id, drawingSetId: item.drawingSetId || analysis?.drawingSetId, projectId: item.projectId || analysis?.projectId, pdfPageNumber: item.pdfPageNumber || item.pageNumber })));
   const pageContext = drawingWorkspace.getContext(sheet ? { ...sheet, documentId: sheet.documentId || selected.id, drawingSetId: sheet.drawingSetId || analysis?.drawingSetId, projectId: sheet.projectId || analysis?.projectId, pdfPageNumber: sheet.pdfPageNumber || sheet.pageNumber } : drawingTarget?.pageNumber || 1);
   if (pageContext) pageContext.rooms = exactRooms.map(item => ({ id: item.roomId, label: `Room ${item.roomNumber}`, verificationState: item.verificationState, region: item.region }));
   if (sheet) logger.debug('Drawing viewer metadata source', { documentId: selected.id, pageId: sheet.pageId || '', pageNumber: sheet.pageNumber, identityState: sheet.identityStatus || 'fallback' });
   if (sheet) drawingViewerEngine.openDocument(selected.id, Math.max(sheet.pageNumber, ...(analysis?.sheets || []).map(item => Number(item.pageNumber) || 0)), sheet.pageNumber);
   const viewport = sheet ? { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) } : defaultDrawingViewport();
+  const activeTrade = drawingTradeContext.current({ discipline: sheet?.discipline, objectType: selectedDrawingObject?.subtype || selectedDrawingObject?.type, title: sheet?.sheetTitle });
+  let activeViewportContext = sheet ? drawingViewportContextService.get(selected.id, sheet.pageId) : null;
+  if (sheet && !activeViewportContext) activeViewportContext = drawingViewportContextService.update({ projectId: analysis?.projectId || selected.projectId || state().activeProject, documentId: selected.id, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, bounds: { x: 0, y: 0, width: 1, height: 1 }, zoom: viewport.zoom, rotation: viewport.rotation, selectedRegion: effectiveRegion, selectedRoomId: selectedDrawingObject?.type === 'room' ? selectedDrawingObject.roomId : null, selectedObjectId: selectedDrawingObject?.objectId || null, activeTradeChannel: activeTrade.key, source: selectedDrawingObject ? 'object-selection' : effectiveRegion ? 'manual-selection' : 'page-context' }, { immediate: true });
+  else if (sheet && activeViewportContext && (activeViewportContext.selectedObjectId !== (selectedDrawingObject?.objectId || null) || activeViewportContext.activeTradeChannel !== activeTrade.key)) activeViewportContext = drawingViewportContextService.update({ ...activeViewportContext, selectedObjectId: selectedDrawingObject?.objectId || null, selectedRoomId: selectedDrawingObject?.type === 'room' ? selectedDrawingObject.roomId : null, activeTradeChannel: activeTrade.key, source: selectedDrawingObject ? (selectedDrawingObject.type === 'room' ? 'room-selection' : 'object-selection') : activeViewportContext.selectedRegion ? 'manual-selection' : 'page-context' }, { immediate: true });
+  const visibleRooms = activeViewportContext ? drawingViewportContextService.visibleRooms(activeViewportContext, exactRooms) : [];
+  const resolvedRequirements = drawingRequirementsResolver.resolve({ projectId: analysis?.projectId || selected.projectId || state().activeProject, pageEntityId: activeRelationshipContext.sourceEntityId && !selectedDrawingObject ? activeRelationshipContext.sourceEntityId : `drawing-page:${sheet?.pageId || ''}`, selectedObjectEntityId: selectedDrawingObject ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedRoomEntityId: selectedDrawingObject?.type === 'room' ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedObjectId: selectedDrawingObject?.objectId || '', viewportContext: activeViewportContext, tradeChannel: activeTrade, drawingSpecLinks: currentSpecificationLinks, projectWideRequirements: [] });
+  const activeRequirements = { ...resolvedRequirements, warnings: [...(resolvedRequirements.warnings || []), ...providerWarnings] };
   const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
   const returnLabel = shell === 'professional' && returnAction?.kind === 'mission-control' ? 'Return to Chief' : returnAction?.label;
   const focusTarget = drawingFocusTarget({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion });
@@ -2176,7 +2290,7 @@ async function renderDrawingWorkspace(shell = 'professional') {
       <main class="mc-drawing-viewer"><details class="mc-construction-orientation"><summary>Work and selection context</summary><div><strong>${esc(activeWorkPackage?.workSummary?.[0]?.label || sheet?.sheetTitle || 'Select construction evidence')}</strong><span>${sheet?.building ? `Building ${esc(sheet.building)} · ` : ''}${esc(activeWorkPackage?.discipline || sheet?.discipline || 'Unknown')} · ${esc(selectionExplanation)}</span></div></details>
         ${!source ? `<div class="mc-drawing-unavailable"><strong>Original drawing unavailable — reattach PDF to view sheet.</strong><p>Reattach the exact source PDF to inspect the drawing. Indexed project text remains available.</p><label class="mc-drawing-reattach"><input id="mcDrawingReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label></div>` : !sheet ? `<div class="mc-drawing-unavailable"><strong>Drawing page unavailable.</strong><p>The retained PDF does not expose a viewable page.</p></div>` : `<header id="${focusTarget === 'mc-drawing-selected-evidence' ? 'mc-drawing-selected-evidence' : 'mc-drawing-sheet-title'}" class="mc-drawing-sheet-title" tabindex="-1" aria-live="polite" aria-label="${esc(announcementText)}"><div><span>${esc(sheet.sheetNumber || `Page ${sheet.pageNumber}`)}</span><h3>${esc(sheet.sheetTitle || `Page ${sheet.pageNumber}`)}</h3><p>${esc(selectionExplanation)}</p></div><dl><div><dt>Discipline</dt><dd>${esc(sheet.discipline)}</dd></div><div><dt>Type</dt><dd>${esc(sheet.primarySheetType || sheet.sheetTypes[0] || 'Unknown')}</dd></div><div><dt>Position</dt><dd>${analysis.viewerFallback ? 'Page' : 'Sheet'} ${sheet.pageNumber} of ${analysis.sheets.length}</dd></div><div><dt>Identity</dt><dd>${esc(sheet.identityStatus)}</dd></div></dl></header><div class="mc-drawing-toolbar"><div role="group" aria-label="Drawing navigation"><button data-drawing-previous ${navigationIndex <= 0 ? 'disabled' : ''}>Previous</button><button data-drawing-next ${navigationIndex < 0 || navigationIndex >= navigationSheetIds.length - 1 ? 'disabled' : ''}>Next</button><button data-drawing-layout="toggle-finder">${drawingWorkspacePanels.finderHidden ? 'Show' : 'Hide'} Sheet Finder</button></div><div role="group" aria-label="Drawing view controls"><button data-drawing-fit="page">Fit Page</button><button data-drawing-fit="width">Fit Width</button><button data-drawing-zoom="out">Zoom Out</button><button data-drawing-zoom="in">Zoom In</button><button data-drawing-rotate>Rotate</button><button data-drawing-reset-view>Reset View</button><button data-drawing-layout="${drawingWorkspacePanels.expanded ? 'restore' : 'expand'}">${drawingWorkspacePanels.expanded ? 'Restore Workspace' : 'Expand Drawing'}</button></div><div role="group" aria-label="Construction context actions">${analysis.viewerFallback ? '' : '<button data-drawing-ask>Ask Chief</button><button data-drawing-current-work>Add to Current Work</button><button data-drawing-inspection>Create Inspection</button>'}<button data-drawing-edit-metadata>Edit Page Metadata</button><button class="subtle" data-drawing-source>Open Source Details</button><button data-drawing-layout="toggle-evidence">${drawingWorkspacePanels.evidenceHidden ? 'Show' : 'Hide'} Construction Evidence</button></div><output aria-label="Current drawing view">${Number.isFinite(drawingZoom) ? Math.round(drawingZoom * 100) : 'Fit'}% · ${drawingRotation}°</output></div>${analysis.viewerFallback && !analysis.metadataAvailable ? '' : `<fieldset class="mc-drawing-overlay-controls"><legend>Drawing overlays</legend>${Object.entries({ rooms: 'Room Labels', confirmed: 'Confirmed Objects', candidates: 'Candidate Objects', equipment: 'Equipment Tags', keyedNotes: 'Keyed Notes', callouts: 'Callouts', scheduleLinks: 'Schedule Links', warnings: 'Warnings' }).map(([key,label]) => `<label><input type="checkbox" data-drawing-overlay="${key}" ${viewport.overlays?.[key] === false ? '' : 'checked'}>${label}</label>`).join('')}</fieldset>`}<div id="mcDrawingStage" class="mc-drawing-stage"><canvas id="mcDrawingCanvas" aria-label="${esc(sheet.sheetNumber || `PDF page ${sheet.pageNumber}`)} ${esc(sheet.sheetTitle || 'drawing')}"></canvas><div class="mc-drawing-overlay-layer" aria-label="Drawing evidence overlays"></div></div>${drawingRotation || sheet.rotation ? '<p class="mc-drawing-note">Location highlights are synchronized with the rotated drawing view.</p>' : ''}`}
       </main>
-      <aside class="mc-drawing-evidence" aria-label="Construction Evidence">${drawingContextMarkup(pageContext, selectedDrawingObject, drawingObjectChoices, currentSpecificationLinks)}${analysis.viewerFallback && !analysis.metadataAvailable ? '<h3>Construction Evidence</h3><p>Drawing analysis is unavailable. Manual PDF page viewing remains available.</p>' : `${sheetAnalysisMarkup({ shell, analysis, sheet, observation, groups: observationGroups, warnings: warningGroups })}${sheetLegends.length ? `<section><h4>Legend entries</h4><p>${fmt(sheetLegends.reduce((sum,item)=>sum+item.entries.length,0))} structured candidate entries. Legend graphics remain authoritative.</p></section>` : ''}${sheetSchedules.length ? `<section><h4>Schedules</h4><p>${fmt(sheetSchedules.reduce((sum,item)=>sum+item.rows.length,0))} structured candidate rows with source regions.</p></section>` : ''}${sheetKeyedNotes.length ? `<section><h4>Keyed notes</h4><p>${fmt(sheetKeyedNotes.length)} exact keyed-note link${sheetKeyedNotes.length === 1 ? '' : 's'}.</p></section>` : ''}${sheetOccurrences.length ? `<section><h4>Plan objects</h4><p>${fmt(sheetOccurrences.length)} candidate occurrence${sheetOccurrences.length === 1 ? '' : 's'}; confirmation is required before a definitive finding.</p><ol>${sheetOccurrences.slice(0,30).map(item => `<li><button data-drawing-occurrence="${esc(item.occurrenceId)}"><strong>${item.verification?.status === 'Confirmed' ? 'Confirmed plan object' : 'Candidate occurrence'}</strong><span>${esc(item.verification?.status || 'Unreviewed')}</span><em>${item.region ? 'Show on Plan' : 'Location not verified'}</em></button>${shell === 'professional' ? `<div><button data-drawing-verify-occurrence="Confirmed" data-occurrence-id="${esc(item.occurrenceId)}">Confirm</button><button data-drawing-verify-occurrence="Uncertain" data-occurrence-id="${esc(item.occurrenceId)}">Uncertain</button><button data-drawing-verify-occurrence="Rejected" data-occurrence-id="${esc(item.occurrenceId)}">Reject</button></div>` : ''}</li>`).join('')}</ol></section>` : ''}`}</aside>
+      <aside class="mc-drawing-evidence" aria-label="Construction Evidence">${drawingRequirementsMarkup({ sheet, viewportContext: activeViewportContext, trade: activeTrade, visibleRooms, selectedObject: selectedDrawingObject, result: activeRequirements })}${drawingContextMarkup(pageContext, selectedDrawingObject, drawingObjectChoices, currentSpecificationLinks)}${relationshipGroupsMarkup(activeRelationshipContext.groups, activeRelationshipContext.sourceEntityId)}${analysis.viewerFallback && !analysis.metadataAvailable ? '<h3>Construction Evidence</h3><p>Drawing analysis is unavailable. Manual PDF page viewing remains available.</p>' : `${sheetAnalysisMarkup({ shell, analysis, sheet, observation, groups: observationGroups, warnings: warningGroups })}${sheetLegends.length ? `<section><h4>Legend entries</h4><p>${fmt(sheetLegends.reduce((sum,item)=>sum+item.entries.length,0))} structured candidate entries. Legend graphics remain authoritative.</p></section>` : ''}${sheetSchedules.length ? `<section><h4>Schedules</h4><p>${fmt(sheetSchedules.reduce((sum,item)=>sum+item.rows.length,0))} structured candidate rows with source regions.</p></section>` : ''}${sheetKeyedNotes.length ? `<section><h4>Keyed notes</h4><p>${fmt(sheetKeyedNotes.length)} exact keyed-note link${sheetKeyedNotes.length === 1 ? '' : 's'}.</p></section>` : ''}${sheetOccurrences.length ? `<section><h4>Plan objects</h4><p>${fmt(sheetOccurrences.length)} candidate occurrence${sheetOccurrences.length === 1 ? '' : 's'}; confirmation is required before a definitive finding.</p><ol>${sheetOccurrences.slice(0,30).map(item => `<li><button data-drawing-occurrence="${esc(item.occurrenceId)}"><strong>${item.verification?.status === 'Confirmed' ? 'Confirmed plan object' : 'Candidate occurrence'}</strong><span>${esc(item.verification?.status || 'Unreviewed')}</span><em>${item.region ? 'Show on Plan' : 'Location not verified'}</em></button>${shell === 'professional' ? `<div><button data-drawing-verify-occurrence="Confirmed" data-occurrence-id="${esc(item.occurrenceId)}">Confirm</button><button data-drawing-verify-occurrence="Uncertain" data-occurrence-id="${esc(item.occurrenceId)}">Uncertain</button><button data-drawing-verify-occurrence="Rejected" data-occurrence-id="${esc(item.occurrenceId)}">Reject</button></div>` : ''}</li>`).join('')}</ol></section>` : ''}`}</aside>
     </div>${drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list" aria-label="Unavailable drawing lifecycle records"><h2>Drawing records requiring attention</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : ''}`;
   const placeholderCanvas = host.querySelector('#mcDrawingCanvas');
   const preserveCanvas = Boolean(preservedCanvas && placeholderCanvas && preservedCanvas.dataset.drawingDocument === selected.id);
@@ -2612,6 +2726,12 @@ app.addEventListener('change', async event => {
     captureDrawingViewport({ overlays: { ...current.overlays, [layer]: event.target.checked } });
     $$(`[data-overlay-layer="${layer}"]`).forEach(item => { item.hidden = !event.target.checked; });
   }
+  if (event.target.hasAttribute('data-drawing-trade')) {
+    drawingTradeContext.select(event.target.value);
+    const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber));
+    if (sheet) drawingViewportContextService.update({ projectId: drawingTarget?.projectId || activeDrawingViewerAnalysis?.projectId, documentId: drawingTarget?.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, activeTradeChannel: event.target.value, source: selectedDrawingObject ? 'object-selection' : drawingTarget?.region ? 'manual-selection' : 'page-context' }, { immediate: true });
+    await renderDrawingWorkspace(shell);
+  }
   if (event.target.id === 'mcDrawingReattach' && event.target.files?.[0]) {
     const documentId = drawingTarget?.documentId || (await engine.documents()).find(isPdfDocument)?.id;
     try {
@@ -2633,9 +2753,67 @@ app.addEventListener('click', async event => {
   const persistedAnalysis = drawingTarget?.documentId ? await engine.drawingAnalysis(drawingTarget.documentId) : null;
   if (pageSelectionRequest && pageSelectionRequest !== drawingPageSelectionRequest) return;
   const analysis = activeDrawingViewerAnalysis?.documentId === drawingTarget?.documentId ? activeDrawingViewerAnalysis : persistedAnalysis;
+  if (button.dataset.projectRelationshipConfirm || button.dataset.projectRelationshipReject) {
+    const relationshipId = button.dataset.projectRelationshipConfirm || button.dataset.projectRelationshipReject;
+    if (button.dataset.projectRelationshipConfirm) projectRelationshipEngine.confirmRelationship(relationshipId, { origin: 'manual', source: 'drawing-workspace' });
+    else projectRelationshipEngine.rejectRelationship(relationshipId, { origin: 'manual', source: 'drawing-workspace' });
+    drawingRequirementsResolver.invalidate(); await renderDrawingWorkspace(shell); return;
+  }
+  if (button.dataset.projectRelationshipOpen) {
+    const relationship = projectRelationshipEngine.getRelationships('', { projectId: state().activeProject, includeRejected: false, limit: 500 }).find(item => item.relationshipId === button.dataset.projectRelationshipOpen)
+      || projectRelationshipEngine.getRelationships(button.closest('[data-project-relationship-source]')?.dataset.projectRelationshipSource || '', { includeRejected: false, limit: 500 }).find(item => item.relationshipId === button.dataset.projectRelationshipOpen);
+    const relatedId = relationship ? (relationship.sourceEntityId === button.closest('[data-project-relationship-source]')?.dataset.projectRelationshipSource ? relationship.targetEntityId : relationship.sourceEntityId) : '';
+    const entity = projectRelationshipEngine.getEntity(relatedId);
+    const target = entity?.metadata?.navigationTarget;
+    if (target?.destination === 'knowledge') await openProfessionalDestination(target);
+    else if (entity?.entityType === 'drawing-page' && target) { drawingWorkspace.open(target); drawingTarget = createDrawingTarget(target); await renderDrawingWorkspace(shell); }
+    return;
+  }
+  if (button.hasAttribute('data-project-relationship-link')) {
+    const sourceEntityId = button.closest('[data-project-relationship-source]')?.dataset.projectRelationshipSource || '';
+    const sourceEntity = projectRelationshipEngine.getEntity(sourceEntityId);
+    if (!sourceEntity) return;
+    const relationshipType = prompt('Relationship type (for example: related-to, located-in, inspected-by, documented-by):')?.trim();
+    if (!relationshipType) return;
+    const targetType = prompt('Target entity type (for example: specification-section, room, inspection, photo, issue):')?.trim();
+    if (!targetType) return;
+    const query = prompt('Find an existing related record by exact label or identifier:')?.trim();
+    if (!query) return;
+    const candidates = projectRelationshipEngine.entities({ projectId: sourceEntity.projectId, entityTypes: [targetType] }).filter(item => item.entityId === query || item.normalizedKey === query || item.label.toLowerCase().includes(query.toLowerCase()));
+    const targetEntity = candidates.length === 1 ? candidates[0] : candidates.find(item => item.entityId === query || item.normalizedKey === query);
+    if (!targetEntity) { alert(candidates.length ? 'More than one related record matches. Enter its exact identifier.' : 'No existing related record matched.'); return; }
+    const note = prompt('Optional relationship note:') || '';
+    const result = projectRelationshipEngine.registerRelationship({ projectId: sourceEntity.projectId, sourceEntityId, targetEntityId: targetEntity.entityId, relationshipType, verificationState: 'confirmed', origin: 'manual', confidence: 1, metadata: { note, createdBy: 'drawing-workspace-user' } });
+    if (!result) { alert('That relationship could not be created with the selected owned records and relationship type.'); return; }
+    drawingRequirementsResolver.invalidate(); await renderDrawingWorkspace(shell); return;
+  }
+  if (button.hasAttribute('data-drawing-select-region')) { drawingRegionSelectionMode = true; button.textContent = 'Click the drawing to place region'; $('#mcDrawingStage')?.focus({ preventScroll: true }); return; }
+  if (button.hasAttribute('data-drawing-clear-region')) {
+    const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber));
+    drawingTarget = createDrawingTarget({ ...drawingTarget, region: null });
+    if (sheet) drawingViewportContextService.selectRegion({ projectId: drawingTarget?.projectId || activeDrawingViewerAnalysis?.projectId, documentId: drawingTarget?.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, zoom: drawingZoom, rotation: drawingRotation, activeTradeChannel: drawingTradeContext.current().key }, null);
+    await renderDrawingWorkspace(shell); return;
+  }
+  if (button.dataset.drawingUseVisibleRoom) {
+    const room = activeDrawingObjects.find(item => item.objectId === button.dataset.drawingUseVisibleRoom && item.type === 'room' && item.verificationState === 'confirmed');
+    const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber));
+    if (room && sheet && drawingViewportContextService.useRoom({ projectId: drawingTarget?.projectId || activeDrawingViewerAnalysis?.projectId, documentId: drawingTarget?.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, zoom: drawingZoom, rotation: drawingRotation, activeTradeChannel: drawingTradeContext.current().key }, room)) { selectedDrawingObject = room; drawingTarget = createDrawingTarget({ ...drawingTarget, region: room.region, observationId: room.sourceObservationIds?.[0] || '' }); await renderDrawingWorkspace(shell); }
+    return;
+  }
+  if (button.hasAttribute('data-requirement-return')) { $('#mcDrawingStage')?.focus({ preventScroll: true }); return; }
+  if (button.dataset.requirementOpen) {
+    const section = specificationIndex.get(button.dataset.requirementOpen, button.dataset.requirementSection);
+    if (section) await openProfessionalDestination({ view: 'knowledge', destination: 'knowledge', projectId: section.projectId, documentId: section.documentId, sectionId: section.specificationSectionId, pageNumber: section.startPdfPage, origin: 'drawing-requirement' });
+    return;
+  }
+  if (button.dataset.requirementOpenDrawing) {
+    const entity = projectRelationshipEngine.getEntity(button.dataset.requirementOpenDrawing); const target = entity?.metadata?.navigationTarget;
+    if (target) { drawingWorkspace.open(target); drawingTarget = createDrawingTarget(target); await renderDrawingWorkspace(shell); }
+    return;
+  }
   if (button.dataset.overlayId) { selectedDrawingObject = activeDrawingObjects.find(item => item.objectId === button.dataset.overlayId) || null; drawingObjectChoices = []; await renderDrawingWorkspace(shell); return; }
   if (button.dataset.drawingSelectObject) { selectedDrawingObject = activeDrawingObjects.find(item => item.objectId === button.dataset.drawingSelectObject) || null; drawingObjectChoices = []; await renderDrawingWorkspace(shell); return; }
-  if (button.hasAttribute('data-drawing-clear-object')) { selectedDrawingObject = null; drawingObjectChoices = []; await renderDrawingWorkspace(shell); return; }
+  if (button.hasAttribute('data-drawing-clear-object')) { selectedDrawingObject = null; drawingObjectChoices = []; const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber)); if (sheet) drawingViewportContextService.update({ projectId: drawingTarget?.projectId || activeDrawingViewerAnalysis?.projectId, documentId: drawingTarget?.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, selectedObjectId: null, selectedRoomId: null, activeTradeChannel: drawingTradeContext.current().key, source: drawingTarget?.region ? 'manual-selection' : 'page-context' }, { immediate: true }); await renderDrawingWorkspace(shell); return; }
   if (button.hasAttribute('data-drawing-object-location') && validNormalizedRegion(selectedDrawingObject?.region)) {
     const stage = $('#mcDrawingStage');
     const selectedSheet = activeDrawingViewerAnalysis?.sheets.find(item => item.pageNumber === drawingTarget?.pageNumber);
@@ -2643,11 +2821,11 @@ app.addEventListener('click', async event => {
     const region = selectedDrawingObject.region;
     const targetZoom = Math.max(.35, Math.min(3, Math.min((stage?.clientWidth || 1) / Math.max(1, (selectedSheet?.pageWidth || 1) * region.width * 1.8), (stage?.clientHeight || 1) / Math.max(1, (selectedSheet?.pageHeight || 1) * region.height * 1.8))));
     drawingZoom = targetZoom;
-    captureDrawingViewport({ mode: 'custom', zoom: targetZoom, scrollLeft: Math.max(0, region.x * (selectedSheet?.pageWidth || 0) * targetZoom - (stage?.clientWidth || 0) / 2), scrollTop: Math.max(0, region.y * (selectedSheet?.pageHeight || 0) * targetZoom - (stage?.clientHeight || 0) / 2), highlightedRegion: region });
+    captureDrawingViewport({ mode: 'custom', zoom: targetZoom, scrollLeft: Math.max(0, region.x * (selectedSheet?.pageWidth || 0) * targetZoom - (stage?.clientWidth || 0) / 2), scrollTop: Math.max(0, region.y * (selectedSheet?.pageHeight || 0) * targetZoom - (stage?.clientHeight || 0) / 2), highlightedRegion: region, contextSource: selectedDrawingObject.type === 'room' ? 'room-selection' : 'object-selection' });
     await renderDrawingWorkspace(shell); return;
   }
   if (button.hasAttribute('data-drawing-return-location') && drawingLocationReturnViewport) { drawingZoom = drawingLocationReturnViewport.zoom; drawingRotation = drawingLocationReturnViewport.rotation; drawingViewerEngine.restoreViewport(drawingTarget?.pageNumber, drawingLocationReturnViewport); drawingLocationReturnViewport = null; await renderDrawingWorkspace(shell); return; }
-  if (button.dataset.drawingConfirmSpec || button.dataset.drawingRejectSpec) { const linkId = button.dataset.drawingConfirmSpec || button.dataset.drawingRejectSpec; if (button.dataset.drawingConfirmSpec) drawingSpecificationLinks.confirm(linkId); else drawingSpecificationLinks.reject(linkId); await renderDrawingWorkspace(shell); return; }
+  if (button.dataset.drawingConfirmSpec || button.dataset.drawingRejectSpec) { const linkId = button.dataset.drawingConfirmSpec || button.dataset.drawingRejectSpec; if (button.dataset.drawingConfirmSpec) drawingSpecificationLinks.confirm(linkId); else drawingSpecificationLinks.reject(linkId); drawingRequirementsResolver.invalidate(); await renderDrawingWorkspace(shell); return; }
   if (button.hasAttribute('data-drawing-link-spec') && selectedDrawingObject) {
     const query = prompt('Enter an exact specification section number or title:')?.trim();
     if (!query) return;
@@ -2656,7 +2834,7 @@ app.addEventListener('click', async event => {
     if (!section) { alert(matches.length ? 'More than one exact specification section matches. Enter the section number.' : 'No indexed specification section matched.'); return; }
     const note = prompt('Optional link note:') || '';
     drawingSpecificationLinks.link({ projectId: state().activeProject, drawingDocumentId: drawingTarget?.documentId, drawingPageId: selectedDrawingObject.pageId, objectId: selectedDrawingObject.objectId, specificationDocumentId: section.documentId, sectionNumber: section.sectionNumber, evidenceSource: 'manual-selection', evidenceText: selectedDrawingObject.evidenceText, confidence: 1, status: 'confirmed', origin: 'manual', note });
-    await renderDrawingWorkspace(shell); return;
+    drawingRequirementsResolver.invalidate(); await renderDrawingWorkspace(shell); return;
   }
   if (button.dataset.drawingOpenSpec) { const pageId = drawingTarget?.pageId || activeDrawingViewerAnalysis?.sheets.find(item => item.pageNumber === drawingTarget?.pageNumber)?.pageId; const link = drawingSpecificationLinks.forPage(pageId).find(item => item.linkId === button.dataset.drawingOpenSpec); const target = drawingSpecificationLinks.openTarget(link); if (target) await openProfessionalDestination(target); return; }
   if (button.dataset.drawingRecoveryAction) {
@@ -9933,7 +10111,8 @@ window.addEventListener(
 );
 
 async function renderDiagnostics() {
-  const data = await runHealthChecks(engine);
+  const [data, storage] = await Promise.all([runHealthChecks(engine), engine.storageDiagnostics()]);
+  storage.relationshipCount = new Set(projectRelationshipEngine.entities({ projectId: state().activeProject, verificationStates: ['confirmed', 'suggested', 'rejected', 'historical'] }).flatMap(entity => projectRelationshipEngine.getRelationships(entity.entityId, { projectId: state().activeProject, includeRejected: true, limit: 500 }).map(item => item.relationshipId))).size;
 
   const healthy = data.checks.filter(check =>
     check.status === 'healthy' ||
@@ -9966,6 +10145,11 @@ async function renderDiagnostics() {
       <span>VERSION</span>
       <strong>2.8.0</strong>
     </article>
+    <article><span>COMPACT STATE</span><strong>${fmt(storage.compactStateBytes)} bytes</strong></article>
+    <article><span>INDEXEDDB RECORDS</span><strong>${fmt(storage.indexedDbDocumentCount)} documents · ${fmt(storage.indexedDbKnowledgeChunkCount)} chunks</strong></article>
+    <article><span>DRAWING / RELATIONSHIPS</span><strong>${fmt(storage.drawingAnalysisCount)} analyses · ${fmt(storage.relationshipCount)} links</strong></article>
+    <article><span>STATE MIGRATION</span><strong>${esc(storage.compactStateMigrationStatus)}</strong></article>
+    ${storage.lastPersistenceFailure ? `<article><span>LAST PERSISTENCE FAILURE</span><strong>${esc(storage.lastPersistenceFailure.reason || storage.lastPersistenceFailure.message || 'Unavailable')}</strong></article>` : ''}
   `;
 
   $('#healthChecks').innerHTML = data.checks
@@ -10066,14 +10250,14 @@ function verifyStartup() {
   );
 }
 
-loadSettings();
-
-if (normalizeStartupExperience(state().settings.startupExperience) === 'mission-control') {
-  if (state().activeProject !== 'general') engine.setProject('general');
-  engine.createConversation();
-}
-
-refresh()
+engine.initialize()
+  .then(() => {
+    loadSettings();
+    if (normalizeStartupExperience(state().settings.startupExperience) === 'mission-control') {
+      if (!engine.activeConversation()) engine.createConversation();
+    }
+    return refresh();
+  })
   .then(() => {
     return switchExperience(state().settings.startupExperience, { force: true, focus: false });
   })
