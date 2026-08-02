@@ -965,6 +965,15 @@ export const engine = {
     return { ok: true, document: structuredClone(updated), sourcePreserved: Boolean(await one('sourceFiles', documentId)), indexedSectionCount: (await all('sections', 'documentId', documentId)).length };
   },
 
+  projectObjectPersistence() {
+    return {
+      loadObjects: async (projectId = state.activeProject) => (await all('stateRecords')).filter(item => item.kind === 'project-object' && (!projectId || item.projectId === projectId)).map(item => structuredClone(item.record)),
+      loadObservations: async (projectId = state.activeProject) => (await all('stateRecords')).filter(item => item.kind === 'project-object-observation' && (!projectId || item.projectId === projectId)).map(item => structuredClone(item.record)),
+      putObject: async record => putMany('stateRecords', [{ id: `project-object:${record.objectId}`, kind: 'project-object', projectId: record.projectId, pageId: record.drawingPageId, objectType: record.objectType, normalizedKey: record.normalizedKey, record: structuredClone(record), updatedAt: record.updatedAt }]),
+      putObservation: async record => putMany('stateRecords', [{ id: `project-object-observation:${record.observationId}`, kind: 'project-object-observation', projectId: record.projectId, pageId: record.pageId, record: structuredClone(record), updatedAt: record.timestamp }])
+    };
+  },
+
   async sourceFile(documentId) {
     const record = await one('sourceFiles', documentId);
     if (record?.projectId !== state.activeProject) return null;

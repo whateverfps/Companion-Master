@@ -39,7 +39,7 @@ export function createDrawingSpecificationLinkService({ index, storage = globalT
     confirm(linkIdValue, note = '') { const current = read().find(item => item.linkId === linkIdValue); return current ? upsert({ ...current, status: 'confirmed', origin: 'manual', note }) : null; },
     reject(linkIdValue, note = '') { const current = read().find(item => item.linkId === linkIdValue); return current ? upsert({ ...current, status: 'rejected', origin: 'manual', note }) : null; },
     remove(linkIdValue) { const records = read(); const current = records.find(item => item.linkId === linkIdValue); if (!current || current.origin !== 'manual') return false; write(records.filter(item => item.linkId !== linkIdValue)); return true; },
-    forPage(pageId, objectId = undefined) { return read().filter(item => item.drawingPageId === text(pageId) && (objectId === undefined || item.objectId === (text(objectId) || null))).map(structuredClone); },
+    forPage(pageId, objectId = undefined) { return read().filter(item => item.drawingPageId === text(pageId) && (objectId === undefined || item.objectId === (text(objectId) || null))).map(item => structuredClone(item)); },
     history(linkIdValue) { return structuredClone(read().find(item => item.linkId === text(linkIdValue))?.history || []); },
     openTarget(link) { const section = index?.get?.(link?.specificationDocumentId, link?.sectionNumber); return section ? { kind: 'source', destination: 'knowledge', projectId: link.projectId, documentId: section.documentId, sectionId: section.specificationSectionId, pageNumber: link.articleReference?.pageNumber || section.startPdfPage, sectionNumber: section.sectionNumber } : null; }
   };
