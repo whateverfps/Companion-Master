@@ -1,7 +1,13 @@
 const list = value => Array.isArray(value) ? value : [];
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 export const CONSTRUCTION_INTELLIGENCE_PANEL_STATE_KEY = 'mission-companion:construction-intelligence-panel:v1';
-export const CONSTRUCTION_INTELLIGENCE_DEFAULT_EXPANDED = Object.freeze(['current', 'specifications', 'field-requirements']);
+export const CONSTRUCTION_INTELLIGENCE_DEFAULT_EXPANDED = Object.freeze(['construction-summary', 'chief-recommendation', 'specifications', 'field-requirements']);
+const FIELD_PHASES = Object.freeze({
+  'Before Installation': ['submittals', 'quality assurance', 'quality', 'examination/preparation', 'products/materials'],
+  Installation: ['execution', 'installation'],
+  'Inspection and Testing': ['testing', 'inspection', 'commissioning'],
+  'Protection and Closeout': ['protection', 'closeout']
+});
 
 export function loadConstructionIntelligencePanelState(storage = globalThis.localStorage) {
   try {
@@ -44,7 +50,9 @@ function specificationRecords(requirements, links, { mode = 'page', objectId = '
       ...item,
       label: `${text(item.sectionNumber)}${text(item.sectionTitle) ? ` — ${text(item.sectionTitle)}` : ''}`,
       status: item.status || 'suggested',
+      displayStatus: item.origin === 'manual' ? 'manual' : item.status || 'suggested',
       evidenceText: text(item.evidenceText || item.reason),
+      evidenceSource: text(item.evidenceSource || item.evidenceType || item.origin),
       canOpen: Boolean(text(item.specificationDocumentId) && text(item.sectionNumber)),
       canShowSource: Boolean(item.startPdfPage || item.sourcePageNumber),
       sourcePageNumber: Number(item.startPdfPage || item.sourcePageNumber) || null,
@@ -63,9 +71,32 @@ function historyRecords(object, history, specificationLinks) {
   return unique(entries, item => `${item.label}:${item.value}:${item.note || ''}`);
 }
 
+function fieldWork(requirements) {
+  const source = requirements?.fieldRequirements || {};
+  return Object.entries(FIELD_PHASES).map(([phase, categories]) => ({
+    phase,
+    items: unique(categories.flatMap(category => list(source[category]).map(item => ({ ...item, category, label: text(item.article?.heading || item.article?.title || item.sectionTitle) }))).filter(item => item.label), item => `${item.requirementId || item.sectionNumber}:${item.article?.id || item.label}`)
+  })).filter(group => group.items.length);
+}
+
+function chiefRecommendation(object, specifications, insights) {
+  const explicit = list(insights)[0];
+  if (explicit?.label) return { text: explicit.label, source: 'verified-project-record' };
+  const confirmed = specifications.find(item => item.status === 'confirmed');
+  if (confirmed) return { text: `${text(object?.label || object?.tag || 'This work item')} is governed by Section ${confirmed.sectionNumber} — ${confirmed.sectionTitle}.`, source: 'confirmed-specification' };
+  const suggested = specifications.find(item => item.status === 'suggested');
+  if (suggested) return { text: `Review whether Section ${suggested.sectionNumber} — ${suggested.sectionTitle} governs ${text(object?.label || object?.tag || 'this work item')}.`, source: 'suggested-specification' };
+  return null;
+}
+
 export function buildConstructionIntelligencePanelModel(input = {}) {
   const sheet = input.sheet || {};
   const object = input.selectedObject || null;
+  const graphRequirements = {
+    confirmedSpecifications: list(input.graphSummary?.requirements?.confirmed).map(item => ({ sectionNumber: text(item.node?.metadata?.sectionNumber || item.node?.normalizedKey), sectionTitle: text(item.node?.title || item.node?.label).replace(/^\S+\s+[—-]\s+/, ''), specificationDocumentId: text(item.node?.sourceDocumentId), status: 'confirmed', applicabilityScope: item.edge?.scope === 'object' ? 'object-specific' : 'page-wide', evidence: item.edge?.evidence, reason: text(item.edge?.evidence?.[0]?.sourceText), objectId: text(item.edge?.sourceObjectId) })),
+    suggestedSpecifications: list(input.graphSummary?.requirements?.suggested).map(item => ({ sectionNumber: text(item.node?.metadata?.sectionNumber || item.node?.normalizedKey), sectionTitle: text(item.node?.title || item.node?.label).replace(/^\S+\s+[—-]\s+/, ''), specificationDocumentId: text(item.node?.sourceDocumentId), status: 'suggested', applicabilityScope: item.edge?.scope === 'object' ? 'object-specific' : 'page-wide', evidence: item.edge?.evidence, reason: text(item.edge?.evidence?.[0]?.sourceText), objectId: text(item.edge?.sourceObjectId) }))
+  };
+  input = { ...input, requirements: { ...input.requirements, confirmedSpecifications: [...list(input.requirements?.confirmedSpecifications), ...graphRequirements.confirmedSpecifications], suggestedSpecifications: [...list(input.requirements?.suggestedSpecifications), ...graphRequirements.suggestedSpecifications] } };
   const intelligenceStatus = ['complete', 'partial', 'unavailable'].includes(input.requirements?.status) ? input.requirements.status : 'complete';
   if (!object) {
     const counts = list(input.pageObjects).filter(item => item.verificationState !== 'rejected').reduce((result, item) => {
@@ -75,6 +106,7 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
     }, {});
     const specifications = specificationRecords(input.requirements, input.specificationLinks, { mode: 'page' });
     const fieldRequirements = unique(Object.entries(input.requirements?.fieldRequirements || {}).flatMap(([category, items]) => list(items).map(item => ({ ...item, category }))), item => `${item.category}:${item.requirementId || item.sectionNumber}:${item.article?.id || ''}`);
+    const pageInsights = relationshipRecords(input.relationshipGroups, ['chiefInsights', 'insights']);
     return {
       mode: 'page',
       status: intelligenceStatus,
@@ -90,7 +122,13 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
       },
       specifications: { confirmed: specifications.filter(item => item.status === 'confirmed'), suggested: specifications.filter(item => item.status === 'suggested') },
       fieldRequirements,
+      fieldWork: fieldWork(input.requirements),
       drawingContent: counts,
+      constructionSummary: {
+        governedWork: unique(specifications.map(item => text(item.sectionTitle)).filter(Boolean), item => item),
+        referencedContent: Object.entries(counts).map(([label, count]) => ({ label, count })),
+        inspectionFocus: fieldWork(input.requirements).filter(group => ['Before Installation', 'Inspection and Testing'].includes(group.phase))
+      },
       projectInformation: {
         inspections: relationshipRecords(input.relationshipGroups, ['inspections']), rfis: relationshipRecords(input.relationshipGroups, ['rfis']), submittals: relationshipRecords(input.relationshipGroups, ['submittals']),
         photos: relationshipRecords(input.relationshipGroups, ['photos']), documents: relationshipRecords(input.relationshipGroups, ['documents', 'reports']), risks: relationshipRecords(input.relationshipGroups, ['risks']),
@@ -98,7 +136,8 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
         progress: relationshipRecords(input.relationshipGroups, ['progress']), pmis: relationshipRecords(input.relationshipGroups, ['pmis'])
       },
       relatedDrawings: relationshipRecords(input.relationshipGroups, ['relatedDrawings']),
-      chiefInsights: relationshipRecords(input.relationshipGroups, ['chiefInsights', 'insights']),
+      chiefInsights: pageInsights,
+      chiefRecommendation: chiefRecommendation(null, specifications, pageInsights),
       projectWideRequirements: list(input.requirements?.projectWideRequirements),
       diagnostics: list(input.developerDiagnostics)
     };
@@ -107,14 +146,19 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
   const groups = input.relationshipGroups || {};
   const specifications = specificationRecords(input.requirements, input.specificationLinks, { mode: 'object', objectId: object.objectId });
   const fields = Object.entries(input.requirements?.fieldRequirements || {}).flatMap(([category, items]) => list(items).map(item => ({ ...item, category })));
+  const objectInsights = relationshipRecords(groups, ['chiefInsights', 'insights', 'recommendations']);
+  const relatedDrawings = relationshipRecords(groups, ['relatedDrawings']);
+  const relatedObjects = relationshipRecords(groups, ['relatedObjects', 'equipment', 'rooms']);
   return {
     mode: 'object',
     status: intelligenceStatus,
     object: {
       name: text(object.label || object.tag), type: text(object.type || object.objectType), objectId: text(object.objectId),
+      location: text(sheet.sheetNumber) || `Page ${Number(sheet.pageNumber) || 1}`,
       building: text(object.buildingId || sheet.building), room: text(object.roomId), trade: text(object.trade), system: text(object.system),
-      confidence: Number(object.confidence) || 0, revision: text(object.revision || object.metadata?.revision), verificationState: text(object.verificationState)
-      , hasLocation: Boolean(object.region || object.graphicalRegion), hasPossibleDuplicates: Boolean(input.hasPossibleDuplicates), hasMergedObjects: Boolean(object.mergedObjectIds?.length), canLinkSpecification: Boolean(input.canLinkSpecification)
+      confidence: Number(object.confidence) || 0, revision: text(object.revision || object.metadata?.revision), verificationState: text(object.verificationState),
+      statusLabel: object.verificationState === 'candidate' ? 'Suggested' : object.verificationState === 'confirmed' ? 'Confirmed' : object.verificationState === 'rejected' ? 'Rejected' : text(object.verificationState || 'Unverified'),
+      hasLocation: Boolean(object.region || object.graphicalRegion), hasPossibleDuplicates: Boolean(input.hasPossibleDuplicates), hasMergedObjects: Boolean(object.mergedObjectIds?.length), canLinkSpecification: Boolean(input.canLinkSpecification)
     },
     specifications: {
       confirmed: specifications.filter(item => item.status === 'confirmed'),
@@ -122,18 +166,23 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
       articles: unique(specifications.map(item => item.article).filter(Boolean), item => item.id || `${item.heading}:${item.pageNumber}`)
     },
     fieldRequirements: unique(fields, item => `${item.category}:${item.requirementId || item.sectionNumber}`),
+    fieldWork: fieldWork(input.requirements),
     pmis: {
       inspections: relationshipRecords(groups, ['inspections']), risks: relationshipRecords(groups, ['risks']), issues: relationshipRecords(groups, ['issues']),
-      rfis: relationshipRecords(groups, ['rfis']), submittals: relationshipRecords(groups, ['submittals']), shutdowns: relationshipRecords(groups, ['shutdowns']), commissioning: relationshipRecords(groups, ['commissioning'])
+      rfis: relationshipRecords(groups, ['rfis']), submittals: relationshipRecords(groups, ['submittals']), shutdowns: relationshipRecords(groups, ['shutdowns']), commissioning: relationshipRecords(groups, ['commissioning']),
+      punchItems: relationshipRecords(groups, ['punchItems', 'deficiencies']), progress: relationshipRecords(groups, ['progress']), questions: relationshipRecords(groups, ['questions']), workPackages: relationshipRecords(groups, ['workPackages'])
     },
     schedule: relationshipRecords(groups, ['scheduleActivities', 'activities']),
     procurement: relationshipRecords(groups, ['procurement', 'procurementItems']),
+    relatedDrawings,
+    relatedObjects,
     documents: {
       photos: relationshipRecords(groups, ['photos']), reports: relationshipRecords(groups, ['reports', 'inspectionReports', 'dailyReports']),
-      notes: relationshipRecords(groups, ['fieldNotes']), correspondence: relationshipRecords(groups, ['correspondence'])
+      notes: relationshipRecords(groups, ['fieldNotes', 'constructionNotes']), correspondence: relationshipRecords(groups, ['correspondence']), existingConditions: relationshipRecords(groups, ['existingConditions']), meetingMinutes: relationshipRecords(groups, ['meetingMinutes'])
     },
     history: historyRecords(object, input.objectHistory, input.specificationLinks),
-    chiefInsights: relationshipRecords(groups, ['chiefInsights', 'insights', 'recommendations']),
+    chiefInsights: objectInsights,
+    chiefRecommendation: chiefRecommendation(object, specifications, objectInsights),
     diagnostics: list(input.developerDiagnostics),
     chiefContext: {
       objectId: text(object.objectId), viewport: input.viewportContext || null, roomId: text(object.roomId) || null, trade: text(input.trade?.key || object.trade),

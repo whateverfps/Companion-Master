@@ -70,7 +70,7 @@ test('object context excludes page-wide specifications and swaps by permanent ob
 
 test('collapsible state uses commercial defaults and persists a bounded UI preference', () => {
   const values = new Map(); const storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) };
-  assert.deepEqual(loadConstructionIntelligencePanelState(storage).expanded, ['current', 'specifications', 'field-requirements']);
+  assert.deepEqual(loadConstructionIntelligencePanelState(storage).expanded, ['construction-summary', 'chief-recommendation', 'specifications', 'field-requirements']);
   saveConstructionIntelligencePanelState(['current', 'history', 'history'], storage);
   assert.deepEqual(loadConstructionIntelligencePanelState(storage).expanded, ['current', 'history']);
 });
@@ -104,4 +104,42 @@ test('panel exposes compact degraded states and drawing paint precedes asynchron
   const render = source.slice(source.indexOf('async function renderDrawingWorkspaceWithProviders'), source.indexOf('async function renderMissionControlDashboard'));
   assert.ok(render.indexOf('await paintDrawingPage') < render.indexOf('drawingRequirementsResolver.resolveLatest'));
   assert.match(render, /workspaceRenderRequest !== drawingWorkspaceRenderRequest/);
+});
+
+test('indexed articles become phased field work without invented checklist text', () => {
+  const requirement = { requirementId: 'paint', specificationDocumentId: 'spec', sectionNumber: '09 91 00', sectionTitle: 'Painting', status: 'confirmed', applicabilityScope: 'object-specific', objectId: 'p1' };
+  const model = buildConstructionIntelligencePanelModel({ sheet, selectedObject: { objectId: 'p1', label: 'Finish P-1', type: 'finish' }, requirements: { confirmedSpecifications: [requirement], fieldRequirements: {
+    submittals: [{ ...requirement, article: { id: 'a1', heading: '1.3 SUBMITTALS' } }],
+    installation: [{ ...requirement, article: { id: 'a2', heading: '3.3 APPLICATION' } }],
+    inspection: [{ ...requirement, article: { id: 'a3', heading: '3.5 FIELD QUALITY CONTROL' } }]
+  } } });
+  assert.deepEqual(model.fieldWork.map(group => group.phase), ['Before Installation', 'Installation', 'Inspection and Testing']);
+  assert.deepEqual(model.fieldWork.flatMap(group => group.items.map(item => item.label)), ['1.3 SUBMITTALS', '3.3 APPLICATION', '3.5 FIELD QUALITY CONTROL']);
+});
+
+test('Chief recommendation uses only explicit insight or governing specification evidence', () => {
+  const requirement = { specificationDocumentId: 'spec', sectionNumber: '09 91 00', sectionTitle: 'Painting', status: 'confirmed', applicabilityScope: 'object-specific', objectId: 'p1' };
+  const governed = buildConstructionIntelligencePanelModel({ sheet, selectedObject: { objectId: 'p1', label: 'Finish P-1' }, requirements: { confirmedSpecifications: [requirement] } });
+  assert.match(governed.chiefRecommendation.text, /Section 09 91 00/);
+  const empty = buildConstructionIntelligencePanelModel({ sheet, selectedObject: { objectId: 'p2', label: 'Unknown work' } });
+  assert.equal(empty.chiefRecommendation, null);
+});
+
+test('project status and related information expose only populated linked records', () => {
+  const linked = (id, label) => ({ entity: { entityId: id, label }, relationship: { relationshipId: `rel-${id}`, verificationState: 'confirmed' } });
+  const model = buildConstructionIntelligencePanelModel({ sheet, selectedObject: { objectId: 'p1', label: 'Finish P-1' }, relationshipGroups: { inspections: [linked('inspection-1', 'Finish inspection')], photos: [linked('photo-1', 'Area photo')], rfis: [], meetingMinutes: [] } });
+  assert.equal(model.pmis.inspections.length, 1); assert.equal(model.pmis.rfis.length, 0);
+  assert.equal(model.documents.photos.length, 1); assert.equal(model.documents.meetingMinutes.length, 0);
+});
+
+test('graph summary supplements panel requirements without duplicating resolver results', () => {
+  const model = buildConstructionIntelligencePanelModel({ sheet: { pageNumber: 1 }, requirements: { confirmedSpecifications: [{ specificationDocumentId: 'spec', sectionNumber: '09 91 00', sectionTitle: 'Painting', status: 'confirmed' }] }, graphSummary: { requirements: { confirmed: [{ node: { sourceDocumentId: 'spec', normalizedKey: '099100', label: '09 91 00 — Painting' }, edge: { scope: 'page', evidence: [] } }], suggested: [] } } });
+  assert.equal(model.specifications.confirmed.length, 1);
+});
+
+test('page overview derives governed work and referenced content from current page data only', () => {
+  const requirement = { specificationDocumentId: 'spec', sectionNumber: '10 14 00', sectionTitle: 'Signage', status: 'suggested', applicabilityScope: 'page-wide' };
+  const model = buildConstructionIntelligencePanelModel({ sheet, pageObjects: [{ objectId: 'sign', type: 'signage', verificationState: 'confirmed' }], requirements: { suggestedSpecifications: [requirement] } });
+  assert.deepEqual(model.constructionSummary.governedWork, ['Signage']);
+  assert.deepEqual(model.constructionSummary.referencedContent, [{ label: 'signage', count: 1 }]);
 });

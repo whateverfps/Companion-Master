@@ -977,6 +977,18 @@ export const engine = {
     };
   },
 
+  constructionGraphPersistence() {
+    const records = async (kind, projectId = state.activeProject) => (await all('stateRecords')).filter(item => item.kind === kind && (!projectId || item.projectId === projectId)).map(item => structuredClone(item.record));
+    return {
+      loadNodes: projectId => records('construction-graph-node', projectId),
+      loadEdges: projectId => records('construction-graph-edge', projectId),
+      loadHistory: async (projectId, recordId = '') => (await records('construction-graph-history', projectId)).filter(item => !recordId || item.recordId === recordId),
+      putNode: async record => putMany('stateRecords', [{ id: `construction-graph-node:${record.projectId}:${record.nodeId}`, kind: 'construction-graph-node', projectId: record.projectId, nodeType: record.nodeType, sourcePageId: record.sourcePageId, record: structuredClone(record), updatedAt: record.updatedAt }]),
+      putEdge: async record => putMany('stateRecords', [{ id: `construction-graph-edge:${record.projectId}:${record.edgeId}`, kind: 'construction-graph-edge', projectId: record.projectId, sourceNodeId: record.sourceNodeId, targetNodeId: record.targetNodeId, edgeType: record.edgeType, record: structuredClone(record), updatedAt: record.updatedAt }]),
+      putHistory: async record => putMany('stateRecords', [{ id: record.historyId, kind: 'construction-graph-history', projectId: record.projectId, recordId: record.recordId, record: structuredClone(record), updatedAt: record.createdAt }])
+    };
+  },
+
   async sourceFile(documentId) {
     const record = await one('sourceFiles', documentId);
     if (record?.projectId !== state.activeProject) return null;
