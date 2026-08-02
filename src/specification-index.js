@@ -5,7 +5,8 @@ const keyFor = (documentId, number) => `${text(documentId)}:${normalizeSpecifica
 
 function articleKind(value) {
   const heading = text(value).toLowerCase();
-  return ['submittal', 'quality assurance', 'testing', 'inspection', 'commissioning', 'closeout', 'material', 'product', 'equipment'].find(kind => heading.includes(kind)) || '';
+  const categories = [['submittals','submittal'], ['quality assurance','quality assurance'], ['testing','test'], ['inspection','inspection'], ['commissioning','commission'], ['closeout','closeout'], ['products/materials','product'], ['products/materials','material'], ['execution','execution'], ['examination/preparation','examin'], ['examination/preparation','prepar'], ['installation','install'], ['protection','protection']];
+  return categories.find(([, needle]) => heading.includes(needle))?.[0] || '';
 }
 
 export function createSpecificationIndex({ storage = globalThis.localStorage, storageKey = 'mission-companion:specification-index:v1' } = {}) {
@@ -24,7 +25,15 @@ export function createSpecificationIndex({ storage = globalThis.localStorage, st
     index({ document = {}, sourceSections = [], tocRows = [], revisionSource = null } = {}) {
       const documentId = text(document.id || document.documentId);
       if (!documentId || !text(document.projectId)) return { ok: false, reason: 'Specification document ownership is unavailable.', sections: [] };
-      const rows = list(tocRows).length ? tocRows : list(sourceSections).filter(item => normalizeSpecificationNumber(item.sectionNumber || item.metadata?.sectionNumber));
+      const authoritativeRows = list(sourceSections).filter(item => item.hierarchyType === 'spec-section');
+      const rows = list(tocRows).length ? tocRows : authoritativeRows.length ? authoritativeRows : list(sourceSections).filter(item => normalizeSpecificationNumber(item.sectionNumber || item.metadata?.sectionNumber));
+      const childrenByParent = new Map();
+      for (const item of list(sourceSections)) if (item.parentId) childrenByParent.set(item.parentId, [...(childrenByParent.get(item.parentId) || []), item]);
+      const descendants = parentId => {
+        const output = []; const queue = [...list(childrenByParent.get(parentId))]; const visited = new Set();
+        while (queue.length && output.length < 200) { const item = queue.shift(); if (!item?.id || visited.has(item.id)) continue; visited.add(item.id); output.push(item); queue.push(...list(childrenByParent.get(item.id))); }
+        return output;
+      };
       const normalized = rows.map((row, index) => {
         const sectionNumber = normalizeSpecificationNumber(row.sectionNumber || row.metadata?.sectionNumber);
         const pageStart = Number(row.pageStart || row.page || row.metadata?.pageRange?.start) || null;
@@ -35,9 +44,9 @@ export function createSpecificationIndex({ storage = globalThis.localStorage, st
           division: text(row.division || row.metadata?.division || sectionNumber.slice(0, 2)), sectionNumber, normalizedSectionNumber: sectionNumber.replace(/\s/g, ''),
           sectionTitle: text(row.sectionTitle || row.title || row.heading || row.sourceLabel).replace(new RegExp(`^${sectionNumber.replace(/\s/g, '\\s*')}\\s*[-—:]?\\s*`, 'i'), ''),
           startPdfPage: pageStart, endPdfPage: Math.max(pageStart || 0, pageEnd || 0) || null, internalPages: list(row.internalPages),
-          articles: list(row.articles).map(article => ({ id: text(article.id), heading: text(article.heading || article.title), pageNumber: Number(article.pageNumber || article.page) || null, kind: articleKind(article.heading || article.title) })),
+          articles: [...list(row.articles), ...descendants(row.id)].map(article => ({ id: text(article.id), heading: text(article.heading || article.title), pageNumber: Number(article.pageNumber || article.page || article.pageStart) || null, kind: articleKind(article.heading || article.title) })).filter(article => article.heading && article.kind),
           references: list(row.crossReferences || row.references).map(normalizeSpecificationNumber).filter(Boolean), revisionSource: revisionSource ? structuredClone(revisionSource) : null,
-          supersessionStatus: text(row.supersessionStatus || 'current')
+          supersessionStatus: text(row.supersessionStatus || 'current'), verificationState: text(row.verificationState || row.metadata?.verificationState || 'indexed')
         };
       }).filter(item => item.sectionNumber && item.startPdfPage);
       for (const item of normalized) sections.set(keyFor(documentId, item.sectionNumber), item);

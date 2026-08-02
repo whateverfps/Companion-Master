@@ -8,7 +8,7 @@ export async function loadDrawingWorkspaceProviders({ loadSections, loadDocument
     return { documents: [], sections: [], warnings: [warning] };
   }
   try {
-    const sections = typeof loadSections === 'function' ? await loadSections() : [];
+    const sections = typeof loadSections === 'function' ? await loadSections(documents) : [];
     if (!Array.isArray(sections)) throw new Error('Specification section provider returned an invalid result.');
     return { documents, sections, warnings: [] };
   } catch (error) {

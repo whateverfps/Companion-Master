@@ -1134,6 +1134,17 @@ export const engine = {
     return sections;
   },
 
+  async specificationSections(documentIds = [], sectionNumbers = []) {
+    const ids = [...new Set((Array.isArray(documentIds) ? documentIds : []).map(String).filter(Boolean))];
+    const numbers = [...new Set((Array.isArray(sectionNumbers) ? sectionNumbers : []).map(String).filter(Boolean))];
+    if (!ids.length || !numbers.length) return [];
+    const matched = (await Promise.all(numbers.map(number => all('sections', 'sectionNumber', number)))).flat().filter(section => ids.includes(section.documentId));
+    const roots = matched.filter(section => section.hierarchyType === 'spec-section');
+    const firstChildren = (await Promise.all(roots.map(section => all('sections', 'parentId', section.id)))).flat().filter(section => ids.includes(section.documentId));
+    const secondChildren = (await Promise.all(firstChildren.map(section => all('sections', 'parentId', section.id)))).flat().filter(section => ids.includes(section.documentId));
+    return [...roots, ...firstChildren, ...secondChildren];
+  },
+
   async retrievableSections() {
     const [sections, documents] = await Promise.all([
       this.sections(),

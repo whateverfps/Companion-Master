@@ -71,8 +71,8 @@ export function createDrawingRequirementsResolver({ specificationIndex, relation
       const sourceScope = link.objectId && input.selectedObjectId === link.objectId ? 'object-specific' : link.objectId ? '' : 'page-wide';
       if (!sourceScope) continue;
       const record = createRequirementRecord({ projectId, sourceDocumentId: link.drawingDocumentId, sourcePageId: link.drawingPageId, sourceObjectId: link.objectId, specificationDocumentId: link.specificationDocumentId, sectionNumber: link.sectionNumber,
-        applicabilityScope: sourceScope, evidenceType: link.evidenceSource || 'drawing specification link', evidenceText: link.evidenceText || link.note || 'Manual drawing-to-specification link.', confidence: link.confidence, status: link.status,
-        reason: link.origin === 'explicit' ? 'Explicit specification reference on the drawing.' : link.origin === 'manual' ? 'Manually confirmed drawing requirement.' : 'Evidence-backed project vocabulary suggestion.', origin: link.origin }, specificationIndex);
+        applicabilityScope: sourceScope, evidenceType: link.evidenceSource || 'drawing specification link', evidenceText: link.evidenceText || link.note || 'Manual drawing-to-specification link.', graphicalRegion: link.graphicalRegion, confidence: link.confidence, status: link.status,
+        reason: link.reason || (link.origin === 'explicit' ? 'Explicit specification reference on the drawing.' : link.origin === 'manual' ? 'Manually confirmed drawing requirement.' : 'Evidence-backed project vocabulary suggestion.'), origin: link.origin }, specificationIndex);
       if (record) record.drawingSpecLinkId = link.linkId;
       if (record) requirements.push(record);
     }
@@ -89,8 +89,16 @@ export function createDrawingRequirementsResolver({ specificationIndex, relation
     for (const provider of providerList) { try { for (const candidate of list(provider(structuredClone(input)))) { const record = createRequirementRecord(candidate, specificationIndex); if (record) requirements.push(record); } } catch (error) { warnings.push(error?.message || 'A requirement provider is unavailable.'); } }
     const deduplicated = [...new Map(requirements.sort((a, b) => (a.status === 'confirmed' ? 0 : 1) - (b.status === 'confirmed' ? 0 : 1) || a.applicabilityScope.localeCompare(b.applicabilityScope) || a.sectionNumber.localeCompare(b.sectionNumber)).map(item => [item.requirementId, item])).values()];
     const allowed = trade.key === 'all-trades' ? deduplicated : deduplicated.filter(item => item.applicabilityScope === 'project-wide' || trade.divisions.includes(item.sectionNumber.replace(/\D/g, '').slice(0, 2)) || item.tradeChannels.includes(trade.key));
-    const fieldRequirements = { submittals: [], quality: [], testing: [], inspection: [], commissioning: [], closeout: [] };
-    for (const requirement of allowed) { const categories = sectionCategory(specificationIndex.get(requirement.specificationDocumentId, requirement.sectionNumber)); for (const [key, applies] of Object.entries(categories)) if (applies) fieldRequirements[key].push(requirement); }
+    const articleLookupStarted = now();
+    const fieldRequirements = { submittals: [], 'quality assurance': [], 'products/materials': [], execution: [], 'examination/preparation': [], installation: [], testing: [], inspection: [], protection: [], commissioning: [], closeout: [] };
+    for (const requirement of allowed) {
+      const section = specificationIndex.get(requirement.specificationDocumentId, requirement.sectionNumber);
+      for (const article of list(section?.articles)) if (article.kind && fieldRequirements[article.kind]) fieldRequirements[article.kind].push({ ...requirement, article: structuredClone(article) });
+      const legacy = sectionCategory(section);
+      if (legacy.quality && !fieldRequirements['quality assurance'].some(item => item.requirementId === requirement.requirementId)) fieldRequirements['quality assurance'].push(requirement);
+    }
+    fieldRequirements.quality = fieldRequirements['quality assurance'];
+    onMetric({ operation: 'requirement-article-lookup', durationMs: Math.max(0, now() - articleLookupStarted), sectionCount: allowed.length, articleCount: Object.entries(fieldRequirements).filter(([key]) => key !== 'quality').reduce((sum, [, items]) => sum + items.length, 0) });
     const output = { projectId, contextSourceEntityId: chosenSourceId || null, tradeChannel: trade.key, governingDrawings, requirements: allowed, confirmedSpecifications: allowed.filter(item => item.status === 'confirmed' && item.applicabilityScope !== 'project-wide'), suggestedSpecifications: allowed.filter(item => item.status === 'suggested' && item.applicabilityScope !== 'project-wide'), projectWideRequirements: allowed.filter(item => item.applicabilityScope === 'project-wide'), fieldRequirements, warnings, resolvedAt: new Date().toISOString() };
     cache.set(cacheKey, output); onMetric({ operation: 'requirement-resolution', durationMs: Math.max(0, now() - started), requirementCount: allowed.length }); return structuredClone(output);
   };

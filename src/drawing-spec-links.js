@@ -18,12 +18,14 @@ export function createDrawingSpecificationLinkService({ index, storage = globalT
     const record = { linkId: text(input.linkId) || linkId(input), projectId: text(input.projectId), drawingDocumentId: text(input.drawingDocumentId), drawingPageId: text(input.drawingPageId), objectId: text(input.objectId) || null,
       specificationDocumentId: section.documentId, sectionNumber: section.sectionNumber, sectionTitle: section.sectionTitle, articleReference: input.articleReference || null,
       evidenceSource: text(input.evidenceSource), evidenceText: text(input.evidenceText), confidence: Math.max(0, Math.min(1, Number(input.confidence) || 0)),
+      graphicalRegion: input.graphicalRegion ? structuredClone(input.graphicalRegion) : null, applicabilityScope: text(input.applicabilityScope || (input.objectId ? 'object-specific' : 'page-wide')), reason: text(input.reason),
       status: ['confirmed', 'suggested', 'rejected'].includes(input.status) ? input.status : 'suggested', origin: ['explicit', 'parser', 'rule', 'manual'].includes(input.origin) ? input.origin : 'rule',
       note: text(input.note), createdAt: text(input.createdAt || existing?.createdAt) || timestamp, updatedAt: timestamp,
       history: [...list(existing?.history), ...(existing && (existing.status !== input.status || existing.note !== text(input.note)) ? [{ oldStatus: existing.status, newStatus: input.status, oldNote: existing.note || '', newNote: text(input.note), source: text(input.origin || 'rule'), time: timestamp }] : [])] };
     const position = records.findIndex(item => item.linkId === record.linkId);
     if (position >= 0 && records[position].origin === 'manual' && record.origin !== 'manual') return structuredClone(records[position]);
     if (position >= 0 && records[position].status === 'rejected' && record.origin !== 'manual') return structuredClone(records[position]);
+    if (position >= 0 && record.origin !== 'manual' && ['sectionNumber','sectionTitle','evidenceSource','evidenceText','confidence','status','origin','applicabilityScope','reason'].every(key => JSON.stringify(records[position][key]) === JSON.stringify(record[key])) && JSON.stringify(records[position].graphicalRegion || null) === JSON.stringify(record.graphicalRegion || null)) return structuredClone(records[position]);
     if (position >= 0) records[position] = record; else records.push(record);
     write(records); return structuredClone(record);
   };
