@@ -125,6 +125,7 @@ import { hitTestDrawingObjects, nextDrawingObject, objectTypeForObservation, sea
 import { applyPageObjectEnrichment, enrichPageConstructionObjects, relatedObjectIdsForSelection } from './drawing-object-enrichment.js';
 import { applyDrawingCoverageCorrection, buildDrawingCoverageReview, drawingCoverageCategory, DRAWING_COVERAGE_CATEGORIES } from './drawing-coverage-review.js';
 import { createDrawingOverlay, overlayStyle, visibleDrawingOverlays } from './drawing-overlays.js';
+import { collectPageSpecificationEvidence } from './drawing-specification-evidence.js';
 import { createSpecificationIndex } from './specification-index.js';
 import { createDrawingSpecificationLinkService } from './drawing-spec-links.js';
 import { adaptDrawingSpecificationLinks, createProjectRelationshipEngine, relationshipContextGroups } from './project-relationship-engine.js';
@@ -283,6 +284,8 @@ let activeDrawingSourceRecord = null;
 let activeDrawingRenderIdentity = null;
 let drawingWorkspaceRenderRequest = 0;
 let drawingPageSelectionRequest = 0;
+let drawingPagePaintRequest = 0;
+let drawingDeferredWorkspaceRefresh = null;
 let drawingRenderGeneration = 0;
 let portableDrawingCanvas = null;
 let activeDrawingViewerAnalysis = null;
@@ -1834,6 +1837,10 @@ function groupedRoomEvidenceMarkup(roomObservations, sheet) {
 
 function releaseDrawingSource() {
   drawingViewerEngine.cancelRender();
+  if (drawingDeferredWorkspaceRefresh) {
+    clearTimeout(drawingDeferredWorkspaceRefresh);
+    drawingDeferredWorkspaceRefresh = null;
+  }
   drawingRenderCache.clear();
   activeDrawingPdf?.cleanup?.();
   activeDrawingPdf?.destroy?.();
@@ -1847,6 +1854,63 @@ function releaseDrawingSource() {
   portableDrawingCanvas = null;
   activeDrawingViewerAnalysis = null;
   drawingViewerEngine.openDocument('', 0);
+}
+
+function updateDrawingSelectionCards(sheetId = '') {
+  const safeSheetId = String(sheetId || '');
+  const cards = $$('#mcDrawingResults button[data-drawing-sheet]');
+  for (const card of cards) {
+    const active = card.dataset.drawingSheet === safeSheetId;
+    card.classList.toggle('active', active);
+    card.classList.toggle('keyboard-active', active);
+    if (active) card.setAttribute('aria-current', 'true');
+    else card.removeAttribute('aria-current');
+  }
+  const activeCard = cards.find(card => card.dataset.drawingSheet === safeSheetId);
+  activeCard?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+}
+
+function updateDrawingNavigationButtons(analysis, sheetId = '') {
+  const previous = $('[data-drawing-previous]');
+  const next = $('[data-drawing-next]');
+  if (!previous || !next || !analysis?.sheets?.length) return;
+  const navigationSheetIds = drawingMatchingSheetIds.length ? drawingMatchingSheetIds : analysis.sheets.map(item => item.sheetId);
+  const index = navigationSheetIds.indexOf(sheetId);
+  previous.disabled = index <= 0;
+  next.disabled = index < 0 || index >= navigationSheetIds.length - 1;
+}
+
+function scheduleDeferredDrawingWorkspaceRefresh(shell, requestToken) {
+  if (drawingDeferredWorkspaceRefresh) clearTimeout(drawingDeferredWorkspaceRefresh);
+  drawingDeferredWorkspaceRefresh = setTimeout(() => {
+    drawingDeferredWorkspaceRefresh = null;
+    if (requestToken !== drawingPagePaintRequest) return;
+    void renderDrawingWorkspace(shell);
+  }, 80);
+}
+
+async function paintDrawingSelectionFast({ shell, analysis, sheet, observation = null, navigationStartedAt = 0, requestToken = 0 } = {}) {
+  if (!analysis || !sheet) return false;
+  updateDrawingSelectionCards(sheet.sheetId);
+  updateDrawingNavigationButtons(analysis, sheet.sheetId);
+  if (selectedDrawingObject && selectedDrawingObject.pageId !== sheet.pageId) {
+    selectedDrawingObject = null;
+    selectedDrawingObjectIds = [];
+  }
+  activeDrawingObjects = [];
+  const source = activeDrawingSourceRecord?.documentId === analysis.documentId && activeDrawingSourceRecord?.projectId === state().activeProject
+    ? activeDrawingSourceRecord
+    : await engine.sourceFile(analysis.documentId);
+  if (requestToken !== drawingPagePaintRequest) return false;
+  if (!source) {
+    scheduleDeferredDrawingWorkspaceRefresh(shell, requestToken);
+    return false;
+  }
+  await paintDrawingPage(source, sheet, observation || null, []);
+  if (requestToken !== drawingPagePaintRequest) return false;
+  scheduleDeferredDrawingWorkspaceRefresh(shell, requestToken);
+  logger.debug('Drawing viewer performance', { operation: 'navigation', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: sheet.pageNumber });
+  return true;
 }
 
 async function createRetainedPdfViewerAnalysis(documentRecord, source, requestedPage = 1, metadataAnalysis = null) {
@@ -2174,7 +2238,7 @@ function constructionIntelligencePanelMarkup(model) {
   const group = (key, title, content, { force = false } = {}) => !force && !content ? '' : `<details class="mc-ci-group" data-ci-group="${esc(key)}" ${constructionIntelligenceExpanded.has(key) ? 'open' : ''}><summary><span>${esc(title)}</span><span aria-hidden="true">⌄</span></summary><div class="mc-ci-group-body">${content || '<p>No governing specification has been confirmed.</p>'}</div></details>`;
   const recordList = items => `<ul class="mc-ci-record-list">${items.map(item => `<li><strong>${esc(item.label)}</strong>${item.relationship ? `<span class="mc-ci-badge">${esc(item.relationship.verificationState)}</span>` : ''}${item.target ? `<button data-project-relationship-open="${esc(item.relationship.relationshipId)}">Open</button>` : ''}</li>`).join('')}</ul>`;
   const relationshipGroups = groups => Object.entries(groups || {}).filter(([, items]) => items?.length).map(([title, items]) => `<div class="mc-ci-subgroup"><h5>${esc(title.replace(/([A-Z])/g, ' $1'))}</h5>${recordList(items)}</div>`).join('');
-  const specificationCards = items => `<ol class="mc-ci-specifications">${items.map(item => `<li><div><strong>${esc(item.sectionNumber)}</strong><span>${esc(item.sectionTitle)}</span></div><div class="mc-ci-spec-meta"><span class="mc-ci-badge ${esc(item.displayStatus)}">${esc(item.displayStatus)}</span><span>${Math.round((Number(item.confidence) || 0) * 100)}% confidence</span><span>${fmt(item.evidenceCount)} evidence</span></div>${item.evidenceText ? `<div class="mc-ci-evidence"><strong>${esc(item.evidenceSource || 'Drawing evidence')}</strong><p>${esc(item.evidenceText)}</p></div>` : ''}<div class="mc-ci-actions">${item.canOpen ? `<button data-requirement-open="${esc(item.specificationDocumentId)}" data-requirement-section="${esc(item.sectionNumber)}">Open Section</button>` : ''}${item.canShowSource ? `<button data-object-spec-source="${esc(item.specificationDocumentId)}" data-object-spec-page="${item.sourcePageNumber}" data-object-spec-section="${esc(item.sectionNumber)}">Open Source Page</button>` : ''}${item.evidenceText ? `<details><summary>Review Evidence</summary><p>${esc(item.reason || item.evidenceText)}</p></details>` : ''}${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject</button>` : ''}</div></li>`).join('')}</ol>`;
+  const specificationCards = items => `<ol class="mc-ci-specifications">${items.map(item => `<li><div><strong>${esc(item.sectionNumber)}</strong><span>${esc(item.sectionTitle)}</span></div><div class="mc-ci-spec-meta"><span class="mc-ci-badge ${esc(item.displayStatus)}">${esc(item.displayStatus)}</span><span>${Math.round((Number(item.confidence) || 0) * 100)}% confidence</span><span>${fmt(item.evidenceCount)} evidence</span></div>${item.evidenceText ? `<div class="mc-ci-evidence"><strong>${esc(item.evidenceSource || 'Drawing evidence')}</strong><p>${esc(item.evidenceText)}</p></div>` : ''}<div class="mc-ci-actions">${item.canShowSource ? `<button data-object-spec-source="${esc(item.specificationDocumentId)}" data-object-spec-page="${item.sourcePageNumber}" data-object-spec-section="${esc(item.sectionNumber)}">Open Source</button>` : ''}${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject</button>` : ''}</div></li>`).join('')}</ol>`;
   const fieldWork = groups => groups.map(group => `<div class="mc-ci-work-phase"><h5>${esc(group.phase)}</h5><ul>${group.items.map(item => `<li><span aria-hidden="true">□</span><div><strong>${esc(item.label)}</strong><small>${esc(item.sectionNumber)} · ${esc(item.sectionTitle)}</small></div></li>`).join('')}</ul></div>`).join('');
   if (model.mode === 'page') {
     const page = model.page;
@@ -2237,7 +2301,7 @@ function chiefDrawingDockMarkup(cards=[]){const dock=chiefDrawingDock.state(),co
 function refreshChiefDrawingDockMessages(){const container=$('.mc-chief-drawing-dock:not([hidden]) .mc-chief-dock-messages'),conversation=engine.activeConversation();if(!container)return;container.innerHTML=(conversation?.messages||[]).slice(-30).map(message=>`<article class="${message.role}"><strong>${message.role==='assistant'?'Chief':'You'}</strong><p>${esc(message.content).replace(/\n/g,'<br>')}</p></article>`).join('');container.scrollTop=container.scrollHeight;}
 
 function drawingRequirementsMarkup({ sheet, viewportContext, trade, visibleRooms = [], selectedObject, result } = {}) {
-  const requirementCards = items => items?.length ? `<ol>${items.map(item => `<li><strong>${esc(item.sectionNumber)} — ${esc(item.sectionTitle)}</strong><span>${esc(item.applicabilityScope)} · ${esc(item.status)}</span><p>${esc(item.reason)}</p><button data-requirement-open="${esc(item.specificationDocumentId)}" data-requirement-section="${esc(item.sectionNumber)}">Open Specification</button>${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm Link</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject Suggestion</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm Link</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject Suggestion</button>` : ''}<details><summary>Review Evidence</summary><p>${esc(item.evidenceText)}</p><small>${esc(item.evidenceType)} · ${Math.round(item.confidence * 100)}%</small></details></li>`).join('')}</ol>` : '<p>No supported requirements in this context.</p>';
+  const requirementCards = items => items?.length ? `<ol>${items.map(item => `<li><strong>${esc(item.sectionNumber)} — ${esc(item.sectionTitle)}</strong><span>${esc(item.applicabilityScope)} · ${esc(item.status)}</span><p>${esc(item.reason)}</p><button data-requirement-open="${esc(item.specificationDocumentId)}" data-requirement-section="${esc(item.sectionNumber)}">Open Source</button>${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm Link</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject Suggestion</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm Link</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject Suggestion</button>` : ''}</li>`).join('')}</ol>` : '<p>No supported requirements in this context.</p>';
   const field = Object.entries(result?.fieldRequirements || {}).filter(([, items]) => items.length);
   return `<div class="mc-drawing-requirements" aria-label="Drawing-centered requirements">
     <section><h3>Current Context</h3><dl><div><dt>Building</dt><dd>${esc(sheet?.building || 'Unavailable')}</dd></div><div><dt>Sheet</dt><dd>${esc(sheet?.sheetNumber || `Page ${sheet?.pageNumber || ''}`)}</dd></div><div><dt>Room or region</dt><dd>${viewportContext?.selectedRoomId ? esc(viewportContext.selectedRoomId) : viewportContext?.selectedRegion ? 'Selected drawing region' : 'Page context'}</dd></div><div><dt>Selected object</dt><dd>${esc(selectedObject?.label || 'None')}</dd></div><div><dt>Active trade</dt><dd>${esc(trade?.label || 'All Trades')} · ${esc(trade?.status || 'default')}</dd></div><div><dt>Context confidence</dt><dd>${selectedObject?.verificationState === 'confirmed' || viewportContext?.selectedRoomId ? 'Confirmed selection' : viewportContext?.selectedRegion ? 'Selected region candidate' : 'Page context'}</dd></div></dl>
@@ -2456,13 +2520,16 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   let vocabularyCandidateCount = 0; let relationshipWriteCount = 0;
   try { if (sheet && specificationDocument) {
     const existingLinkIds = new Set(drawingSpecificationLinks.forPage(sheet.pageId).map(item => item.linkId));
-    const pageEvidence = [
-      { text: sheet.sheetTitle, source: 'authoritative-sheet-title' }, { text: sheet.discipline, source: 'authoritative-discipline' },
-      ...observations.filter(item => item.verification?.status !== 'Rejected').map(item => ({ text: item.value, source: item.kind, region: item.region, observationId: item.observationId })),
-      ...sheetLegends.flatMap(legend => [{ text: legend.legendTitle, source: 'drawing-legend', region: legend.sourceRegion }, ...legend.entries.map(entry => ({ text: `${entry.label} ${entry.description}`, source: 'drawing-legend-entry', region: entry.symbolRegion }))]),
-      ...sheetSchedules.flatMap(schedule => [{ text: schedule.title, source: 'drawing-schedule', region: schedule.sourceRegion }, ...schedule.rows.flatMap(row => row.cells.map(cell => ({ text: cell.rawText, source: 'drawing-schedule-cell', region: cell.sourceRegion })))]),
-      ...sheetKeyedNotes.map(item => ({ text: item.text || item.noteText || item.identifier, source: 'keyed-note', region: item.region }))
-    ];
+    const pageEvidence = collectPageSpecificationEvidence({
+      sheet,
+      observations,
+      legends: sheetLegends,
+      schedules: sheetSchedules,
+      keyedNotes: sheetKeyedNotes,
+      occurrences: sheetOccurrences,
+      activeDrawingObjects,
+      references: analysis?.references || []
+    });
     const pageCandidates = projectSpecificationVocabulary.matchPage({ projectId: objectBase.projectId, specificationDocumentId: specificationDocument.id, pageId: sheet.pageId, evidence: pageEvidence });
     vocabularyCandidateCount += pageCandidates.length;
     for (const candidate of pageCandidates) { const link = drawingSpecificationLinks.link({ ...candidate, drawingDocumentId: selected.id, drawingPageId: sheet.pageId, objectId: null }); if (link && !existingLinkIds.has(link.linkId)) { relationshipWriteCount += 1; existingLinkIds.add(link.linkId); } }
@@ -3260,8 +3327,8 @@ app.addEventListener('click', async event => {
     const observation = button.dataset.drawingSearchObservation ? analysis.observations.find(item => item.observationId === button.dataset.drawingSearchObservation) : null;
     drawingViewerEngine.selectPage(sheet.pageNumber);
     drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, pageId: sheet.pageId, drawingId: sheet.drawingId || '', sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
-    await renderDrawingWorkspace(shell);
-    logger.debug('Drawing viewer performance', { operation: 'navigation', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: sheet.pageNumber });
+    const paintRequest = ++drawingPagePaintRequest;
+    await paintDrawingSelectionFast({ shell, analysis, sheet, observation, navigationStartedAt, requestToken: paintRequest });
     return;
   }
   if (button.hasAttribute('data-drawing-reanalyze') && analysis && shell === 'professional') {
@@ -3277,8 +3344,12 @@ app.addEventListener('click', async event => {
     const observation = analysis.observations.find(item => item.observationId === button.dataset.drawingObservation);
     const sheet = analysis.sheets.find(item => item.sheetId === observation?.sheetId);
     if (observation && sheet) drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: sheet.drawingId, sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation.observationId, region: observation.region });
-    await renderDrawingWorkspace(shell);
-    logger.debug('Drawing viewer performance', { operation: 'navigation', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: drawingTarget?.pageNumber });
+    if (observation && sheet) {
+      drawingViewerEngine.selectPage(sheet.pageNumber);
+      const paintRequest = ++drawingPagePaintRequest;
+      await paintDrawingSelectionFast({ shell, analysis, sheet, observation, navigationStartedAt, requestToken: paintRequest });
+    }
+    else await renderDrawingWorkspace(shell);
     return;
   }
   if (button.dataset.drawingVerify && analysis) {
@@ -3338,8 +3409,13 @@ app.addEventListener('click', async event => {
     const next = analysis.sheets[currentIndex + offset];
     if (matchingTarget) { drawingViewerEngine.selectPage(matchingTarget.pageNumber); drawingTarget = matchingTarget; }
     else if (next) { drawingViewerEngine.selectPage(next.pageNumber); drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: next.drawingId, sheetId: next.sheetId, pageNumber: next.pageNumber }); }
-    await renderDrawingWorkspace(shell);
-    logger.debug('Drawing viewer performance', { operation: 'navigation', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: drawingTarget?.pageNumber });
+    const targetSheet = analysis.sheets.find(item => item.sheetId === drawingTarget?.sheetId) || null;
+    if (targetSheet) {
+      const targetObservation = drawingTarget?.observationId ? analysis.observations.find(item => item.observationId === drawingTarget.observationId) : null;
+      const paintRequest = ++drawingPagePaintRequest;
+      await paintDrawingSelectionFast({ shell, analysis, sheet: targetSheet, observation: targetObservation, navigationStartedAt, requestToken: paintRequest });
+    }
+    else await renderDrawingWorkspace(shell);
     return;
   }
   if (button.dataset.drawingZoom) {

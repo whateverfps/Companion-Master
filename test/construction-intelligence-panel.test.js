@@ -92,6 +92,7 @@ test('production panel preserves two-mode scroll, restores blank-click page cont
   const source = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const markup = source.slice(source.indexOf('function constructionIntelligencePanelMarkup'), source.indexOf('function relationshipGroupsMarkup'));
   assert.match(markup, /data-panel-mode=\"page\"/); assert.match(markup, /data-panel-mode=\"object\"/);
+  assert.match(markup, /Open Source/); assert.doesNotMatch(markup, /Open Section|Open Source Page|Review Evidence/);
   assert.match(markup, /Developer Diagnostics[^]*hidden/); assert.doesNotMatch(markup, /paintDrawingPage|renderPdfPage|PDFDocumentProxy/);
   assert.match(source, /constructionIntelligenceScroll\[priorIntelligence\.querySelector\('\[data-panel-mode\]'\)\.dataset\.panelMode\]/);
   assert.match(source, /data-drawing-clear-object[^]*selectedDrawingObject = null[^]*renderDrawingWorkspace/);

@@ -8,8 +8,11 @@ import { createProjectRelationshipEngine } from '../src/project-relationship-eng
 
 const memory = () => { const map = new Map(); return { getItem: key => map.get(key), setItem: (key, value) => map.set(key, value) }; };
 const sections = [
+  ['01 45 00', 'Quality Control'], ['01 91 00', 'General Commissioning Requirements'],
   ['09 65 13', 'Resilient Base and Accessories'], ['09 65 19', 'Resilient Tile Flooring'], ['09 91 00', 'Painting'],
   ['10 14 00', 'Signage'], ['10 26 00', 'Wall and Door Protection'], ['10 44 13', 'Fire Extinguisher Cabinets'],
+  ['23 05 11', 'Common Work Results for HVAC'], ['23 05 93', 'Testing, Adjusting, and Balancing'], ['23 08 00', 'Commissioning of HVAC Systems'], ['23 31 00', 'HVAC Ducts and Casings'], ['23 37 00', 'Air Outlets and Inlets'],
+  ['26 05 00', 'Common Work Results for Electrical'], ['26 05 26', 'Grounding and Bonding for Electrical Systems'], ['26 05 33', 'Raceways and Boxes for Electrical Systems'], ['26 24 16', 'Panelboards'],
   ['27 05 00','Common Work Results for Communications'],['27 05 26','Grounding and Bonding for Telecommunications'],['27 05 33','Raceways and Boxes for Communications'],['27 05 36','Cable Trays for Communications Systems'],['27 05 53','Identification for Communications Systems'],['27 10 00','Structured Cabling'],['27 11 16','Communications Cabinets, Racks, Frames, and Enclosures'],['27 13 23','Optical Fiber Backbone Cabling'],['27 15 13','Communications Copper Horizontal Cabling']
 ];
 function fixture() {
@@ -31,8 +34,22 @@ test('real indexed Bedford sections resolve by normalized number with exact boun
 test('61IN101 page evidence creates deduplicated page-wide suggestions only for supported terms', () => {
   const { vocabulary } = fixture();
   const matches = vocabulary.matchPage({ projectId: 'bedford', specificationDocumentId: 'bedford-spec', pageId: '61in101', evidence: ['Interior Finish Plan, Signage & Schedules', 'P-1', 'P-1', 'FIRE EXTINGUISHER CABINET DETAIL', '518-22-700', '61IN101'] });
-  assert.deepEqual(matches.map(item => item.sectionNumber), ['10 14 00', '09 91 00', '10 44 13']);
+  assert.deepEqual(matches.map(item => item.sectionNumber), ['09 91 00', '10 14 00', '10 44 13']);
   assert.ok(matches.every(item => item.applicabilityScope === 'page-wide' && item.status === 'suggested'));
+});
+
+test('mechanical and electrical evidence resolve to indexed governing sections without leakage', () => {
+  const { vocabulary } = fixture();
+  const mechanical = vocabulary.matchPage({ projectId: 'bedford', specificationDocumentId: 'bedford-spec', pageId: '61m101', evidence: ['MECHANICAL PLAN', 'HVAC DUCTWORK', 'VAV-12', 'AIR OUTLET', 'TESTING AND BALANCING', 'COMMISSIONING'] });
+  assert.deepEqual(mechanical.map(item => item.sectionNumber), ['23 05 93', '23 08 00', '23 31 00', '23 37 00']);
+  const electrical = vocabulary.matchPage({ projectId: 'bedford', specificationDocumentId: 'bedford-spec', pageId: '61e401', evidence: ['ELECTRICAL PLAN', 'PANELBOARD', 'GROUNDING AND BONDING', 'RACEWAYS AND BOXES'] });
+  assert.deepEqual(electrical.map(item => item.sectionNumber), ['26 05 00', '26 05 26', '26 05 33', '26 24 16']);
+});
+
+test('generic discipline titles do not produce unsupported matches without specific evidence', () => {
+  const { vocabulary } = fixture();
+  assert.deepEqual(vocabulary.matchPage({ projectId: 'bedford', specificationDocumentId: 'bedford-spec', pageId: '61m101', evidence: ['MECHANICAL PLAN'] }), []);
+  assert.deepEqual(vocabulary.matchPage({ projectId: 'bedford', specificationDocumentId: 'bedford-spec', pageId: '61e401', evidence: ['ELECTRICAL DETAILS'] }), []);
 });
 
 test('object vocabulary produces only object-specific indexed candidates', () => {

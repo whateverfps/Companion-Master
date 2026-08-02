@@ -180,7 +180,29 @@ test('page clicks prefer the rendered retained-PDF page model and select the eng
   assert.match(click, /pageSelectionRequest !== drawingPageSelectionRequest/);
   const sheetBranch = click.slice(click.indexOf("if (button.dataset.drawingSheet"), click.indexOf("if (button.hasAttribute('data-drawing-reanalyze')"));
   assert.match(sheetBranch, /drawingViewerEngine\.selectPage\(sheet\.pageNumber\)/);
-  assert.ok(sheetBranch.indexOf('drawingViewerEngine.selectPage') < sheetBranch.indexOf('await renderDrawingWorkspace'));
+  assert.ok(sheetBranch.indexOf('drawingViewerEngine.selectPage') < sheetBranch.indexOf('await paintDrawingSelectionFast'));
+});
+
+test('rapid page switching paints first and defers heavy workspace reconstruction', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /async function paintDrawingSelectionFast\(/);
+  assert.match(app, /await paintDrawingPage\(source, sheet, observation \|\| null, \[\]\)/);
+  assert.match(app, /function scheduleDeferredDrawingWorkspaceRefresh\(shell, requestToken\)/);
+  assert.match(app, /if \(requestToken !== drawingPagePaintRequest\) return;\s*void renderDrawingWorkspace\(shell\);/);
+});
+
+test('sheet-card click path issues one page selection and one fast paint request', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const clickStart = app.indexOf("app.addEventListener('click', async event =>");
+  const click = app.slice(clickStart, app.indexOf("if (button.hasAttribute('data-drawing-reanalyze')", clickStart));
+  const sheetBranch = click.slice(click.indexOf("if (button.dataset.drawingSheet && analysis)"), click.indexOf("if (button.hasAttribute('data-drawing-reanalyze')"));
+  assert.equal((sheetBranch.match(/drawingViewerEngine\.selectPage\(sheet\.pageNumber\)/g) || []).length, 1);
+  assert.equal((sheetBranch.match(/paintDrawingSelectionFast\(/g) || []).length, 1);
+});
+
+test('repeated page switches do not register duplicate drawing click handlers', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.equal((app.match(/app\.addEventListener\('click', async event =>/g) || []).length, 1);
 });
 
 test('catalog editor exposes apply, reset, compare, and default restoration without touching PDF rendering', () => {
