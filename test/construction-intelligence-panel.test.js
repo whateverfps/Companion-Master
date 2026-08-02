@@ -96,3 +96,12 @@ test('production panel preserves two-mode scroll, restores blank-click page cont
   assert.match(source, /constructionIntelligenceScroll\[priorIntelligence\.querySelector\('\[data-panel-mode\]'\)\.dataset\.panelMode\]/);
   assert.match(source, /data-drawing-clear-object[^]*selectedDrawingObject = null[^]*renderDrawingWorkspace/);
 });
+
+test('panel exposes compact degraded states and drawing paint precedes asynchronous enrichment', () => {
+  assert.equal(buildConstructionIntelligencePanelModel({ sheet, requirements: { status: 'partial' } }).status, 'partial');
+  assert.equal(buildConstructionIntelligencePanelModel({ sheet, requirements: { status: 'unavailable' } }).status, 'unavailable');
+  const source = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const render = source.slice(source.indexOf('async function renderDrawingWorkspaceWithProviders'), source.indexOf('async function renderMissionControlDashboard'));
+  assert.ok(render.indexOf('await paintDrawingPage') < render.indexOf('drawingRequirementsResolver.resolveLatest'));
+  assert.match(render, /workspaceRenderRequest !== drawingWorkspaceRenderRequest/);
+});

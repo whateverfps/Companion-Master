@@ -69,3 +69,32 @@ test('provider failure is nonblocking and latest generation wins', async () => {
   const second = resolver.resolveLatest({ projectId: 'bedford', pageEntityId: 'page-m', selectedObjectEntityId: 'duct', tradeChannel: tradeChannel('mechanical') });
   assert.equal((await first).committed, false); assert.equal((await second).committed, true);
 });
+
+test('hosted page-context fixture normalizes undefined trade divisions before includes', () => {
+  const { resolver } = fixture();
+  const result = resolver.resolve({ projectId: 'bedford', pageEntityId: 'page-in', tradeChannel: { key: 'interiors', divisions: undefined }, drawingSpecLinks: [{ linkId: 'paint', drawingDocumentId: 'b61', drawingPageId: '61in101', specificationDocumentId: 'spec', sectionNumber: '09 91 00', evidenceSource: 'finish legend', evidenceText: null, note: 'P-1', status: 'suggested' }], observations: undefined });
+  assert.equal(result.status, 'complete'); assert.equal(result.tradeChannel, 'interiors'); assert.deepEqual(result.requirements, []);
+});
+
+test('nullable and malformed resolver inputs produce deterministic structured results', () => {
+  const { index, graph } = fixture();
+  const resolver = createDrawingRequirementsResolver({ specificationIndex: index, relationshipEngine: { ...graph, getRelatedEntities: () => [null, { entity: null }] } });
+  const result = resolver.resolve({ projectId: 'bedford', tradeChannel: { key: 'mechanical', divisions: null }, drawingSpecLinks: [null, { status: 'rejected' }], projectWideRequirements: undefined });
+  assert.equal(result.status, 'complete'); assert.deepEqual(result.requirements, []); assert.equal(result.diagnostics.skippedRecordCount, 1);
+  const absent = createDrawingRequirementsResolver({ specificationIndex: null }).resolve({ projectId: 'bedford' });
+  assert.equal(absent.status, 'unavailable'); assert.equal(absent.providerFailures[0].contained, true);
+});
+
+test('failed relationship and article providers preserve successful drawing links', () => {
+  const { index } = fixture(); const brokenIndex = { get(documentId, number) { const section = index.get(documentId, number); if (section) return { ...section, get articles() { throw new Error('Article provider failed'); } }; return section; } };
+  const resolver = createDrawingRequirementsResolver({ specificationIndex: brokenIndex, relationshipEngine: { getEntity: () => null, getRelatedEntities: () => { throw new Error('Relationship provider failed'); } } });
+  const result = resolver.resolve({ projectId: 'bedford', pageEntityId: 'page-in', tradeChannel: { key: 'all-trades' }, drawingSpecLinks: [{ linkId: 'paint', drawingDocumentId: 'b61', drawingPageId: '61in101', specificationDocumentId: 'spec', sectionNumber: '09 91 00', evidenceSource: 'manual', evidenceText: 'Confirmed paint link', status: 'confirmed', origin: 'manual' }] });
+  assert.equal(result.status, 'partial'); assert.equal(result.confirmedSpecifications.length, 1); assert.ok(result.providerFailures.length);
+});
+
+test('rejected async provider promises are contained and stale generations cannot commit', async () => {
+  const { index, graph } = fixture(); const resolver = createDrawingRequirementsResolver({ specificationIndex: index, relationshipEngine: graph, providers: [() => Promise.reject(new Error('PMIS lookup failed'))] });
+  assert.doesNotThrow(() => resolver.resolve({ projectId: 'bedford', pageEntityId: 'page-in' }));
+  const first = resolver.resolveLatest({ projectId: 'bedford', pageEntityId: 'page-in' }); const second = resolver.resolveLatest({ projectId: 'bedford', pageEntityId: 'page-m' });
+  assert.equal((await first).committed, false); assert.equal((await second).committed, true);
+});

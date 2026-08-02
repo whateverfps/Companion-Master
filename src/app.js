@@ -263,6 +263,7 @@ let drawingWorkspacePanels = drawingWorkspaceLayout();
 let drawingWorkspaceBeforeExpand = null;
 let activeChiefLocationPresentation = null;
 let loadedProjectObjectRegistryId = '';
+const drawingIntelligenceHydration = new Map();
 let specificationDrawingReturnTarget = null;
 let specificationSourceTarget = null;
 let constructionIntelligenceExpanded = new Set(loadConstructionIntelligencePanelState().expanded);
@@ -2114,6 +2115,7 @@ function projectObjectPresentation(item) {
 }
 
 function constructionIntelligencePanelMarkup(model) {
+  const degraded = model.status === 'partial' ? '<p class="mc-ci-warning" role="status">Some construction intelligence is temporarily unavailable.</p>' : model.status === 'unavailable' ? '<p class="mc-ci-warning" role="status">Construction intelligence is unavailable for this page.</p>' : '';
   const group = (key, title, content, { force = false } = {}) => !force && !content ? '' : `<details class="mc-ci-group" data-ci-group="${esc(key)}" ${constructionIntelligenceExpanded.has(key) ? 'open' : ''}><summary><span>${esc(title)}</span><span aria-hidden="true">⌄</span></summary><div class="mc-ci-group-body">${content || '<p>No governing specification has been confirmed.</p>'}</div></details>`;
   const recordList = items => `<ul class="mc-ci-record-list">${items.map(item => `<li><strong>${esc(item.label)}</strong>${item.relationship ? `<span class="mc-ci-badge">${esc(item.relationship.verificationState)}</span>` : ''}${item.target ? `<button data-project-relationship-open="${esc(item.relationship.relationshipId)}">Open</button>` : ''}</li>`).join('')}</ul>`;
   const relationshipGroups = groups => Object.entries(groups || {}).filter(([, items]) => items?.length).map(([title, items]) => `<div class="mc-ci-subgroup"><h5>${esc(title.replace(/([A-Z])/g, ' $1'))}</h5>${recordList(items)}</div>`).join('');
@@ -2125,7 +2127,7 @@ function constructionIntelligencePanelMarkup(model) {
     const specs = [...model.specifications.confirmed, ...model.specifications.suggested];
     const current = `<dl><div><dt>Building</dt><dd>${esc(page.building || 'Not identified')}</dd></div><div><dt>Sheet Number</dt><dd>${esc(page.sheet)}</dd></div>${page.sheetTitle ? `<div><dt>Sheet Title</dt><dd>${esc(page.sheetTitle)}</dd></div>` : ''}<div><dt>Discipline</dt><dd>${esc(page.discipline)}</dd></div><div><dt>Trade</dt><dd>${esc(page.activeTrade)}</dd></div><div><dt>Current Status</dt><dd>${esc(page.pageStatus)}</dd></div></dl>`;
     const drawingContent = `${page.drawingNotes.length ? `<div class="mc-ci-subgroup"><h5>Drawing Notes</h5><ul>${page.drawingNotes.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>` : ''}${counts.length ? `<div class="mc-ci-counts">${counts.map(([label, count]) => `<div><strong>${fmt(count)}</strong><span>${esc(label)}</span></div>`).join('')}</div>` : ''}`;
-    return `<div class="mc-construction-intelligence" data-panel-mode="page"><header><span>CONSTRUCTION INTELLIGENCE</span><h3>Page Context</h3><p>What governs this drawing sheet?</p></header>
+    return `<div class="mc-construction-intelligence" data-panel-mode="page" data-intelligence-status="${esc(model.status)}"><header><span>CONSTRUCTION INTELLIGENCE</span><h3>Page Context</h3><p>What governs this drawing sheet?</p>${degraded}</header>
       ${group('current', 'Current Drawing', current, { force: true })}
       ${group('specifications', 'Applicable Specifications', specs.length ? specificationCards(specs) : '', { force: true })}
       ${group('field-requirements', 'Field Requirements', fieldGroups(model.fieldRequirements))}
@@ -2139,7 +2141,7 @@ function constructionIntelligencePanelMarkup(model) {
   const specs = [...model.specifications.confirmed, ...model.specifications.suggested];
   const objectHeader = `<strong class="mc-ci-object-name">${esc(object.name)}</strong><dl><div><dt>Type</dt><dd>${esc(object.type)}</dd></div><div><dt>Permanent Object ID</dt><dd>${esc(object.objectId)}</dd></div>${object.room ? `<div><dt>Room</dt><dd>${esc(object.room)}</dd></div>` : ''}${object.system ? `<div><dt>System</dt><dd>${esc(object.system)}</dd></div>` : ''}${object.trade ? `<div><dt>Trade</dt><dd>${esc(object.trade)}</dd></div>` : ''}<div><dt>Verification</dt><dd>${esc(object.verificationState)}</dd></div></dl><div class="mc-ci-actions">${object.hasLocation ? '<button data-drawing-object-location>Show Location</button>' : ''}${object.verificationState === 'candidate' ? '<button data-project-object-confirm>Confirm Object</button><button data-project-object-reject>Reject Candidate</button>' : ''}<button data-project-object-edit>Edit Object</button><button class="subtle" data-drawing-clear-object>Clear Selection</button></div>`;
   const history = model.history.length ? `<ul>${model.history.map(item => `<li><strong>${esc(item.label)}</strong><span>${esc(item.value)}${item.note ? ` · ${esc(item.note)}` : ''}</span></li>`).join('')}</ul>` : '';
-  return `<div class="mc-construction-intelligence" data-panel-mode="object" data-project-object-id="${esc(object.objectId)}" data-project-relationship-source="${esc(model.sourceEntityId)}"><header><span>CONSTRUCTION INTELLIGENCE</span><h3>Object Context</h3><p>What governs this thing?</p></header>
+  return `<div class="mc-construction-intelligence" data-panel-mode="object" data-intelligence-status="${esc(model.status)}" data-project-object-id="${esc(object.objectId)}" data-project-relationship-source="${esc(model.sourceEntityId)}"><header><span>CONSTRUCTION INTELLIGENCE</span><h3>Object Context</h3><p>What governs this thing?</p>${degraded}</header>
     ${group('current', 'Object', objectHeader, { force: true })}
     ${group('specifications', 'Specifications', specs.length ? specificationCards(specs) : '', { force: true })}
     ${group('field-requirements', 'Field Requirements', fieldGroups(model.fieldRequirements))}
@@ -2245,8 +2247,14 @@ async function renderDrawingWorkspace(shell = 'professional') {
   return renderDrawingWorkspaceWithProviders(shell, providers);
 }
 
+function containedConstructionIntelligence(provider, fallback, operation, context = {}) {
+  try { return operation(); }
+  catch (error) { logger.warning('Construction intelligence provider failure', { provider, code: 'construction-intelligence-provider-failure', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString(), ...context }); return fallback; }
+}
+
 async function renderDrawingWorkspaceWithProviders(shell = 'professional', { documents: providerDocuments, warnings: providerWarnings = [] } = {}) {
   const providerSections = Array.isArray(arguments[1]?.sections) ? arguments[1].sections : [];
+  const workspaceProviderFailures = Array.isArray(arguments[1]?.providerFailures) ? arguments[1].providerFailures : [];
   const workspaceRenderRequest = ++drawingWorkspaceRenderRequest;
   const host = shell === 'mission-control' ? ($('#missionInlineDrawingViewer') || $('#missionDrawingViewer')) : $('#drawingInspector');
   if (!host) return;
@@ -2337,10 +2345,16 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const observations = sheet ? (analysis?.observations || []).filter(item => item.sheetId === sheet.sheetId) : [];
   const activeProjectObjectId = analysis?.projectId || state().activeProject;
   if (loadedProjectObjectRegistryId !== activeProjectObjectId) {
-    await projectObjectRegistry.load(activeProjectObjectId);
     loadedProjectObjectRegistryId = activeProjectObjectId;
+    if (!drawingIntelligenceHydration.has(activeProjectObjectId)) {
+      const hydration = Promise.allSettled([projectObjectRegistry.load(activeProjectObjectId), drawingSpecificationLinks.load(activeProjectObjectId)]).then(results => {
+        drawingIntelligenceHydration.delete(activeProjectObjectId);
+        results.forEach((result, index) => { if (result.status === 'rejected') logger.warning('Construction intelligence provider failure', { provider: index ? 'drawing-spec-links' : 'project-objects', code: 'construction-intelligence-provider-failure', message: result.reason?.message || String(result.reason), contained: true, projectId: activeProjectObjectId, timestamp: new Date().toISOString() }); });
+        if (activeProjectObjectId === (activeDrawingViewerAnalysis?.projectId || state().activeProject)) void renderDrawingWorkspace(shell);
+      });
+      drawingIntelligenceHydration.set(activeProjectObjectId, hydration);
+    }
   }
-  await drawingSpecificationLinks.load(activeProjectObjectId);
   const objectBase = { projectId: analysis?.projectId || state().activeProject, documentId: selected.id, pageId: sheet?.pageId || '' };
   const roomObjects = observations.filter(item => item.kind === 'room-number-text').map(item => drawingObjectDecisions.apply(createRoomObject({ ...objectBase, objectId: item.observationId, observationId: item.observationId, roomNumber: item.value, sourceText: item.value, region: item.region, confidence: item.confidence, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : item.verification?.status === 'Rejected' ? 'rejected' : 'candidate' })));
   const exactRooms = roomObjects.filter(item => item.accepted && item.verificationState !== 'rejected');
@@ -2357,15 +2371,13 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     type: item.kind === 'equipment-tag-text' ? 'equipment-tag' : item.kind?.includes('keyed') ? 'keynote' : item.kind?.includes('detail') ? 'detail-reference' : item.kind?.includes('callout') ? 'callout' : 'generic-candidate-object',
     label: `${observationKindLabel(item.kind)} ${item.value}`, evidenceText: item.value, region: item.region, confidence: item.confidence, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : item.verification?.status === 'Rejected' ? 'rejected' : 'candidate' })));
   const occurrenceObjects = sheetOccurrences.map(item => drawingObjectDecisions.apply(createDrawingObject({ ...objectBase, objectId: item.occurrenceId, type: item.type || 'generic-candidate-object', subtype: item.subtype, label: item.label || 'Plan object occurrence', evidenceText: item.evidenceText, region: item.region, confidence: item.confidence, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : item.verification?.status === 'Rejected' ? 'rejected' : 'candidate' })));
-  for (const item of [...roomObjects, ...observationObjects, ...occurrenceObjects]) {
-    projectObjectRegistry.mergeObservation({ observationId: item.sourceObservationIds?.[0] || item.objectId, projectId: objectBase.projectId, documentId: objectBase.documentId, pageId: objectBase.pageId, source: 'drawing-analysis', text: item.evidenceText || item.label, region: item.region, detectedType: item.type === 'equipment-tag' ? 'equipment' : item.type === 'generic-candidate-object' ? 'generic-drawing-object' : item.type, detectedTag: item.tag || item.roomNumber || String(item.label || '').split(' ').at(-1), confidence: item.confidence, parserVersion: String(analysis?.analysisVersion || '') });
-  }
-  activeDrawingObjects = projectObjectRegistry.getObjectsForPage(sheet?.pageId || '', { projectId: objectBase.projectId }).map(item => ({ ...item, documentId: item.drawingDocumentId, pageId: item.drawingPageId, type: item.objectType, subtype: item.objectSubtype, region: item.graphicalRegion, evidenceText: item.sourceText }));
+  for (const item of [...roomObjects, ...observationObjects, ...occurrenceObjects]) containedConstructionIntelligence('object-observations', null, () => projectObjectRegistry.mergeObservation({ observationId: item.sourceObservationIds?.[0] || item.objectId, projectId: objectBase.projectId, documentId: objectBase.documentId, pageId: objectBase.pageId, source: 'drawing-analysis', text: item.evidenceText || item.label, region: item.region, detectedType: item.type === 'equipment-tag' ? 'equipment' : item.type === 'generic-candidate-object' ? 'generic-drawing-object' : item.type, detectedTag: item.tag || item.roomNumber || String(item.label || '').split(' ').at(-1), confidence: item.confidence, parserVersion: String(analysis?.analysisVersion || '') }), { pageId: objectBase.pageId });
+  activeDrawingObjects = containedConstructionIntelligence('project-objects', [], () => projectObjectRegistry.getObjectsForPage(sheet?.pageId || '', { projectId: objectBase.projectId })).map(item => ({ ...item, documentId: item.drawingDocumentId, pageId: item.drawingPageId, type: item.objectType, subtype: item.objectSubtype, region: item.graphicalRegion, evidenceText: item.sourceText }));
   if (selectedDrawingObject && !activeDrawingObjects.some(item => item.objectId === selectedDrawingObject.objectId && item.pageId === sheet?.pageId)) { selectedDrawingObject = null; drawingObjectRegionAdjustmentId = ''; drawingRegionSelectionMode = false; }
   if (selectedDrawingObject) selectedDrawingObject = activeDrawingObjects.find(item => item.objectId === selectedDrawingObject.objectId) || selectedDrawingObject;
   const specificationDocument = allDocuments.find(isSpecificationDocument);
   let vocabularyCandidateCount = 0; let relationshipWriteCount = 0;
-  if (sheet && specificationDocument) {
+  try { if (sheet && specificationDocument) {
     const existingLinkIds = new Set(drawingSpecificationLinks.forPage(sheet.pageId).map(item => item.linkId));
     const pageEvidence = [
       { text: sheet.sheetTitle, source: 'authoritative-sheet-title' }, { text: sheet.discipline, source: 'authoritative-discipline' },
@@ -2392,12 +2404,14 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       vocabularyCandidateCount += objectCandidates.length;
       for (const candidate of objectCandidates) { const link = drawingSpecificationLinks.link({ ...candidate, drawingDocumentId: selected.id, drawingPageId: sheet.pageId, objectId: selectedDrawingObject.objectId }); if (link && !existingLinkIds.has(link.linkId)) { relationshipWriteCount += 1; existingLinkIds.add(link.linkId); } }
     }
-  }
+  } } catch (error) { logger.warning('Construction intelligence provider failure', { provider: 'specification-vocabulary', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }); }
   const currentSpecificationLinks = sheet ? drawingSpecificationLinks.forPage(sheet.pageId, selectedDrawingObject ? selectedDrawingObject.objectId : null) : [];
   if (sheet) logger.debug('Drawing requirement evidence resolution', { pageId: sheet.pageId, selectedObjectId: selectedDrawingObject?.objectId || null, vocabularyMatches: vocabularyCandidateCount, relationshipWrites: relationshipWriteCount, rejectedOrSuppressedCandidates: currentSpecificationLinks.filter(item => item.status === 'rejected').length });
-  const activeRelationshipContext = synchronizeActiveDrawingRelationships({ projectId: analysis?.projectId || selected.projectId || state().activeProject, document: selected, analysis, sheet, objects: activeDrawingObjects, specificationLinks: currentSpecificationLinks });
+  let activeRelationshipContext;
+  try { activeRelationshipContext = synchronizeActiveDrawingRelationships({ projectId: analysis?.projectId || selected.projectId || state().activeProject, document: selected, analysis, sheet, objects: activeDrawingObjects, specificationLinks: currentSpecificationLinks }); }
+  catch (error) { logger.warning('Construction intelligence provider failure', { provider: 'relationships', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }); activeRelationshipContext = { sourceEntityId: '', groups: {} }; }
   drawingWorkspace.setPages((analysis?.sheets || []).map(item => ({ ...item, documentId: item.documentId || selected.id, drawingSetId: item.drawingSetId || analysis?.drawingSetId, projectId: item.projectId || analysis?.projectId, pdfPageNumber: item.pdfPageNumber || item.pageNumber })));
-  const pageContext = drawingWorkspace.getContext(sheet ? { ...sheet, documentId: sheet.documentId || selected.id, drawingSetId: sheet.drawingSetId || analysis?.drawingSetId, projectId: sheet.projectId || analysis?.projectId, pdfPageNumber: sheet.pdfPageNumber || sheet.pageNumber } : drawingTarget?.pageNumber || 1);
+  const pageContext = containedConstructionIntelligence('page-context', null, () => drawingWorkspace.getContext(sheet ? { ...sheet, documentId: sheet.documentId || selected.id, drawingSetId: sheet.drawingSetId || analysis?.drawingSetId, projectId: sheet.projectId || analysis?.projectId, pdfPageNumber: sheet.pdfPageNumber || sheet.pageNumber } : drawingTarget?.pageNumber || 1), { pageId: sheet?.pageId || '' });
   if (pageContext) pageContext.rooms = exactRooms.map(item => ({ id: item.roomId, label: `Room ${item.roomNumber}`, verificationState: item.verificationState, region: item.region }));
   if (sheet) logger.debug('Drawing viewer metadata source', { documentId: selected.id, pageId: sheet.pageId || '', pageNumber: sheet.pageNumber, identityState: sheet.identityStatus || 'fallback' });
   if (sheet) drawingViewerEngine.openDocument(selected.id, Math.max(sheet.pageNumber, ...(analysis?.sheets || []).map(item => Number(item.pageNumber) || 0)), sheet.pageNumber);
@@ -2406,10 +2420,9 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   let activeViewportContext = sheet ? drawingViewportContextService.get(selected.id, sheet.pageId) : null;
   if (sheet && !activeViewportContext) activeViewportContext = drawingViewportContextService.update({ projectId: analysis?.projectId || selected.projectId || state().activeProject, documentId: selected.id, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, bounds: { x: 0, y: 0, width: 1, height: 1 }, zoom: viewport.zoom, rotation: viewport.rotation, selectedRegion: effectiveRegion, selectedRoomId: selectedDrawingObject?.type === 'room' ? selectedDrawingObject.roomId : null, selectedObjectId: selectedDrawingObject?.objectId || null, activeTradeChannel: activeTrade.key, source: selectedDrawingObject ? 'object-selection' : effectiveRegion ? 'manual-selection' : 'page-context' }, { immediate: true });
   else if (sheet && activeViewportContext && (activeViewportContext.selectedObjectId !== (selectedDrawingObject?.objectId || null) || activeViewportContext.activeTradeChannel !== activeTrade.key)) activeViewportContext = drawingViewportContextService.update({ ...activeViewportContext, selectedObjectId: selectedDrawingObject?.objectId || null, selectedRoomId: selectedDrawingObject?.type === 'room' ? selectedDrawingObject.roomId : null, activeTradeChannel: activeTrade.key, source: selectedDrawingObject ? (selectedDrawingObject.type === 'room' ? 'room-selection' : 'object-selection') : activeViewportContext.selectedRegion ? 'manual-selection' : 'page-context' }, { immediate: true });
-  const visibleRooms = activeViewportContext ? drawingViewportContextService.visibleRooms(activeViewportContext, exactRooms) : [];
-  const resolvedRequirements = drawingRequirementsResolver.resolve({ projectId: analysis?.projectId || selected.projectId || state().activeProject, pageEntityId: activeRelationshipContext.sourceEntityId && !selectedDrawingObject ? activeRelationshipContext.sourceEntityId : `drawing-page:${sheet?.pageId || ''}`, selectedObjectEntityId: selectedDrawingObject ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedRoomEntityId: selectedDrawingObject?.type === 'room' ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedObjectId: selectedDrawingObject?.objectId || '', viewportContext: activeViewportContext, tradeChannel: activeTrade, drawingSpecLinks: currentSpecificationLinks, projectWideRequirements: [] });
-  const activeRequirements = { ...resolvedRequirements, warnings: [...(resolvedRequirements.warnings || []), ...providerWarnings] };
-  activeDrawingTransientRequirementCount = activeRequirements.requirements?.length || 0;
+  const visibleRooms = activeViewportContext ? containedConstructionIntelligence('rooms', [], () => drawingViewportContextService.visibleRooms(activeViewportContext, exactRooms), { pageId: sheet?.pageId || '' }) : [];
+  const requirementInput = { projectId: analysis?.projectId || selected.projectId || state().activeProject, pageEntityId: activeRelationshipContext.sourceEntityId && !selectedDrawingObject ? activeRelationshipContext.sourceEntityId : `drawing-page:${sheet?.pageId || ''}`, selectedObjectEntityId: selectedDrawingObject ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedRoomEntityId: selectedDrawingObject?.type === 'room' ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedObjectId: selectedDrawingObject?.objectId || '', viewportContext: activeViewportContext, tradeChannel: activeTrade, drawingSpecLinks: currentSpecificationLinks, projectWideRequirements: [] };
+  const pendingRequirements = { status: 'partial', requirements: [], confirmedSpecifications: [], suggestedSpecifications: [], projectWideRequirements: [], fieldRequirements: {}, warnings: providerWarnings, providerFailures: workspaceProviderFailures };
   const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
   const returnLabel = shell === 'professional' && returnAction?.kind === 'mission-control' ? 'Return to Chief' : returnAction?.label;
   const focusTarget = drawingFocusTarget({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion });
@@ -2419,23 +2432,19 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     ...sheetKeyedNotes.map(item => createDrawingOverlay({ overlayId: item.keyedNoteOccurrenceId, ...objectBase, type: 'keyedNotes', label: `Keyed note ${item.identifier}`, region: item.region, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : 'candidate' }))
   ].filter(Boolean);
   const enrichSpecification = item => {
-    const section = specificationIndex.get(item.specificationDocumentId, item.sectionNumber);
+    let section = null; try { section = specificationIndex.get(item.specificationDocumentId, item.sectionNumber); } catch { section = null; }
     return { ...item, startPdfPage: section?.startPdfPage || null };
   };
-  const panelRequirements = {
-    ...activeRequirements,
-    confirmedSpecifications: activeRequirements.confirmedSpecifications.map(enrichSpecification),
-    suggestedSpecifications: activeRequirements.suggestedSpecifications.map(enrichSpecification)
-  };
-  const constructionIntelligencePanel = buildConstructionIntelligencePanelModel({
+  const buildIntelligencePanel = requirements => buildConstructionIntelligencePanelModel({
     document: selected, sheet, trade: activeTrade, selectedObject: selectedDrawingObject, pageObjects: activeDrawingObjects,
     pageStatus: analysis.viewerFallback && !analysis.metadataAvailable ? 'Manual PDF page viewing remains available.' : sheet?.identityStatus,
     pageNotes: pageContext?.drawingNotes || [], relationshipGroups: activeRelationshipContext.groups,
-    requirements: panelRequirements, specificationLinks: currentSpecificationLinks.map(enrichSpecification),
-    objectHistory: selectedDrawingObject ? projectObjectRegistry.getObjectHistory(selectedDrawingObject.objectId) : [], viewportContext: activeViewportContext,
-    sourceEntityId: activeRelationshipContext.sourceEntityId, hasPossibleDuplicates: selectedDrawingObject ? projectObjectRegistry.possibleDuplicates(selectedDrawingObject.objectId).length > 0 : false,
+    requirements: { ...requirements, confirmedSpecifications: (requirements.confirmedSpecifications || []).map(enrichSpecification), suggestedSpecifications: (requirements.suggestedSpecifications || []).map(enrichSpecification) }, specificationLinks: currentSpecificationLinks.map(enrichSpecification),
+    objectHistory: selectedDrawingObject ? containedConstructionIntelligence('object-history', [], () => projectObjectRegistry.getObjectHistory(selectedDrawingObject.objectId), { pageId: sheet?.pageId || '', objectId: selectedDrawingObject.objectId }) : [], viewportContext: activeViewportContext,
+    sourceEntityId: activeRelationshipContext.sourceEntityId, hasPossibleDuplicates: selectedDrawingObject ? containedConstructionIntelligence('object-duplicates', [], () => projectObjectRegistry.possibleDuplicates(selectedDrawingObject.objectId), { pageId: sheet?.pageId || '', objectId: selectedDrawingObject.objectId }).length > 0 : false,
     canLinkSpecification: Boolean(selectedDrawingObject && specificationDocument)
   });
+  const constructionIntelligencePanel = buildIntelligencePanel(pendingRequirements);
   host.innerHTML = `
     <header class="mc-drawing-header" id="mc-drawing-header"><div><span>${shell === 'mission-control' ? 'CONSTRUCTION INTELLIGENCE · PLANS' : 'PROFESSIONAL WORKSPACE · DRAWING EVIDENCE'}</span><h2 title="${esc(selected.title || selected.name || 'Drawing set')}">${esc(selected.title || selected.name || 'Drawing set')}</h2><p><strong>${esc(status.label)}</strong> — ${esc(status.detail)}</p></div><div>${shell === 'professional' && persistedAnalysis ? '<button class="subtle" data-drawing-reanalyze>Reanalyze Drawing Set</button>' : ''}${returnAction ? `<button class="subtle" data-drawing-return="${esc(returnAction.kind)}">${esc(returnLabel)}</button>` : ''}</div></header>
     <div class="mc-drawing-layout ${drawingWorkspacePanels.finderHidden ? 'finder-hidden' : ''} ${drawingWorkspacePanels.evidenceHidden ? 'evidence-hidden' : ''} ${drawingWorkspacePanels.expanded ? 'drawing-expanded' : ''}">
@@ -2456,6 +2465,18 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const nextIntelligence = host.querySelector('.mc-drawing-evidence');
   if (nextIntelligence) nextIntelligence.scrollTop = constructionIntelligenceScroll[constructionIntelligencePanel.mode] || 0;
   if (source && sheet) await paintDrawingPage(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), overlayRecords);
+  const intelligenceStartedAt = globalThis.performance?.now?.() ?? Date.now();
+  void drawingRequirementsResolver.resolveLatest(requirementInput).then(outcome => {
+    if (!outcome.committed || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
+    const resolved = outcome.result;
+    const activeRequirements = { ...resolved, status: providerWarnings.length && resolved.status === 'complete' ? 'partial' : resolved.status, warnings: [...(resolved.warnings || []), ...providerWarnings], providerFailures: [...(resolved.providerFailures || []), ...workspaceProviderFailures] };
+    for (const failure of activeRequirements.providerFailures) logger.warning('Construction intelligence provider failure', { ...failure, pageId: sheet?.pageId || '', objectId: selectedDrawingObject?.objectId || '', timestamp: new Date().toISOString(), contained: true });
+    activeDrawingTransientRequirementCount = activeRequirements.requirements?.length || 0;
+    const panel = host.querySelector('.mc-drawing-evidence'); if (!panel) return;
+    const panelStartedAt = globalThis.performance?.now?.() ?? Date.now(); const scrollTop = panel.scrollTop;
+    panel.innerHTML = constructionIntelligencePanelMarkup(buildIntelligencePanel(activeRequirements)); panel.scrollTop = scrollTop;
+    logger.debug('Construction intelligence performance', { pageId: sheet?.pageId || '', resolutionMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - intelligenceStartedAt), panelUpdateMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - panelStartedAt), providerFailureCount: activeRequirements.providerFailures.length, contained: true });
+  }).catch(error => logger.warning('Construction intelligence provider failure', { provider: 'requirements-resolver', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }));
   const restoredFocus = preservedFocusSelector ? host.querySelector(preservedFocusSelector) : null;
   if (restoredFocus) restoredFocus.focus({ preventScroll: true });
   else if (focusTarget && host.querySelector(`#${focusTarget}`)) {

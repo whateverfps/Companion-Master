@@ -1,5 +1,8 @@
-const text = value => value === null || value === undefined ? '' : String(value).trim();
-const list = value => Array.isArray(value) ? value : [];
+export const asString = value => value === null || value === undefined ? '' : String(value).trim();
+export const asArray = value => Array.isArray(value) ? value : [];
+export const asObject = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+const text = asString;
+const list = asArray;
 const SCOPES = new Set(['project-wide', 'building-wide', 'page-wide', 'room-wide', 'object-specific', 'selected-region-candidate']);
 const STATUSES = new Set(['confirmed', 'suggested', 'rejected']);
 
@@ -8,11 +11,13 @@ function requirementId(input) {
 }
 
 export function createRequirementRecord(input = {}, specificationIndex) {
+  input = asObject(input);
   const section = specificationIndex?.get?.(input.specificationDocumentId, input.sectionNumber);
   const scope = SCOPES.has(input.applicabilityScope) ? input.applicabilityScope : '';
   const status = STATUSES.has(input.status) ? input.status : 'suggested';
   if (!text(input.projectId) || !section || section.projectId !== text(input.projectId) || !scope || !text(input.evidenceType) || (!text(input.evidenceText) && input.origin !== 'manual')) return null;
-  const article = input.articleId ? section.articles?.find(item => item.id === input.articleId) : null;
+  let articles = []; try { articles = list(section.articles); } catch { articles = []; }
+  const article = input.articleId ? articles.find(item => item?.id === input.articleId) : null;
   return {
     requirementId: text(input.requirementId) || requirementId({ ...input, sectionNumber: section.sectionNumber }), projectId: text(input.projectId),
     relationshipId: text(input.relationshipId) || null, drawingSpecLinkId: text(input.drawingSpecLinkId) || null,
@@ -37,27 +42,34 @@ function scopeFor(entity) {
 }
 
 function sectionCategory(section) {
-  const categories = new Set(section?.articles?.map(item => item.kind).filter(Boolean));
+  const categories = new Set(list(section?.articles).map(item => text(item?.kind)).filter(Boolean));
   return { submittals: categories.has('submittal'), quality: categories.has('quality assurance'), testing: categories.has('testing'), inspection: categories.has('inspection'), commissioning: categories.has('commissioning'), closeout: categories.has('closeout') };
 }
 
 export function createDrawingRequirementsResolver({ specificationIndex, relationshipEngine, providers = [], onMetric = () => {}, now = () => Date.now() } = {}) {
   const cache = new Map(); let generation = 0;
   const providerList = list(providers).filter(item => typeof item === 'function');
-  const resolve = input => {
-    const started = now(); const projectId = text(input.projectId); const trade = input.tradeChannel || { key: 'all-trades', divisions: [] };
+  const emptyFieldRequirements = () => ({ submittals: [], 'quality assurance': [], quality: [], 'products/materials': [], execution: [], 'examination/preparation': [], installation: [], testing: [], inspection: [], protection: [], commissioning: [], closeout: [] });
+  const unavailable = (input, message, providerFailures = []) => ({ status: 'unavailable', projectId: text(input?.projectId), contextSourceEntityId: null, tradeChannel: text(input?.tradeChannel?.key) || 'all-trades', governingDrawings: [], requirements: [], confirmedSpecifications: [], suggestedSpecifications: [], projectWideRequirements: [], fieldRequirements: emptyFieldRequirements(), warnings: [message], providerFailures, diagnostics: { skippedRecordCount: 0, providerFailureCount: providerFailures.length }, resolvedAt: new Date().toISOString() });
+  const resolveCore = rawInput => {
+    const input = asObject(rawInput); const started = now(); const projectId = text(input.projectId); const rawTrade = asObject(input.tradeChannel);
+    const trade = { key: text(rawTrade.key) || 'all-trades', divisions: list(rawTrade.divisions).map(text).filter(Boolean) };
+    if (typeof specificationIndex?.get !== 'function') return unavailable(input, 'Specification index is unavailable.', [{ provider: 'specification-index', code: 'construction-intelligence-provider-failure', message: 'Specification index is unavailable.', contained: true }]);
     const sourceIds = [text(input.selectedObjectEntityId), text(input.selectedRoomEntityId), text(input.pageEntityId)].filter(Boolean);
-    const cacheKey = JSON.stringify([projectId, sourceIds, trade.key, input.viewportContext?.selectedRegion, list(input.drawingSpecLinks).map(item => [item.linkId, item.status, item.updatedAt]), list(input.projectWideRequirements).map(item => [item.sectionNumber, item.status])]);
+    const cacheKey = JSON.stringify([projectId, sourceIds, trade.key, input.viewportContext?.selectedRegion, list(input.drawingSpecLinks).map(item => [item?.linkId, item?.status, item?.updatedAt]), list(input.projectWideRequirements).map(item => [item?.sectionNumber, item?.status])]);
     if (cache.has(cacheKey)) return structuredClone(cache.get(cacheKey));
-    const requirements = []; const governingDrawings = []; const warnings = [];
+    const requirements = []; const governingDrawings = []; const warnings = []; const providerFailures = []; let skippedRecordCount = 0;
+    const providerFailure = (provider, error) => { const failure = { provider, code: 'construction-intelligence-provider-failure', message: error?.message || String(error), contained: true }; providerFailures.push(failure); warnings.push(failure.message); };
+    const relatedEntities = (provider, entityId, options) => { if (!entityId || typeof relationshipEngine?.getRelatedEntities !== 'function') return []; try { return list(relationshipEngine.getRelatedEntities(entityId, options)).filter(item => item && typeof item === 'object'); } catch (error) { providerFailure(provider, error); return []; } };
     const chosenSourceId = sourceIds[0]; const chosenSource = relationshipEngine?.getEntity?.(chosenSourceId);
     if (input.pageEntityId) {
       const page = relationshipEngine?.getEntity?.(input.pageEntityId);
       if (page) governingDrawings.push({ entity: page, relationship: null, status: page.verificationState, reason: 'Current active drawing page.' });
-      for (const related of relationshipEngine?.getRelatedEntities?.(input.pageEntityId, { projectId, entityTypes: ['drawing-page'], verificationStates: ['confirmed', 'suggested'], limit: 50 }) || []) governingDrawings.push({ ...related, status: related.relationship.verificationState, reason: related.relationship.evidence?.[0]?.confidenceReason || 'Explicit drawing relationship.' });
+      for (const related of relatedEntities('related-drawings', input.pageEntityId, { projectId, entityTypes: ['drawing-page'], verificationStates: ['confirmed', 'suggested'], limit: 50 })) if (related.relationship) governingDrawings.push({ ...related, status: related.relationship.verificationState, reason: list(related.relationship.evidence)[0]?.confidenceReason || 'Explicit drawing relationship.' }); else skippedRecordCount += 1;
     }
-    for (const related of relationshipEngine?.getRelatedEntities?.(chosenSourceId, { projectId, entityTypes: ['specification-section', 'specification-article'], relationshipTypes: ['governed-by', 'requires', 'references'], verificationStates: ['confirmed', 'suggested'], limit: 100 }) || []) {
-      const sectionEntity = related.entity.entityType === 'specification-section' ? related.entity : relationshipEngine.getRelatedEntities(related.entity.entityId, { projectId, entityTypes: ['specification-section'], relationshipTypes: ['belongs-to'], verificationStates: ['confirmed'], limit: 1 })[0]?.entity;
+    for (const related of relatedEntities('requirement-relationships', chosenSourceId, { projectId, entityTypes: ['specification-section', 'specification-article'], relationshipTypes: ['governed-by', 'requires', 'references'], verificationStates: ['confirmed', 'suggested'], limit: 100 })) {
+      if (!related.entity || !related.relationship) { skippedRecordCount += 1; continue; }
+      const sectionEntity = related.entity.entityType === 'specification-section' ? related.entity : relatedEntities('specification-article-parent', related.entity.entityId, { projectId, entityTypes: ['specification-section'], relationshipTypes: ['belongs-to'], verificationStates: ['confirmed'], limit: 1 })[0]?.entity;
       if (!sectionEntity) continue;
       const evidence = related.relationship.evidence?.[0] || {};
       const record = createRequirementRecord({ projectId, sourceDocumentId: related.relationship.sourceDocumentId || chosenSource?.sourceDocumentId, sourcePageId: related.relationship.sourcePageId || input.viewportContext?.pageId, sourceObjectId: chosenSource?.entityType === 'drawing-object' ? chosenSource.sourceObjectId : null, sourceRoomId: chosenSource?.entityType === 'room' ? chosenSource.entityId : null,
@@ -67,7 +79,8 @@ export function createDrawingRequirementsResolver({ specificationIndex, relation
       if (record) record.relationshipId = related.relationship.relationshipId;
       if (record) requirements.push(record);
     }
-    for (const link of list(input.drawingSpecLinks).filter(item => item.status !== 'rejected')) {
+    for (const rawLink of list(input.drawingSpecLinks).filter(item => item && item.status !== 'rejected')) {
+      const link = asObject(rawLink);
       const sourceScope = link.objectId && input.selectedObjectId === link.objectId ? 'object-specific' : link.objectId ? '' : 'page-wide';
       if (!sourceScope) continue;
       const record = createRequirementRecord({ projectId, sourceDocumentId: link.drawingDocumentId, sourcePageId: link.drawingPageId, sourceObjectId: link.objectId, specificationDocumentId: link.specificationDocumentId, sectionNumber: link.sectionNumber,
@@ -76,32 +89,36 @@ export function createDrawingRequirementsResolver({ specificationIndex, relation
       if (record) record.drawingSpecLinkId = link.linkId;
       if (record) requirements.push(record);
     }
-    for (const related of relationshipEngine?.getRelatedEntities?.(`project:${projectId}`, { projectId, entityTypes: ['specification-section'], relationshipTypes: ['governed-by', 'requires'], verificationStates: ['confirmed', 'suggested'], limit: 100 }) || []) {
+    for (const related of relatedEntities('project-requirements', `project:${projectId}`, { projectId, entityTypes: ['specification-section'], relationshipTypes: ['governed-by', 'requires'], verificationStates: ['confirmed', 'suggested'], limit: 100 })) {
+      if (!related.entity || !related.relationship) { skippedRecordCount += 1; continue; }
       const evidence = related.relationship.evidence?.[0] || {};
       const record = createRequirementRecord({ projectId, relationshipId: related.relationship.relationshipId, specificationDocumentId: related.entity.sourceDocumentId, sectionNumber: related.entity.normalizedKey, applicabilityScope: 'project-wide', evidenceType: evidence.evidenceType || 'project-wide requirement', evidenceText: evidence.sourceText || related.relationship.metadata?.note || 'Imported authoritative project-wide relationship.', confidence: related.relationship.confidence, status: related.relationship.verificationState, reason: evidence.confidenceReason || 'Explicit project-wide relationship.', origin: related.relationship.origin }, specificationIndex);
       if (record) requirements.push(record);
     }
-    for (const item of list(input.projectWideRequirements).filter(item => item.status !== 'rejected')) {
+    for (const item of list(input.projectWideRequirements).filter(item => item && item.status !== 'rejected')) {
       const record = createRequirementRecord({ ...item, projectId, applicabilityScope: 'project-wide', evidenceType: item.evidenceType || 'project-wide requirement', evidenceText: item.evidenceText, reason: item.reason || 'Explicitly identified project-wide baseline requirement.' }, specificationIndex);
       if (record) requirements.push(record);
     }
     if (input.viewportContext?.selectedRegion && !chosenSource) warnings.push('Selected drawing region has no verified object or room requirement relationship.');
-    for (const provider of providerList) { try { for (const candidate of list(provider(structuredClone(input)))) { const record = createRequirementRecord(candidate, specificationIndex); if (record) requirements.push(record); } } catch (error) { warnings.push(error?.message || 'A requirement provider is unavailable.'); } }
+    for (const provider of providerList) { try { const provided = provider(structuredClone(input)); if (provided && typeof provided.then === 'function') { void Promise.resolve(provided).catch(error => providerFailure(provider.name || 'requirement-provider', error)); continue; } for (const candidate of list(provided)) { const record = createRequirementRecord(asObject(candidate), specificationIndex); if (record) requirements.push(record); else skippedRecordCount += 1; } } catch (error) { providerFailure(provider.name || 'requirement-provider', error); } }
     const deduplicated = [...new Map(requirements.sort((a, b) => (a.status === 'confirmed' ? 0 : 1) - (b.status === 'confirmed' ? 0 : 1) || a.applicabilityScope.localeCompare(b.applicabilityScope) || a.sectionNumber.localeCompare(b.sectionNumber)).map(item => [item.requirementId, item])).values()];
-    const allowed = trade.key === 'all-trades' ? deduplicated : deduplicated.filter(item => item.applicabilityScope === 'project-wide' || trade.divisions.includes(item.sectionNumber.replace(/\D/g, '').slice(0, 2)) || item.tradeChannels.includes(trade.key));
+    const allowed = trade.key === 'all-trades' ? deduplicated : deduplicated.filter(item => item.applicabilityScope === 'project-wide' || trade.divisions.includes(text(item.sectionNumber).replace(/\D/g, '').slice(0, 2)) || list(item.tradeChannels).includes(trade.key));
     const articleLookupStarted = now();
     const fieldRequirements = { submittals: [], 'quality assurance': [], 'products/materials': [], execution: [], 'examination/preparation': [], installation: [], testing: [], inspection: [], protection: [], commissioning: [], closeout: [] };
     for (const requirement of allowed) {
-      const section = specificationIndex.get(requirement.specificationDocumentId, requirement.sectionNumber);
-      for (const article of list(section?.articles)) if (article.kind && fieldRequirements[article.kind]) fieldRequirements[article.kind].push({ ...requirement, article: structuredClone(article) });
-      const legacy = sectionCategory(section);
-      if (legacy.quality && !fieldRequirements['quality assurance'].some(item => item.requirementId === requirement.requirementId)) fieldRequirements['quality assurance'].push(requirement);
+      let section = null; try { section = specificationIndex.get(requirement.specificationDocumentId, requirement.sectionNumber); } catch (error) { providerFailure('specification-articles', error); }
+      try {
+        for (const article of list(section?.articles)) if (article?.kind && fieldRequirements[article.kind]) fieldRequirements[article.kind].push({ ...requirement, article: structuredClone(article) });
+        const legacy = sectionCategory(section);
+        if (legacy.quality && !fieldRequirements['quality assurance'].some(item => item.requirementId === requirement.requirementId)) fieldRequirements['quality assurance'].push(requirement);
+      } catch (error) { providerFailure('specification-articles', error); }
     }
     fieldRequirements.quality = fieldRequirements['quality assurance'];
     onMetric({ operation: 'requirement-article-lookup', durationMs: Math.max(0, now() - articleLookupStarted), sectionCount: allowed.length, articleCount: Object.entries(fieldRequirements).filter(([key]) => key !== 'quality').reduce((sum, [, items]) => sum + items.length, 0) });
-    const output = { projectId, contextSourceEntityId: chosenSourceId || null, tradeChannel: trade.key, governingDrawings, requirements: allowed, confirmedSpecifications: allowed.filter(item => item.status === 'confirmed' && item.applicabilityScope !== 'project-wide'), suggestedSpecifications: allowed.filter(item => item.status === 'suggested' && item.applicabilityScope !== 'project-wide'), projectWideRequirements: allowed.filter(item => item.applicabilityScope === 'project-wide'), fieldRequirements, warnings, resolvedAt: new Date().toISOString() };
+    const output = { status: providerFailures.length ? (allowed.length || governingDrawings.length ? 'partial' : 'unavailable') : 'complete', projectId, contextSourceEntityId: chosenSourceId || null, tradeChannel: trade.key, governingDrawings, requirements: allowed, confirmedSpecifications: allowed.filter(item => item.status === 'confirmed' && item.applicabilityScope !== 'project-wide'), suggestedSpecifications: allowed.filter(item => item.status === 'suggested' && item.applicabilityScope !== 'project-wide'), projectWideRequirements: allowed.filter(item => item.applicabilityScope === 'project-wide'), fieldRequirements, warnings, providerFailures, diagnostics: { skippedRecordCount, providerFailureCount: providerFailures.length }, resolvedAt: new Date().toISOString() };
     cache.set(cacheKey, output); onMetric({ operation: 'requirement-resolution', durationMs: Math.max(0, now() - started), requirementCount: allowed.length }); return structuredClone(output);
   };
+  const resolve = input => { try { return resolveCore(input); } catch (error) { const failure = { provider: 'requirements-resolver', code: 'construction-intelligence-provider-failure', message: error?.message || String(error), contained: true }; onMetric({ operation: 'requirement-resolution-failure', providerFailureCount: 1, contained: true }); return unavailable(input, 'Construction intelligence is unavailable for this page.', [failure]); } };
   return {
     resolve,
     async resolveLatest(input) { const requestGeneration = ++generation; const result = await Promise.resolve().then(() => resolve(input)); return requestGeneration === generation ? { committed: true, generation, result } : { committed: false, generation: requestGeneration, result: null }; },

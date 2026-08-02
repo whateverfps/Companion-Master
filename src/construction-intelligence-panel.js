@@ -66,6 +66,7 @@ function historyRecords(object, history, specificationLinks) {
 export function buildConstructionIntelligencePanelModel(input = {}) {
   const sheet = input.sheet || {};
   const object = input.selectedObject || null;
+  const intelligenceStatus = ['complete', 'partial', 'unavailable'].includes(input.requirements?.status) ? input.requirements.status : 'complete';
   if (!object) {
     const counts = list(input.pageObjects).filter(item => item.verificationState !== 'rejected').reduce((result, item) => {
       const key = text(item.type || item.objectType || 'object').replace(/-/g, ' ');
@@ -76,6 +77,7 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
     const fieldRequirements = unique(Object.entries(input.requirements?.fieldRequirements || {}).flatMap(([category, items]) => list(items).map(item => ({ ...item, category }))), item => `${item.category}:${item.requirementId || item.sectionNumber}:${item.article?.id || ''}`);
     return {
       mode: 'page',
+      status: intelligenceStatus,
       page: {
         drawing: text(input.document?.title || input.document?.name),
         sheet: text(sheet.sheetNumber) || `Page ${Number(sheet.pageNumber) || 1}`,
@@ -107,6 +109,7 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
   const fields = Object.entries(input.requirements?.fieldRequirements || {}).flatMap(([category, items]) => list(items).map(item => ({ ...item, category })));
   return {
     mode: 'object',
+    status: intelligenceStatus,
     object: {
       name: text(object.label || object.tag), type: text(object.type || object.objectType), objectId: text(object.objectId),
       building: text(object.buildingId || sheet.building), room: text(object.roomId), trade: text(object.trade), system: text(object.system),

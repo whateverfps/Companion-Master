@@ -19,14 +19,15 @@ function termPattern(term) {
 }
 
 function evidenceRecords(input = {}) {
-  return list(input.evidence).map((item, order) => typeof item === 'string' ? { text: item, source: 'drawing-text', region: null, order } : {
-    text: text(item.text || item.value || item.label || item.title), source: text(item.source || item.kind || 'drawing-evidence'), region: item.region || null, observationId: text(item.observationId), order
+  return list(input?.evidence).map((item, order) => typeof item === 'string' ? { text: item, source: 'drawing-text', region: null, order } : {
+    text: text(item?.text || item?.value || item?.label || item?.title), source: text(item?.source || item?.kind || 'drawing-evidence'), region: item?.region || null, observationId: text(item?.observationId), order
   }).filter(item => item.text && !/^(?:518[-\s]?22[-\s]?700|61IN101|page\s+\d+|room\s+\d+)$/i.test(item.text));
 }
 
 export function createProjectSpecificationVocabulary({ specificationIndex, definitions = BEDFORD_PROJECT_SPECIFICATION_VOCABULARY, onDiagnostic = () => {} } = {}) {
-  const compiled = definitions.map(definition => ({ ...definition, normalizedSectionNumber: normalizeSpecificationNumber(definition.sectionNumber).replace(/\s/g, ''), patterns: definition.terms.map(term => ({ term, pattern: termPattern(term) })) }));
-  const match = (input, applicabilityScope) => {
+  const compiled = list(definitions).filter(definition => definition && text(definition.sectionNumber)).map(definition => ({ ...definition, normalizedSectionNumber: normalizeSpecificationNumber(definition.sectionNumber).replace(/\s/g, ''), patterns: list(definition.terms).map(text).filter(Boolean).map(term => ({ term, pattern: termPattern(term) })) }));
+  const match = (rawInput, applicabilityScope) => {
+    const input = rawInput && typeof rawInput === 'object' ? rawInput : {};
     const started = globalThis.performance?.now?.() ?? Date.now();
     const evidence = evidenceRecords(input); const matches = [];
     for (const definition of compiled) {
