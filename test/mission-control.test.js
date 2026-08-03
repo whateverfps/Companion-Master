@@ -170,11 +170,12 @@ test('Mission Control uses Dashboard, Chief, Drawings, and Professional Workspac
   assert.doesNotMatch(app, /aria-label="More Tools"/);
 });
 
-test('Professional Workspace exposes compact workspace tools and drawings return to Chief', () => {
+test('Professional Workspace exposes compact workspace tools and returns to Chief without a drawing viewer button', () => {
   const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const tools = app.slice(app.indexOf('id="professionalWorkspaceTools"'), app.indexOf('<h3>Administration<\/h3>'));
   assert.match(tools, /<h3>Drawing \/ Engineering<\/h3>/);
-  assert.match(tools, /data-view="drawings">Drawing Set Inspector<\/button>[\s\S]*data-view="engineering">Engineering Workspace/);
+  assert.doesNotMatch(tools, /data-view="drawings">Drawing Set Inspector<\/button>/);
+  assert.match(tools, /data-view="engineering">Engineering Workspace/);
   assert.doesNotMatch(tools, /position:absolute;left:-9999px/);
   assert.match(app, /Project Workspace/);
   assert.match(app, /Knowledge Workspace/);
@@ -185,7 +186,7 @@ test('Professional Workspace exposes compact workspace tools and drawings return
   assert.match(app, /returnLabel = shell === 'professional'[\s\S]*'Return to Chief'/);
   assert.match(app, /showMissionControlView\('home'\)/);
   assert.match(app, /<section id="drawings" class="view">[\s\S]*id="drawingInspector" class="mc-drawing-workspace"/);
-  assert.match(app, /renderDrawingWorkspace\('professional'\)/);
+  assert.doesNotMatch(app, /renderDrawingWorkspace\('professional'\)/);
 });
 
 test('Mission Control embeds the hosted PMIS dashboard with dedicated actions and a safe iframe', () => {
@@ -249,6 +250,21 @@ test('Phase 23C presents drawings as construction evidence with a field-grade hi
   assert.match(css, /Phase 23C/);
   assert.match(css, /#missionDrawingViewer \.mc-drawing-evidence/);
   assert.match(css, /\.mc-drawing-stage\{min-height:520px/);
+});
+
+test('Plans keeps exactly one shared Sheet Inspector beneath the drawing viewer', () => {
+  const app = fs.readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /renderDrawingWorkspace\('mission-control'\)/);
+  assert.match(app, /getActivePlansSheetContext\(/);
+  assert.match(app, /updatePlansInspectorOwnership\(/);
+  assert.match(app, /activePlansInspectorPanel/);
+  assert.match(app, /activePlansInspectorSheetId/);
+  assert.match(app, /activePlansInspectorGeneration/);
+  assert.match(app, /missionPlansSheetInspector/);
+  assert.match(app, /constructionIntelligencePanelMarkup\(constructionIntelligencePanel\)/);
+  assert.match(app, /buildConstructionIntelligencePanelModel\(/);
+  assert.match(app, /panel\.innerHTML = constructionIntelligencePanelMarkup\(panelModel\)/);
+  assert.equal((app.match(/missionPlansSheetInspector/g) || []).length >= 1, true);
 });
 
 test('Phase 24A keeps construction work primary and viewport/search controls stable', () => {

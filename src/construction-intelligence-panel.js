@@ -60,6 +60,33 @@ function specificationRecords(requirements, links, { mode = 'page', objectId = '
     }));
 }
 
+function normalizeSpecificationRecords(records, { mode = 'page', objectId = '' } = {}) {
+  return unique(list(records).filter(item => mode === 'object'
+    ? text(item.objectId || item.sourceObjectId) === text(objectId) || text(item.applicabilityScope) === 'object-specific' || (!text(item.objectId || item.sourceObjectId) && !text(item.applicabilityScope))
+    : text(item.applicabilityScope || 'page-wide') === 'page-wide' || text(item.objectId || item.sourceObjectId) || text(item.applicabilityScope) === 'object-specific' || !text(item.applicabilityScope)), item => `${text(item.specificationDocumentId)}:${text(item.sectionNumber).replace(/\D/g, '')}:${text(item.article?.id || item.articleReference)}`)
+    .map(item => ({
+      ...item,
+      label: `${text(item.sectionNumber)}${text(item.sectionTitle) ? ` — ${text(item.sectionTitle)}` : ''}`,
+      status: item.status || 'suggested',
+      displayStatus: item.origin === 'manual' ? 'manual' : item.status || 'suggested',
+      evidenceText: text(item.evidenceText || item.reason),
+      evidenceSource: text(item.evidenceSource || item.evidenceType || item.origin),
+      canOpen: Boolean(text(item.specificationDocumentId) && text(item.sectionNumber)),
+      canShowSource: Boolean(item.startPdfPage || item.sourcePageNumber),
+      sourcePageNumber: Number(item.startPdfPage || item.sourcePageNumber) || null,
+      evidenceCount: Math.max(1, list(item.evidence).length, list(item.evidenceObservations).length)
+    }));
+}
+
+function resolvedSpecificationRecords(input, { mode = 'page', objectId = '' } = {}) {
+  const resolved = [
+    ...list(input.requirements?.confirmedSpecifications),
+    ...list(input.requirements?.suggestedSpecifications)
+  ];
+  if (resolved.length) return normalizeSpecificationRecords(resolved, { mode, objectId });
+  return specificationRecords(input.requirements, input.specificationLinks, { mode, objectId });
+}
+
 function historyRecords(object, history, specificationLinks) {
   const entries = [
     object?.createdAt ? { label: 'Created', value: object.createdAt } : null,
@@ -111,7 +138,7 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
       result[key] = (result[key] || 0) + 1;
       return result;
     }, {});
-    const specifications = specificationRecords(input.requirements, input.specificationLinks, { mode: 'page' });
+    const specifications = resolvedSpecificationRecords(input, { mode: 'page' });
     const fieldRequirements = unique(Object.entries(input.requirements?.fieldRequirements || {}).flatMap(([category, items]) => list(items).map(item => ({ ...item, category }))), item => `${item.category}:${item.requirementId || item.sectionNumber}:${item.article?.id || ''}`);
     const pageInsights = relationshipRecords(input.relationshipGroups, ['chiefInsights', 'insights']);
     const warnings = unique([...list(input.requirements?.warnings), ...list(input.requirements?.providerFailures)].map(item => ({ label: text(item?.message || item?.warning || item), detail: text(item?.code || item?.provider || '') })), item => `${item.label}:${item.detail}`);
@@ -167,7 +194,7 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
   }
 
   const groups = input.relationshipGroups || {};
-  let specifications = specificationRecords(input.requirements, input.specificationLinks, { mode: 'object', objectId: object.objectId });
+  let specifications = resolvedSpecificationRecords(input, { mode: 'object', objectId: object.objectId });
   if (Number(input.multiSelection?.selectionCount) > 1) {
     const sharedKeys = new Set(list(input.multiSelection?.sharedSpecifications).map(item=>`${text(item.specificationDocumentId)}:${text(item.sectionNumber).replace(/\D/g,'')}`));
     specifications = specifications.filter(item=>sharedKeys.has(`${text(item.specificationDocumentId)}:${text(item.sectionNumber).replace(/\D/g,'')}`));

@@ -13,9 +13,11 @@ test('true Fit Page waits for size and accounts for rotation', () => {
   assert.ok(rotated.scale < normal.scale);
 });
 
-test('fitted rendering can use its calculated scale below the manual zoom minimum', () => {
+test('fitted rendering clamps to the intrinsic safe scale before presentation', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
-  assert.match(app, /\['fit-page', 'fit-width'\]\.includes\(restored\.mode\)\s*\? Math\.max\(\.05, Math\.min\(3, drawingZoom\)\)\s*:\s*Math\.max\(\.35, Math\.min\(3, drawingZoom\)\)/);
+  assert.match(app, /const intrinsicScale = Math\.max\(\.1, Math\.min\(Number\.isFinite\(safeScaleCap\) && safeScaleCap > 0 \? safeScaleCap : 1, preferredScale\)\);/);
+  assert.match(app, /updateMissionRenderState\(RenderState\.VIEWPORT_READY, \{ sheet, viewportWidth: baseWidth \* intrinsicScale, viewportHeight: baseHeight \* intrinsicScale \}\);/);
+  assert.match(app, /renderPdfPage\(activeDrawingPdf, pageNumber, renderCanvas, \{ scale: intrinsicScale, rotation: nextIdentity\.rotation \}\)/);
 });
 
 test('per-sheet viewport restores custom zoom, scroll, selection, and overlays', () => {
@@ -59,9 +61,25 @@ test('drawing stage gesture handling reuses the existing zoom controls and viewp
   assert.match(app, /drawingInteractionSession\.updateViewport\(\{ zoom: next\.zoom, scrollLeft: next\.scrollLeft, scrollTop: next\.scrollTop \}\)/);
   assert.match(app, /drawingInteractionSession\.scheduleFrame\(\(\) => applyDrawingInteractionViewport\(stage, next\.zoom, drawingRotation\)\)/);
   assert.match(app, /drawingInteractionSession\.settleSoon\(\)/);
-  assert.match(app, /viewOutput\.textContent = `\$\{Math\.round\(boundedScale \* 100\)\}% · \$\{drawingRotation\}°`/);
+  assert.match(app, /viewOutput\.textContent = `\$\{Math\.round\(intrinsicScale \* 100\)\}% · \$\{drawingRotation\}°`/);
   assert.match(app, /button\.dataset\.drawingZoom/);
   assert.equal((app.match(/const drawingViewportBySet = new Map\(\);/g) || []).length, 1);
+});
+
+test('first paint renders from intrinsic page size without waiting for measurable layout', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /const MAX_RENDER_PIXELS = 4194304;/);
+  assert.match(app, /const MAX_CANVAS_WIDTH = 4096;/);
+  assert.match(app, /const MAX_CANVAS_HEIGHT = 4096;/);
+  assert.match(app, /const MAX_OUTPUT_SCALE = 2;/);
+  assert.match(app, /const DrawingRenderedEvent = 'DrawingRendered';/);
+  assert.match(app, /function emitDrawingRendered\(detail = \{\}\)/);
+  assert.match(app, /drawingRenderedEventTarget\.addEventListener\(DrawingRenderedEvent, event =>/);
+  assert.match(app, /const renderPage = await activeDrawingPdf\.getPage\(sheet\.pageNumber\);/);
+  assert.match(app, /const baseViewport = renderPage\.getViewport\(\{ scale: 1, rotation: \(sheet\.rotation \+ drawingRotation\) % 360 \}\);/);
+  assert.match(app, /const safeScaleCap = Math\.min\(/);
+  assert.doesNotMatch(app, /Drawing viewer is waiting for a measurable layout/);
+  assert.doesNotMatch(app, /measureDrawingLayout/);
 });
 
 test('drawing workspace expands and restores both rails without viewport mutation', () => {
@@ -89,17 +107,36 @@ test('observation, verification, overlays, and rail state are outside render ide
   assert.equal(drawingRenderDecision({ previousIdentity: base, nextIdentity: { ...base }, canvas: { ...canvas, isConnected: false } }).reason, 'canvas-unavailable');
 });
 
-test('main and Professional drawing views share state and switching does not reset it', () => {
+test('Plans is the only drawing view and switching does not reset its state', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.equal((app.match(/let drawingTarget = null;/g) || []).length, 1);
   assert.equal((app.match(/const drawingViewportBySet = new Map\(\);/g) || []).length, 1);
   assert.equal((app.match(/let drawingMatchingSheetIds = \[\];/g) || []).length, 1);
   assert.match(app, /renderDrawingWorkspace\('mission-control'\)/);
-  assert.match(app, /renderDrawingWorkspace\('professional'\)/);
   const routeStart = app.indexOf('function show(name)');
   const route = app.slice(routeStart, routeStart + 5000);
-  assert.match(route, /if \(name === 'drawings'\) void renderDrawingWorkspace\('professional'\)/);
+  assert.doesNotMatch(route, /if \(name === 'drawings'\)/);
   assert.doesNotMatch(route, /drawingTarget\s*=\s*null|drawingViewportBySet\.clear|drawingMatchingSheetIds\s*=\s*\[\]/);
+});
+
+test('Plans inspector owns a dedicated host and immutable sheet context on every sheet render', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /let activePlansInspectorPanel = null;/);
+  assert.match(app, /let activePlansInspectorSheetId = '';/);
+  assert.match(app, /let activePlansInspectorGeneration = 0;/);
+  assert.match(app, /let activePlansInspectorContext = null;/);
+  assert.match(app, /function plansInspectorHost\(\)/);
+  assert.match(app, /function getActivePlansSheetContext\(overrides = \{\}\)/);
+  assert.match(app, /function normalizePlansInspectorContext\(/);
+  assert.match(app, /function updatePlansInspectorOwnership\(context = \{\}\)/);
+  assert.match(app, /function plansInspectorOwnershipValid\(\{ panel, sheetId, generationId, shell \} = \{\}\)/);
+  assert.match(app, /const plansInspectorContext = shell === 'mission-control'\s*\?\s*getActivePlansSheetContext\(/);
+  assert.match(app, /inspectorContext,\n/);
+  assert.match(app, /if \(shell === 'mission-control'\) updatePlansInspectorOwnership\(\{ \.\.\.\(plansInspectorContext \|\| \{\}\), panel: nextIntelligence \}\);/);
+  assert.match(app, /missionPlansSheetInspector/);
+  assert.match(app, /panel === activePlansInspectorPanel/);
+  assert.match(app, /sheetId === activePlansInspectorSheetId/);
+  assert.match(app, /Number\(generationId\) === Number\(activePlansInspectorGeneration\)/);
 });
 
 test('retained PDF fallback enumerates pages without fabricating drawing identities', () => {
@@ -191,7 +228,8 @@ test('rapid page switching paints first and defers heavy workspace reconstructio
   assert.match(app, /async function paintDrawingSelectionFast\(/);
   assert.match(app, /await paintDrawingSelectionFast\(/);
   assert.match(app, /function scheduleDeferredDrawingWorkspaceRefresh\(shell, requestToken\)/);
-  assert.match(app, /if \(requestToken !== drawingPagePaintRequest\) return;\s*void renderDrawingWorkspace\(shell\);/);
+  assert.doesNotMatch(app, /if \(requestToken !== drawingPagePaintRequest\) return;\s*void renderDrawingWorkspace\(shell\);/);
+  assert.doesNotMatch(app, /scheduleDeferredDrawingWorkspaceRefresh\(shell, requestToken\);[\s\S]*void renderDrawingWorkspace\(shell\)/);
 });
 
 test('sheet-card click path issues one page selection and one fast paint request', () => {

@@ -17,6 +17,46 @@ test('page context contains only drawing facts and deduplicated object counts', 
   assert.deepEqual(model.specifications, { confirmed: [], suggested: [] });
 });
 
+test('resolver confirmed and suggested specifications populate the shared panel model directly', () => {
+  const confirmed = { requirementId: 'c1', specificationDocumentId: 'spec', sectionNumber: '09 91 00', sectionTitle: 'Painting', status: 'confirmed', applicabilityScope: 'page-wide', evidenceText: 'Confirmed paint note.', startPdfPage: 410, sourcePageNumber: 410, sourceDocumentId: 'b61', evidence: [{ id: 'e1' }] };
+  const suggested = { requirementId: 's1', specificationDocumentId: 'spec', sectionNumber: '10 14 00', sectionTitle: 'Signage', status: 'suggested', applicabilityScope: 'page-wide', evidenceText: 'Suggested sign note.', startPdfPage: 415, sourcePageNumber: 415, sourceDocumentId: 'b61', evidenceObservations: [{ id: 'e2' }] };
+  const model = buildConstructionIntelligencePanelModel({ sheet, requirements: { status: 'complete', confirmedSpecifications: [confirmed], suggestedSpecifications: [suggested], fieldRequirements: {} }, specificationLinks: [] });
+  assert.equal(model.specifications.confirmed.length, 1);
+  assert.equal(model.specifications.suggested.length, 1);
+  assert.equal(model.specifications.confirmed[0].sectionNumber, '09 91 00');
+  assert.equal(model.specifications.confirmed[0].sourceDocumentId, 'b61');
+  assert.equal(model.specifications.confirmed[0].canShowSource, true);
+  assert.equal(model.specifications.confirmed[0].evidenceCount, 1);
+  assert.equal(model.specifications.suggested[0].sectionNumber, '10 14 00');
+  assert.equal(model.specifications.suggested[0].sourcePageNumber, 415);
+  assert.equal(model.specifications.suggested[0].evidenceCount, 1);
+});
+
+test('resolver specification arrays take precedence over specificationRecords fallback data', () => {
+  const confirmed = { requirementId: 'c1', specificationDocumentId: 'spec', sectionNumber: '09 91 00', sectionTitle: 'Painting', status: 'confirmed', applicabilityScope: 'page-wide', evidenceText: 'Confirmed paint note.', startPdfPage: 410, sourceDocumentId: 'b61' };
+  const fallback = { requirementId: 'f1', specificationDocumentId: 'spec', sectionNumber: '10 14 00', sectionTitle: 'Signage', status: 'suggested', applicabilityScope: 'page-wide', evidenceText: 'Fallback suggestion.', startPdfPage: 415 };
+  const model = buildConstructionIntelligencePanelModel({ sheet, requirements: { confirmedSpecifications: [confirmed], suggestedSpecifications: [], fieldRequirements: {} }, specificationLinks: [fallback] });
+  assert.deepEqual(model.specifications.confirmed.map(item => item.sectionNumber), ['09 91 00']);
+  assert.deepEqual(model.specifications.suggested, []);
+});
+
+test('fallback specificationRecords remain available when resolver arrays are absent', () => {
+  const fallback = { requirementId: 'f1', specificationDocumentId: 'spec', sectionNumber: '10 14 00', sectionTitle: 'Signage', status: 'suggested', applicabilityScope: 'page-wide', evidenceText: 'Fallback suggestion.', startPdfPage: 415 };
+  const model = buildConstructionIntelligencePanelModel({ sheet, requirements: { fieldRequirements: {} }, specificationLinks: [fallback] });
+  assert.equal(model.specifications.suggested.length, 1);
+  assert.equal(model.specifications.suggested[0].sectionNumber, '10 14 00');
+  assert.equal(model.specifications.suggested[0].canShowSource, true);
+});
+
+test('Plans and object contexts can produce the same specification counts for the same sheet context', () => {
+  const confirmed = { requirementId: 'c1', specificationDocumentId: 'spec', sectionNumber: '09 91 00', sectionTitle: 'Painting', status: 'confirmed', applicabilityScope: 'object-specific', objectId: 'p1', evidenceText: 'Confirmed paint note.', startPdfPage: 410 };
+  const suggested = { requirementId: 's1', specificationDocumentId: 'spec', sectionNumber: '10 14 00', sectionTitle: 'Signage', status: 'suggested', applicabilityScope: 'object-specific', objectId: 'p1', evidenceText: 'Suggested sign note.', startPdfPage: 415 };
+  const pageModel = buildConstructionIntelligencePanelModel({ sheet, requirements: { confirmedSpecifications: [confirmed], suggestedSpecifications: [suggested], fieldRequirements: {} }, specificationLinks: [] });
+  const objectModel = buildConstructionIntelligencePanelModel({ sheet, selectedObject: { objectId: 'p1', label: 'Finish P-1', type: 'finish' }, requirements: { confirmedSpecifications: [confirmed], suggestedSpecifications: [suggested], fieldRequirements: {} }, specificationLinks: [] });
+  assert.deepEqual([pageModel.specifications.confirmed.length, pageModel.specifications.suggested.length], [1, 1]);
+  assert.deepEqual([objectModel.specifications.confirmed.length, objectModel.specifications.suggested.length], [1, 1]);
+});
+
 test('selected object replaces page context and deduplicates specifications', () => {
   const requirement = { requirementId: 'r1', specificationDocumentId: 'spec', sectionNumber: '09 91 00', sectionTitle: 'Painting', status: 'confirmed', evidenceText: 'Finish schedule P-1.', startPdfPage: 410 };
   const model = buildConstructionIntelligencePanelModel({ sheet, selectedObject: { objectId: 'permanent-1', label: 'Finish P-1', type: 'finish', trade: 'Interiors', confidence: .97, verificationState: 'confirmed', region: { x: .1, y: .2, width: .3, height: .4 }, evidenceText: 'Room finish tag.' }, schedules: [{ identifier: 'S-1', label: 'Door schedule' }], legends: [{ identifier: 'L-1', label: 'Legend 1' }], keyedNotes: [{ identifier: 'K-1', label: 'Keyed note 1' }], references: [{ label: 'Detail 1' }], relatedDetails: [{ label: 'Detail A' }], requirements: { confirmedSpecifications: [requirement], suggestedSpecifications: [], fieldRequirements: {} }, specificationLinks: [{ ...requirement, linkId: 'link-1' }], relationshipGroups: {}, objectHistory: [] });
