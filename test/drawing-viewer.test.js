@@ -280,8 +280,11 @@ test('professional viewer interactions include double-click zoom, drag pan, keyb
 test('production hardening preserves focus and browser scroll while reporting cache and viewport diagnostics', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.match(app, /createDrawingRenderCache/);
+  assert.match(app, /maxEntries: 2/);
   assert.match(app, /drawingRenderCache\.get/);
   assert.match(app, /drawingRenderCache\.set/);
+  assert.match(app, /canvas\.width = 0; canvas\.height = 0;/);
+  assert.match(app, /drawingRequirementsResultCacheMaxEntries = 8/);
   assert.match(app, /preservedBrowserScroll/);
   assert.match(app, /preservedFocusSelector/);
   assert.match(app, /operation: 'viewport-restore'/);

@@ -229,7 +229,7 @@ let drawingZoom = null;
 let drawingRotation = 0;
 const drawingViewportBySet = new Map();
 const drawingViewerEngine = createDrawingViewerEngine({ viewportStore: drawingViewportBySet, onMetric: metric => logger.debug('Drawing viewer performance', metric) });
-const drawingRenderCache = createDrawingRenderCache({ maxEntries: 6, onMetric: metric => logger.debug('Drawing viewer performance', metric), onEvict: (canvas, cacheKey) => releaseTrackedResource('canvas', canvas, { cacheKey, reason: 'render-cache-evict' }) });
+const drawingRenderCache = createDrawingRenderCache({ maxEntries: 2, onMetric: metric => logger.debug('Drawing viewer performance', metric), onEvict: (canvas, cacheKey) => { if (canvas) { canvas.width = 0; canvas.height = 0; } releaseTrackedResource('canvas', canvas, { cacheKey, reason: 'render-cache-evict' }); } });
 const drawingPerfNow = () => globalThis.performance?.now?.() ?? Date.now();
 const drawingDiagnosticsEnabled = globalThis.__MC_DRAWING_DIAGNOSTICS_ENABLED === true;
 const drawingResourceSnapshot = (options = {}) => snapshotTrackedResources({ workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, ...options });
@@ -345,6 +345,7 @@ let drawingRequirementsRequestGeneration = 0;
 let drawingRequirementsRequestKey = '';
 let drawingRequirementsRefreshTimer = null;
 const drawingRequirementsResultCache = new Map();
+const drawingRequirementsResultCacheMaxEntries = 8;
 let drawingWheelPaintFrame = 0;
 let drawingPanelRefreshRequest = 0;
 let drawingDeferredWorkspaceRefresh = null;
@@ -1932,6 +1933,7 @@ function releaseDrawingSource() {
     drawingSearchRefreshTimer = 0;
   }
   drawingRenderCache.clear();
+  drawingRequirementsResultCache.clear();
   clearTrackedResources(['overlay', 'requirement-model', 'relationship-model', 'inspector-model']);
   activeDrawingPdf?.cleanup?.();
   activeDrawingPdf?.destroy?.();
@@ -3083,7 +3085,12 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       const resolved = outcome.result;
       const activeRequirements = { ...resolved, status: providerWarnings.length && resolved.status === 'complete' ? 'partial' : resolved.status, warnings: [...(resolved.warnings || []), ...providerWarnings], providerFailures: [...(resolved.providerFailures || []), ...workspaceProviderFailures] };
       replaceTrackedResource('requirement-model', activeRequirements, { pageId: sheet?.pageId || '', status: activeRequirements.status });
+      drawingRequirementsResultCache.delete(requirementsRequestKey);
       drawingRequirementsResultCache.set(requirementsRequestKey, structuredClone(activeRequirements));
+      while (drawingRequirementsResultCache.size > drawingRequirementsResultCacheMaxEntries) {
+        const oldestKey = drawingRequirementsResultCache.keys().next().value;
+        drawingRequirementsResultCache.delete(oldestKey);
+      }
       for (const failure of activeRequirements.providerFailures) logger.warning('Construction intelligence provider failure', { ...failure, pageId: sheet?.pageId || '', objectId: selectedDrawingObject?.objectId || '', timestamp: new Date().toISOString(), contained: true });
       activeDrawingTransientRequirementCount = activeRequirements.requirements?.length || 0;
       commitRequirements(activeRequirements);
