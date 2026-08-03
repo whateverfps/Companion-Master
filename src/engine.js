@@ -32,6 +32,8 @@ import { createPdfSourceRecord, inspectStorageCapacity } from './pdf-source.js';
 import { buildDrawingAnalysis } from './drawing-intelligence.js';
 import { classifyDrawingOrphans, validateDrawingOwnership } from './drawing-lifecycle.js';
 import { COMPACT_STATE_KEY, COMPACT_STATE_MAX_BYTES, compactStateCategorySizes, legacyLargeState, safeWriteCompactState } from './compact-state.js';
+import { createProjectDocumentCache } from './cache/project-document-cache.js';
+import { createProjectSectionCache } from './cache/project-section-cache.js';
 import { isDrawingDocument, persistDocumentClassification } from './document-routing.js';
 
 const STATE_KEY = COMPACT_STATE_KEY;
@@ -40,6 +42,12 @@ const DOC_DB_VERSION = 6;
 const APP_VERSION = '2.8.1';
 const STARTUP_EXPERIENCES = new Set(['mission-control', 'professional-workspace']);
 const normalizeStartupExperience = value => STARTUP_EXPERIENCES.has(value) ? value : 'mission-control';
+const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
+const logSlowOperation = (name, startedAt, details = {}) => {
+  const elapsed = Math.max(0, perfNow() - startedAt);
+  if (elapsed > 10) console.warn(name, elapsed, { ...details, stack: new Error().stack });
+  return elapsed;
+};
 
 const defaults = {
   settings: {
@@ -79,14 +87,56 @@ let pendingLegacyLargeState = null;
 let persistenceQueue = Promise.resolve();
 let persistenceStatus = { migration: 'not-required', lastFailure: null, compactBytes: 0 };
 let state = loadState();
-let sectionCache = null;
-let documentCache = null;
+let documentCache;
+let sectionCache;
 
-function invalidateKnowledgeCache() {
-  if (sectionCache?.sections) invalidateRetrievalCaches(sectionCache.sections);
-  sectionCache = null;
-  documentCache = null;
+function normalizeProjectIds(projectIds) {
+  return [...new Set((Array.isArray(projectIds) ? projectIds : [projectIds]).map(value => String(value ?? '').trim()).filter(Boolean))];
 }
+
+function invalidateProjectKnowledgeCaches(projectIds, { documents = true, sections = true } = {}) {
+  for (const projectId of normalizeProjectIds(projectIds)) {
+    if (sections) sectionCache.invalidateProject(projectId);
+    if (documents) documentCache.invalidateProject(projectId);
+  }
+}
+
+sectionCache = createProjectSectionCache({
+  maxProjects: 2,
+  ttlMs: 10 * 60 * 1000,
+  now: perfNow,
+  loadSections: async projectId => all('sections', 'projectId', projectId),
+  onInvalidate: sections => invalidateRetrievalCaches(sections)
+});
+
+documentCache = createProjectDocumentCache({
+  maxProjects: 2,
+  ttlMs: 10 * 60 * 1000,
+  now: perfNow,
+  loadDocuments: async projectId => {
+    const persisted = await all('documents', 'projectId', projectId);
+    const documents = persisted.map(item => persistDocumentClassification(item));
+    const changed = documents.filter((item, index) => item.documentType !== persisted[index].documentType || item.documentClassificationMethod !== persisted[index].documentClassificationMethod);
+
+    if (changed.length) {
+      await putMany('documents', changed);
+      sectionCache.invalidateProject(projectId);
+    }
+
+    return documents;
+  }
+});
+
+globalThis.__mcCacheStats = {
+  snapshot: () => ({
+    documents: documentCache.snapshot(),
+    sections: sectionCache.snapshot()
+  }),
+  clear: () => {
+    documentCache.clear();
+    sectionCache.clear();
+  }
+};
 
 moduleStatus('State Manager', 'ready', {
   summary: 'State loaded'
@@ -251,6 +301,7 @@ function usableIndexedDocument(document, indexedSectionCount) {
 }
 
 function openDB() {
+  const startedAt = perfNow();
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DOC_DB, DOC_DB_VERSION);
 
@@ -310,12 +361,13 @@ function openDB() {
       if (!db.objectStoreNames.contains('stateRecords')) db.createObjectStore('stateRecords', { keyPath: 'id' });
     };
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => { logSlowOperation('indexeddb open', startedAt, { database: DOC_DB, version: DOC_DB_VERSION }); resolve(request.result); };
+    request.onerror = () => { logSlowOperation('indexeddb open', startedAt, { database: DOC_DB, version: DOC_DB_VERSION, failed: true }); reject(request.error); };
   });
 }
 
 async function tx(store, mode, operation) {
+  const startedAt = perfNow();
   const db = await openDB();
 
   return new Promise((resolve, reject) => {
@@ -325,22 +377,26 @@ async function tx(store, mode, operation) {
 
     transaction.oncomplete = () => {
       db.close();
+      logSlowOperation('indexeddb transaction', startedAt, { store, mode });
       resolve(output);
     };
 
     transaction.onerror = () => {
       db.close();
+      logSlowOperation('indexeddb transaction', startedAt, { store, mode, failed: true });
       reject(transaction.error);
     };
 
     transaction.onabort = () => {
       db.close();
+      logSlowOperation('indexeddb transaction', startedAt, { store, mode, aborted: true });
       reject(transaction.error || new Error('Database transaction aborted.'));
     };
   });
 }
 
 async function all(store, index = null, key = null) {
+  const startedAt = perfNow();
   const db = await openDB();
 
   return new Promise((resolve, reject) => {
@@ -356,22 +412,25 @@ async function all(store, index = null, key = null) {
 
     request.onsuccess = () => {
       db.close();
+      logSlowOperation('indexeddb read', startedAt, { store, index: index || '', key: key === null ? '' : String(key), resultCount: Array.isArray(request.result) ? request.result.length : 0 });
       resolve(request.result || []);
     };
 
     request.onerror = () => {
       db.close();
+      logSlowOperation('indexeddb read', startedAt, { store, index: index || '', key: key === null ? '' : String(key), failed: true });
       reject(request.error);
     };
   });
 }
 
 async function one(store, key) {
+  const startedAt = perfNow();
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const request = db.transaction(store, 'readonly').objectStore(store).get(key);
-    request.onsuccess = () => { db.close(); resolve(request.result || null); };
-    request.onerror = () => { db.close(); reject(request.error); };
+    request.onsuccess = () => { db.close(); logSlowOperation('indexeddb read-one', startedAt, { store, key: String(key), hit: Boolean(request.result) }); resolve(request.result || null); };
+    request.onerror = () => { db.close(); logSlowOperation('indexeddb read-one', startedAt, { store, key: String(key), failed: true }); reject(request.error); };
   });
 }
 
@@ -380,6 +439,7 @@ async function putMany(store, items) {
     return;
   }
 
+  const startedAt = perfNow();
   const db = await openDB();
 
   return new Promise((resolve, reject) => {
@@ -392,16 +452,19 @@ async function putMany(store, items) {
 
     transaction.oncomplete = () => {
       db.close();
+      logSlowOperation('indexeddb write', startedAt, { store, itemCount: items.length });
       resolve();
     };
 
     transaction.onerror = () => {
       db.close();
+      logSlowOperation('indexeddb write', startedAt, { store, itemCount: items.length, failed: true });
       reject(transaction.error);
     };
 
     transaction.onabort = () => {
       db.close();
+      logSlowOperation('indexeddb write', startedAt, { store, itemCount: items.length, aborted: true });
       reject(transaction.error || new Error('Database transaction aborted.'));
     };
   });
@@ -418,6 +481,7 @@ async function commitKnowledgeImport(
     return;
   }
 
+  const startedAt = perfNow();
   const db = await openDB();
 
   return new Promise((resolve, reject) => {
@@ -430,32 +494,43 @@ async function commitKnowledgeImport(
     const sourceFileStore = transaction.objectStore('sourceFiles');
     const drawingAnalysisStore = transaction.objectStore('drawingAnalyses');
 
+    let lineageCount = 0;
     for (const document of lineageUpdates) {
+      lineageCount += 1;
       documentStore.put(document);
     }
 
+    let documentCount = 0;
     for (const document of documents) {
+      documentCount += 1;
       documentStore.put(document);
     }
 
+    let sectionCount = 0;
     for (const section of sections) {
+      sectionCount += 1;
       sectionStore.put(section);
     }
-    for (const sourceFile of sourceFiles) sourceFileStore.put(sourceFile);
-    for (const analysis of drawingAnalyses) drawingAnalysisStore.put(analysis);
+    let sourceFileCount = 0;
+    for (const sourceFile of sourceFiles) { sourceFileCount += 1; sourceFileStore.put(sourceFile); }
+    let drawingAnalysisCount = 0;
+    for (const analysis of drawingAnalyses) { drawingAnalysisCount += 1; drawingAnalysisStore.put(analysis); }
 
     transaction.oncomplete = () => {
       db.close();
+      logSlowOperation('indexeddb write', startedAt, { store: 'documents+sections+sourceFiles+drawingAnalyses', lineageCount, documentCount, sectionCount, sourceFileCount, drawingAnalysisCount });
       resolve();
     };
 
     transaction.onerror = () => {
       db.close();
+      logSlowOperation('indexeddb write', startedAt, { store: 'documents+sections+sourceFiles+drawingAnalyses', failed: true, lineageCount, documentCount, sectionCount, sourceFileCount, drawingAnalysisCount });
       reject(transaction.error);
     };
 
     transaction.onabort = () => {
       db.close();
+      logSlowOperation('indexeddb write', startedAt, { store: 'documents+sections+sourceFiles+drawingAnalyses', aborted: true, lineageCount, documentCount, sectionCount, sourceFileCount, drawingAnalysisCount });
       reject(transaction.error || new Error('Database transaction aborted.'));
     };
   });
@@ -723,8 +798,9 @@ export const engine = {
       throw new Error('Project not found.');
     }
 
+    const previousProjectId = state.activeProject;
     state.activeProject = id;
-    invalidateKnowledgeCache();
+    invalidateProjectKnowledgeCaches(previousProjectId);
 
     state.activeLibrary =
       state.libraries.find(
@@ -767,8 +843,10 @@ export const engine = {
 
     state.projects.push(project);
     state.libraries.push(library);
+    const previousProjectId = state.activeProject;
     state.activeProject = project.id;
     state.activeLibrary = library.id;
+    invalidateProjectKnowledgeCaches(previousProjectId);
 
     save();
 
@@ -819,6 +897,8 @@ export const engine = {
       state.libraries.find(
         library => library.projectId === 'general'
       )?.id || null;
+
+    invalidateProjectKnowledgeCaches(id);
 
     save(); cleanup.state = true;
     return { ok: true, status: 'deleted', cleanup };
@@ -940,19 +1020,10 @@ export const engine = {
   },
 
   async documents(libraryId = null) {
-    if (documentCache?.projectId !== state.activeProject) {
-      const persisted = await all('documents', 'projectId', state.activeProject);
-      const documents = persisted.map(item => persistDocumentClassification(item));
-      const changed = documents.filter((item, index) => item.documentType !== persisted[index].documentType || item.documentClassificationMethod !== persisted[index].documentClassificationMethod);
-      if (changed.length) await putMany('documents', changed);
-      documentCache = {
-        projectId: state.activeProject,
-        documents
-      };
-    }
+    const documents = await documentCache.get(state.activeProject);
     return libraryId
-      ? documentCache.documents.filter(document => document.libraryId === libraryId)
-      : documentCache.documents;
+      ? documents.filter(document => document.libraryId === libraryId)
+      : documents;
   },
 
   async reclassifyDocument(documentId, patch = {}) {
@@ -963,7 +1034,8 @@ export const engine = {
       if (!state.projects.some(project => project.id === patch.projectId)) return { ok: false, reason: 'project-not-found' };
       updated.projectId = patch.projectId;
     }
-    await putMany('documents', [updated]); invalidateKnowledgeCache();
+    await putMany('documents', [updated]);
+    invalidateProjectKnowledgeCaches([existing.projectId, updated.projectId]);
     logger.info('Document classification updated', { documentId, documentType: updated.documentType, projectId: updated.projectId });
     return { ok: true, document: structuredClone(updated), sourcePreserved: Boolean(await one('sourceFiles', documentId)), indexedSectionCount: (await all('sections', 'documentId', documentId)).length };
   },
@@ -1087,7 +1159,7 @@ export const engine = {
       transaction.onerror = () => { db.close(); reject(transaction.error); };
       transaction.onabort = () => { db.close(); reject(transaction.error || new Error('PDF reattachment transaction aborted.')); };
     });
-    invalidateKnowledgeCache();
+    invalidateProjectKnowledgeCaches(document.projectId);
     return { ok: true, status: 'saved', documentId, projectId: document.projectId, drawingSetId: analysis?.drawingSetId || '', pageCount: parsed.pageCount, documentType: persistDocumentClassification(document).documentType };
   },
 
@@ -1141,20 +1213,7 @@ export const engine = {
   },
 
   async sections() {
-    if (sectionCache?.projectId === state.activeProject) {
-      return sectionCache.sections;
-    }
-
-    const sections = await all(
-      'sections',
-      'projectId',
-      state.activeProject
-    );
-    sectionCache = {
-      projectId: state.activeProject,
-      sections
-    };
-    return sections;
+    return sectionCache.get(state.activeProject);
   },
 
   async specificationSections(documentIds = [], sectionNumbers = []) {
@@ -1419,7 +1478,7 @@ export const engine = {
         successfulSourceFiles,
         successfulDrawingAnalyses
       );
-      invalidateKnowledgeCache();
+      invalidateProjectKnowledgeCaches(state.activeProject);
 
       successfulDocuments.forEach((document, index) => {
         reportProgress({
@@ -1460,7 +1519,7 @@ export const engine = {
       await delByIndex('sections', 'documentId', id); cleanup.sections = true;
       await tx('sourceFiles', 'readwrite', store => store.delete(id)); cleanup.sourceFile = true;
       await delByIndex('drawingAnalyses', 'documentId', id); cleanup.drawingAnalyses = true;
-      invalidateKnowledgeCache();
+      invalidateProjectKnowledgeCaches(document?.projectId || state.activeProject);
       await tx('documents', 'readwrite', store => store.delete(id)); cleanup.document = true;
       logger.info('Document removed', { id });
       return { ok: true, status: 'deleted', cleanup };
@@ -2061,7 +2120,7 @@ export const engine = {
     );
     await putMany('inspectionRecords', importedInspectionRecords);
     await putMany('drawingAnalyses', importedDrawingAnalyses);
-    invalidateKnowledgeCache();
+    invalidateProjectKnowledgeCaches(state.activeProject);
 
     state.evaluations.push(
       ...(Array.isArray(data.evaluations)
