@@ -149,6 +149,7 @@ import { classifyChiefDrawingCommand, resolveChiefDrawingCommand } from './chief
 import { buildChiefDrawingCards } from './chief-drawing-cards.js';
 import { building61DrawingCatalogFor } from './building-61-drawing-catalog.js';
 import { generatedDrawingCatalogFor } from './generated-drawing-catalogs.js';
+import { getPerformanceDiagnosticsState, markFirstPaint, markHydrated, performanceDiagnosticsEnabled } from './performance-diagnostics.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -230,6 +231,7 @@ let drawingRotation = 0;
 const drawingViewportBySet = new Map();
 const drawingViewerEngine = createDrawingViewerEngine({ viewportStore: drawingViewportBySet, onMetric: metric => logger.debug('Drawing viewer performance', metric) });
 const drawingRenderCache = createDrawingRenderCache({ maxEntries: 2, onMetric: metric => logger.debug('Drawing viewer performance', metric), onEvict: (canvas, cacheKey) => { if (canvas) { canvas.width = 0; canvas.height = 0; } releaseTrackedResource('canvas', canvas, { cacheKey, reason: 'render-cache-evict' }); } });
+const currentDrawingAnalysesCache = new Map();
 const drawingPerfNow = () => globalThis.performance?.now?.() ?? Date.now();
 const drawingDiagnosticsEnabled = globalThis.__MC_DRAWING_DIAGNOSTICS_ENABLED === true;
 const drawingResourceSnapshot = (options = {}) => snapshotTrackedResources({ workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, renderQueueDepth: drawingViewerEngine.renderLifecycle().activeRenderPromiseCount, activeResizeObserverCount: activeDrawingResizeObserver ? 1 : 0, ...drawingViewerEngine.renderLifecycle(), ...options });
@@ -239,6 +241,66 @@ const reportDrawingResourceSnapshot = (label, detail = {}, options = {}) => {
 };
 globalThis.__mcDrawingResourceSnapshot = drawingResourceSnapshot;
 globalThis.__mcDrawingResourceReport = reportDrawingResourceSnapshot;
+const reportDrawingMemorySnapshot = (label, detail = {}, options = {}) => {
+  const memory = globalThis.performance?.memory || null;
+  const snapshot = {
+    ...options,
+    usedJSHeapSize: memory?.usedJSHeapSize ?? null,
+    totalJSHeapSize: memory?.totalJSHeapSize ?? null,
+    jsHeapSizeLimit: memory?.jsHeapSizeLimit ?? null
+  };
+  logger.debug(label, { ...detail, ...snapshot });
+  return reportDrawingResourceSnapshot(label, detail, snapshot);
+};
+const getOverlayDiagnosticsSnapshot = () => {
+  const perfState = getPerformanceDiagnosticsState();
+  const resources = drawingResourceSnapshot();
+  return {
+    enabled: performanceDiagnosticsEnabled(),
+    heapUsed: globalThis.performance?.memory?.usedJSHeapSize ?? null,
+    heapTotal: globalThis.performance?.memory?.totalJSHeapSize ?? null,
+    pdfDocuments: resources.counts.activePdfDocuments,
+    pdfPages: resources.counts.activePdfPages,
+    renderTasks: resources.counts.activeRenderTasks || resources.renderLifecycle?.activeRenderTaskCount || 0,
+    renderPromises: resources.counts.renderQueueDepth,
+    canvases: resources.counts.canvasCount,
+    imageBitmaps: resources.counts.imageBitmapCount,
+    drawingAnalysisCache: currentDrawingAnalysesCache.size,
+    specificationCache: typeof specificationIndex?.sections === 'function' ? specificationIndex.sections({ projectId: state().activeProject }).length : 0,
+    overlayCache: drawingOverlayNodeCacheCount,
+    renderQueueDepth: resources.counts.renderQueueDepth,
+    currentSheet: drawingTarget?.pageNumber || 0,
+    firstPaintAt: perfState.firstPaintAt,
+    hydratedAt: perfState.hydratedAt,
+    stageCount: perfState.stages.length,
+    heapHistory: perfState.heap,
+    timingHistory: perfState.stages
+  };
+};
+globalThis.__mcPerformanceDiagnostics = globalThis.__mcPerformanceDiagnostics || {};
+globalThis.__mcPerformanceDiagnostics.snapshot = getOverlayDiagnosticsSnapshot;
+globalThis.__mcPerformanceDiagnostics.export = () => {
+  const perfState = getPerformanceDiagnosticsState();
+  return {
+    heapHistory: perfState.heap,
+    timingHistory: perfState.stages,
+    cacheSizes: {
+      drawingAnalysisCache: currentDrawingAnalysesCache.size,
+      specificationCache: typeof specificationIndex?.sections === 'function' ? specificationIndex.sections({ projectId: state().activeProject }).length : 0,
+      overlayCache: drawingOverlayNodeCacheCount,
+      drawingRenderCache: drawingRenderCache.size(),
+      drawingRequirementsResultCache: drawingRequirementsResultCache.size
+    },
+    currentCounters: drawingResourceSnapshot().counts,
+    browser: {
+      userAgent: navigator.userAgent,
+      platform: navigator.platform || '',
+      language: navigator.language || '',
+      url: location.href,
+      time: new Date().toISOString()
+    }
+  };
+};
 const drawingTraceSlowOperation = (name, startedAt, details = {}) => {
   if (!drawingDiagnosticsEnabled) return Math.max(0, drawingPerfNow() - startedAt);
   const elapsed = Math.max(0, drawingPerfNow() - startedAt);
@@ -356,6 +418,8 @@ let drawingPageRenderFailureKeys = new Set();
 let drawingRequirementsRequestGeneration = 0;
 let drawingRequirementsRequestKey = '';
 let drawingRequirementsRefreshTimer = null;
+let drawingBackgroundPipelineGeneration = 0;
+let drawingBackgroundPipelineTimer = 0;
 const drawingRequirementsResultCache = new Map();
 const drawingRequirementsResultCacheMaxEntries = 8;
 let drawingWheelPaintFrame = 0;
@@ -365,6 +429,7 @@ let drawingSearchRefreshTimer = 0;
 let drawingSelectionActiveSheetId = '';
 let drawingRecentSheets = [];
 const drawingOverlayNodeCache = new WeakMap();
+let drawingOverlayNodeCacheCount = 0;
 const drawingInteractionTrace = globalThis.__mcDrawingInteractionTrace || (globalThis.__mcDrawingInteractionTrace = { id: 0, kind: '', counts: Object.create(null) });
 
 function startDrawingInteractionTrace(kind, detail = {}) {
@@ -383,6 +448,59 @@ function traceDrawingInteractionStep(step, detail = {}) {
   counts[step] = nextCount;
   console.warn('drawing interaction step', { interactionId: drawingInteractionTrace.id, kind: drawingInteractionTrace.kind, step, count: nextCount, ...detail, stack: new Error().stack });
   return nextCount;
+}
+
+function cancelDrawingBackgroundPipeline() {
+  drawingBackgroundPipelineGeneration += 1;
+  if (drawingBackgroundPipelineTimer) {
+    clearTimeout(drawingBackgroundPipelineTimer);
+    drawingBackgroundPipelineTimer = 0;
+  }
+}
+
+function scheduleDrawingBackgroundPipeline({ shell, workspaceRenderRequest, selected, sheet, analysis, source, documentId, requestToken, effectiveObservation, effectiveRegion, overlayRecords, preservedBrowserScroll, preservedViewport, preservedCanvas, preservedStage, preservedIntelligenceScroll, viewState, sheetLegends, sheetSchedules, sheetKeyedNotes, sheetOccurrences, pageSpecificationLinks, selectedSpecificationLinks, requirementInput, activeRequirements, rightPanelSignature, renderAfterPaint = true } = {}) {
+  const generation = drawingBackgroundPipelineGeneration;
+  if (drawingBackgroundPipelineTimer) clearTimeout(drawingBackgroundPipelineTimer);
+  drawingBackgroundPipelineTimer = setTimeout(() => {
+    drawingBackgroundPipelineTimer = 0;
+    if (generation !== drawingBackgroundPipelineGeneration) return;
+    if (workspaceRenderRequest !== drawingWorkspaceRenderRequest) return;
+    if (drawingTarget?.documentId !== documentId || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
+    const stage = $('#mcDrawingStage');
+    if (!stage || !stage.isConnected) return;
+    const overlayStartedAt = drawingPerfNow();
+    updateDrawingOverlays(stage, sheet, effectiveObservation || null, overlayRecords || []);
+    reportDrawingMemorySnapshot('stage', { phase: 'overlay-generation', pageNumber: sheet.pageNumber, overlayCount: overlayRecords.length, elapsedMs: Math.max(0, drawingPerfNow() - overlayStartedAt) });
+    const requirementsRequestKey = drawingRequirementsCacheKey({ projectId: analysis?.projectId || selected.projectId || state().activeProject, documentId: selected.id, drawingSetId: analysis?.drawingSetId || '', pageId: drawingTarget?.pageId || sheet?.pageId || '', selectedObjectId: selectedDrawingObject?.objectId || '', evidenceVersion: [sheetLegends.length, sheetSchedules.length, sheetKeyedNotes.length, sheetOccurrences.length, pageSpecificationLinks.length, selectedSpecificationLinks.length].join('|') });
+    const requirementsRequestGeneration = ++drawingRequirementsRequestGeneration;
+    drawingRequirementsRequestKey = requirementsRequestKey;
+    const finish = resolvedRequirements => {
+      if (generation !== drawingBackgroundPipelineGeneration) return;
+      if (workspaceRenderRequest !== drawingWorkspaceRenderRequest) return;
+      if (drawingTarget?.documentId !== documentId || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
+      const panel = $('#drawingInspector')?.querySelector('.mc-drawing-evidence');
+      if (panel && resolvedRequirements) {
+        replaceTrackedResource('requirement-model', resolvedRequirements, { pageId: sheet?.pageId || '', status: resolvedRequirements.status });
+        const panelModel = buildIntelligencePanel(resolvedRequirements);
+        replaceTrackedResource('inspector-model', panelModel, { pageId: sheet?.pageId || '', mode: panelModel.mode, phase: 'updated' });
+        panel.dataset.panelSignature = constructionIntelligencePanelSignature(panelModel);
+        panel.innerHTML = constructionIntelligencePanelMarkup(panelModel);
+      }
+      if (renderAfterPaint) markHydrated();
+    };
+    const cached = drawingRequirementsResultCache.get(requirementsRequestKey);
+    if (cached) { finish(cached); return; }
+    void drawingRequirementsResolver.resolveLatest(requirementInput).then(outcome => {
+      if (!outcome.committed || requirementsRequestGeneration !== drawingRequirementsRequestGeneration || drawingRequirementsRequestKey !== requirementsRequestKey) return;
+      const resolved = outcome.result;
+      drawingRequirementsResultCache.set(requirementsRequestKey, structuredClone(resolved));
+      while (drawingRequirementsResultCache.size > drawingRequirementsResultCacheMaxEntries) {
+        const oldestKey = drawingRequirementsResultCache.keys().next().value;
+        drawingRequirementsResultCache.delete(oldestKey);
+      }
+      finish(resolved);
+    }).catch(error => logger.warning('Drawing requirements resolver failure', { message: error?.message || String(error), pageId: sheet?.pageId || '', contained: true }));
+  }, 0);
 }
 let drawingRenderGeneration = 0;
 let portableDrawingCanvas = null;
@@ -1811,27 +1929,47 @@ function drawingStatusCopy(document, source, analysis) {
 
 async function currentDrawingAnalyses() {
   const workspaceProjectId = state().activeProject;
-  const analyses = await engine.drawingAnalyses();
-  const outcomes = await Promise.all(analyses.map(async analysis => {
-    if (!drawingAnalysisRequiresUpgrade(analysis)) {
-      const ownership = await engine.drawingLifecycle(analysis.documentId, analysis.drawingSetId);
-      return ownership.ok ? { ok: true, analysis } : ownership;
+  const cachedDrawingAnalyses = currentDrawingAnalysesCache.get(workspaceProjectId);
+  if (cachedDrawingAnalyses?.analyses) return cachedDrawingAnalyses.analyses;
+  if (cachedDrawingAnalyses?.promise) return cachedDrawingAnalyses.promise;
+  reportDrawingMemorySnapshot('alloc-stage', { phase: 'currentDrawingAnalyses:start' });
+  const promise = (async () => {
+    const analyses = await engine.drawingAnalyses();
+    const outcomes = [];
+    for (const analysis of analyses) {
+      if (!drawingAnalysisRequiresUpgrade(analysis)) {
+        const ownership = await engine.drawingLifecycle(analysis.documentId, analysis.drawingSetId);
+        outcomes.push(ownership.ok ? { ok: true, analysis } : ownership);
+        continue;
+      }
+      const key = drawingUpgradeKey(analysis, DRAWING_ANALYSIS_VERSION);
+      if (drawingUpgradeFailures.has(key)) {
+        outcomes.push({ ok: false, status: 'unavailable', errorCode: 'drawing-upgrade-failed', analysis, owningProjectId: analysis.projectId, activeProjectId: workspaceProjectId, warning: 'Analysis upgrade is waiting for a lifecycle issue to be corrected.', recoverable: true, actions: [] });
+        continue;
+      }
+      if (!drawingUpgradeWork.has(key)) drawingUpgradeWork.set(key, (async () => {
+        const ownership = await engine.drawingLifecycle(analysis.documentId, analysis.drawingSetId);
+        if (!ownership.ok) return ownership;
+        const upgraded = upgradeDrawingAnalysis(analysis);
+        const saved = await engine.saveDrawingAnalysis(upgraded);
+        return saved.ok ? { ...saved, analysis: upgraded } : saved;
+      })().catch(error => ({ ok: false, status: 'failed', errorCode: 'drawing-upgrade-failed', analysis, owningProjectId: analysis.projectId, activeProjectId: workspaceProjectId, warning: error.message || 'Drawing analysis upgrade failed.', recoverable: true, actions: [] })).finally(() => drawingUpgradeWork.delete(key)));
+      const result = await drawingUpgradeWork.get(key);
+      if (!result.ok) drawingUpgradeFailures.add(key);
+      outcomes.push(result);
     }
-    const key = drawingUpgradeKey(analysis, DRAWING_ANALYSIS_VERSION);
-    if (drawingUpgradeFailures.has(key)) return { ok: false, status: 'unavailable', errorCode: 'drawing-upgrade-failed', analysis, owningProjectId: analysis.projectId, activeProjectId: workspaceProjectId, warning: 'Analysis upgrade is waiting for a lifecycle issue to be corrected.', recoverable: true, actions: [] };
-    if (!drawingUpgradeWork.has(key)) drawingUpgradeWork.set(key, (async () => {
-      const ownership = await engine.drawingLifecycle(analysis.documentId, analysis.drawingSetId);
-      if (!ownership.ok) return ownership;
-      const upgraded = upgradeDrawingAnalysis(analysis);
-      const saved = await engine.saveDrawingAnalysis(upgraded);
-      return saved.ok ? { ...saved, analysis: upgraded } : saved;
-    })().catch(error => ({ ok: false, status: 'failed', errorCode: 'drawing-upgrade-failed', analysis, owningProjectId: analysis.projectId, activeProjectId: workspaceProjectId, warning: error.message || 'Drawing analysis upgrade failed.', recoverable: true, actions: [] })).finally(() => drawingUpgradeWork.delete(key)));
-    const result = await drawingUpgradeWork.get(key);
-    if (!result.ok) drawingUpgradeFailures.add(key);
-    return result;
-  }));
-  drawingLifecycleUnavailable = outcomes.filter(item => !item.ok);
-  return outcomes.filter(item => item.ok && item.analysis).map(item => item.analysis);
+    drawingLifecycleUnavailable = outcomes.filter(item => !item.ok);
+    const resolved = outcomes.filter(item => item.ok && item.analysis).map(item => item.analysis);
+    reportDrawingMemorySnapshot('alloc-stage', { phase: 'currentDrawingAnalyses:end', analyses: outcomes.length });
+    currentDrawingAnalysesCache.set(workspaceProjectId, { analyses: resolved });
+    return resolved;
+  })();
+  currentDrawingAnalysesCache.set(workspaceProjectId, { promise });
+  try {
+    return await promise;
+  } finally {
+    if (currentDrawingAnalysesCache.get(workspaceProjectId)?.promise === promise) currentDrawingAnalysesCache.delete(workspaceProjectId);
+  }
 }
 
 let latestDrawingRegistryInspection = null;
@@ -1875,6 +2013,7 @@ async function currentGlobalDrawingRegistryAnalyses(query = '') {
 async function buildActiveConstructionPackage(query, evidence = []) {
   const projectId = state().activeProject;
   if (!projectId || projectId === 'general') return null;
+  reportDrawingMemorySnapshot('alloc-stage', { phase: 'buildActiveConstructionPackage:start' });
   const [analyses, documents, sections, inspections] = await Promise.all([
     currentDrawingAnalyses(), engine.documents(), engine.sections(), engine.inspectionRecords({ includeArchived: true })
   ]);
@@ -1886,6 +2025,7 @@ async function buildActiveConstructionPackage(query, evidence = []) {
   const relationships = [...relationshipModel.membership, ...relationshipModel.hierarchy, ...relationshipModel.explicitReferences, ...relationshipModel.reverseReferences, ...relationshipModel.documentReferences];
   const revisions = buildRevisionMetrics({ documents, sections }).comparisons.map(comparison => ({ revisionId: `${comparison.earlierDocument.id}->${comparison.laterDocument.id}`, documentIds: [comparison.earlierDocument.id, comparison.laterDocument.id], status: comparison.status || '' }));
   const workPackage = buildConstructionWorkPackage({ planResult, documents, sections, inspections, relationships, revisions, evidence, workflow: getWorkflowSession()?.workflow });
+  reportDrawingMemorySnapshot('alloc-stage', { phase: 'buildActiveConstructionPackage:end', analysisCount: analyses.length, documentCount: documents.length, sectionCount: sections.length, inspectionCount: inspections.length });
   return { planResult, workPackage, analyses, sections };
 }
 
@@ -2128,6 +2268,7 @@ function restoreDrawingSupportReturnState(){if(!specificationDrawingReturnTarget
 
 function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
   const overlayStartedAt = drawingPerfNow();
+  reportDrawingMemorySnapshot('alloc-stage', { phase: 'updateDrawingOverlays:start', pageNumber: sheet.pageNumber, overlayCount: overlayRecords.length });
   traceDrawingInteractionStep('updateDrawingOverlays', { pageId: sheet.pageId, overlayCount: overlayRecords.length });
   const canvas = stage.querySelector('#mcDrawingCanvas');
   const layer = stage.querySelector('.mc-drawing-overlay-layer');
@@ -2188,10 +2329,12 @@ function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
   layer.replaceChildren(...nextNodes);
   drawingOverlayRenderCount += 1;
   drawingTraceSlowOperation('overlay generation', overlayStartedAt, { renderCount: drawingOverlayRenderCount, pageId: sheet.pageId, totalCount: overlayRecords.length, visibleCount: records.length });
+  reportDrawingMemorySnapshot('alloc-stage', { phase: 'updateDrawingOverlays:end', pageNumber: sheet.pageNumber, visibleCount: records.length, overlayCount: overlayRecords.length });
 }
 
 async function paintDrawingPage(source, sheet, observation, overlayRecords = [], { preserveSidebarScroll = false, shell = 'professional', requestToken = 0 } = {}) {
   const paintStartedAt = drawingPerfNow();
+  reportDrawingMemorySnapshot('alloc-stage', { phase: 'paintDrawingPage:start', pageNumber: sheet?.pageNumber || 0, overlayCount: overlayRecords.length });
   traceDrawingInteractionStep('paintDrawingPage', { documentId: source?.documentId || '', pageNumber: sheet?.pageNumber || 0, overlayCount: overlayRecords.length });
   const canvas = $('#mcDrawingCanvas');
   const stage = $('#mcDrawingStage');
@@ -2281,6 +2424,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       drawingPdfRenderCount += 1;
       drawingTraceSlowOperation('PDF render', renderStartedAt, { renderCount: drawingPdfRenderCount, documentId: source.documentId, pageNumber: sheet.pageNumber, cacheKey });
       drawingTraceSlowOperation('page bitmap creation', bitmapStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber, width: canvas.width, height: canvas.height });
+      reportDrawingMemorySnapshot('alloc-stage', { phase: 'paintDrawingPage:post-render', pageNumber: sheet.pageNumber, width: canvas.width, height: canvas.height, cacheKey });
       reportDrawingResourceSnapshot('sheet-change', { pageId: sheet.pageId, pageNumber: sheet.pageNumber, phase: 'page-render', renderCount: drawingPdfRenderCount, interactionId: drawingInteractionTrace.id });
     }
     stage.scrollLeft = restored.scrollLeft || 0;
@@ -2406,6 +2550,8 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       activeDrawingResizeObserver.observe(stage);
       activeDrawingResizeStage = stage;
     }
+    markFirstPaint();
+    reportDrawingMemorySnapshot('alloc-stage', { phase: 'paintDrawingPage:end', pageNumber: sheet?.pageNumber || 0 });
   } catch (error) {
     clearCurrentLoading();
     if (requestToken && requestToken !== drawingPagePaintRequest) return;
@@ -3074,6 +3220,36 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const nextIntelligence = host.querySelector('.mc-drawing-evidence');
   if (nextIntelligence) { nextIntelligence.scrollTop = pendingDrawingPanelScroll ?? constructionIntelligenceScroll[constructionIntelligencePanel.mode] ?? 0; pendingDrawingPanelScroll = null; }
   if (source && sheet) await paintDrawingPage(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), overlayRecords, { preserveSidebarScroll: true, shell, requestToken: workspaceRenderRequest });
+  scheduleDrawingBackgroundPipeline({
+    shell,
+    workspaceRenderRequest,
+    selected,
+    sheet,
+    analysis,
+    source,
+    documentId: selected.id,
+    requestToken: workspaceRenderRequest,
+    effectiveObservation,
+    effectiveRegion,
+    overlayRecords,
+    preservedBrowserScroll,
+    preservedViewport,
+    preservedCanvas,
+    preservedStage,
+    preservedIntelligenceScroll,
+    viewState: null,
+    sheetLegends: [],
+    sheetSchedules: [],
+    sheetKeyedNotes: [],
+    sheetOccurrences: [],
+    pageSpecificationLinks: [],
+    selectedSpecificationLinks: [],
+    requirementInput: {},
+    activeRequirements: { status: 'loading', requirements: [], confirmedSpecifications: [], suggestedSpecifications: [], projectWideRequirements: [], fieldRequirements: {}, warnings: providerWarnings, providerFailures: workspaceProviderFailures },
+    rightPanelSignature: '',
+    renderAfterPaint: true
+  });
+  return;
   const requirementsPageKey = drawingTarget?.pageId || sheet?.pageId || '';
   const requirementsObjectKey = selectedDrawingObject?.objectId || '';
   const requirementsEvidenceVersion = [

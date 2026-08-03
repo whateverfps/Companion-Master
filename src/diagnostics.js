@@ -31,7 +31,9 @@ function persist(){
 }
 function write(level,message,details={}){
   const entry={id:createIdentifier(),time:new Date().toISOString(),level,message,details};
-  logs.push(entry);logs=logs.slice(-MAX_LOGS);persist();
+  logs.push(entry);
+  logs = logs.slice(-MAX_LOGS);
+  if (level !== 'debug' || diagnosticsPersistenceEnabled) persist();
   if (diagnosticsEnabled) {
     const fn=level==='error'?'error':level==='warning'?'warn':'log';
     console[fn](`[Mission Companion] ${message}`,details);
