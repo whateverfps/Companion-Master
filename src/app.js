@@ -291,6 +291,10 @@ let activeDrawingRenderIdentity = null;
 let drawingWorkspaceRenderRequest = 0;
 let drawingPageSelectionRequest = 0;
 let drawingPagePaintRequest = 0;
+let drawingRequirementsRequestGeneration = 0;
+let drawingRequirementsRequestKey = '';
+let drawingRequirementsRefreshTimer = null;
+const drawingRequirementsResultCache = new Map();
 let drawingWheelPaintFrame = 0;
 let drawingPanelRefreshRequest = 0;
 let drawingDeferredWorkspaceRefresh = null;
@@ -2333,11 +2337,19 @@ function projectObjectPresentation(item) {
 
 function constructionIntelligencePanelMarkup(model) {
   const degraded = model.status === 'partial' ? '<p class="mc-ci-warning" role="status">Some construction intelligence is temporarily unavailable.</p>' : model.status === 'unavailable' ? '<p class="mc-ci-warning" role="status">Construction intelligence is unavailable for this page.</p>' : '';
+  const loading = model.status === 'loading' ? '<p class="mc-ci-loading" role="status">Loading governing requirements…</p>' : '';
   const group = (key, title, content, { force = false } = {}) => !force && !content ? '' : `<details class="mc-ci-group" data-ci-group="${esc(key)}" ${constructionIntelligenceExpanded.has(key) ? 'open' : ''}><summary><span>${esc(title)}</span><span aria-hidden="true">⌄</span></summary><div class="mc-ci-group-body">${content || '<p>No governing specification has been confirmed.</p>'}</div></details>`;
   const recordList = items => `<ul class="mc-ci-record-list">${items.map(item => `<li><strong>${esc(item.label)}</strong>${item.relationship ? `<span class="mc-ci-badge">${esc(item.relationship.verificationState)}</span>` : ''}${item.target ? `<button data-project-relationship-open="${esc(item.relationship.relationshipId)}">Open</button>` : ''}</li>`).join('')}</ul>`;
   const relationshipGroups = groups => Object.entries(groups || {}).filter(([, items]) => items?.length).map(([title, items]) => `<div class="mc-ci-subgroup"><h5>${esc(title.replace(/([A-Z])/g, ' $1'))}</h5>${recordList(items)}</div>`).join('');
   const specificationCards = items => `<ol class="mc-ci-specifications">${items.map(item => `<li><div><strong>${esc(item.sectionNumber)}</strong><span>${esc(item.sectionTitle)}</span></div><div class="mc-ci-spec-meta"><span class="mc-ci-badge ${esc(item.displayStatus)}">${esc(item.displayStatus)}</span><span>${Math.round((Number(item.confidence) || 0) * 100)}% confidence</span><span>${fmt(item.evidenceCount)} evidence</span></div>${item.evidenceText ? `<div class="mc-ci-evidence"><strong>${esc(item.evidenceSource || 'Drawing evidence')}</strong><p>${esc(item.evidenceText)}</p></div>` : ''}<div class="mc-ci-actions">${item.canShowSource ? `<button data-object-spec-source="${esc(item.specificationDocumentId)}" data-object-spec-page="${item.sourcePageNumber}" data-object-spec-section="${esc(item.sectionNumber)}">Open Source</button>` : ''}${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject</button>` : ''}</div></li>`).join('')}</ol>`;
   const fieldWork = groups => groups.map(group => `<div class="mc-ci-work-phase"><h5>${esc(group.phase)}</h5><ul>${group.items.map(item => `<li><span aria-hidden="true">□</span><div><strong>${esc(item.label)}</strong><small>${esc(item.sectionNumber)} · ${esc(item.sectionTitle)}</small></div></li>`).join('')}</ul></div>`).join('');
+  if (model.status === 'loading') {
+    const page = model.page || {};
+    const object = model.object || {};
+    const label = model.mode === 'object' ? esc(object.name || 'Selected object') : esc(page.sheet || 'Selected drawing page');
+    const detail = model.mode === 'object' ? esc(object.location || '') : `${esc(page.sheet || '')}${page.sheetTitle ? ` · ${esc(page.sheetTitle)}` : ''}`;
+    return `<div class="mc-construction-intelligence" data-panel-mode="${esc(model.mode || 'page')}" data-intelligence-status="loading"><header><span>CONSTRUCTION WORKSPACE</span><h3>${model.mode === 'object' ? 'Selected Object' : 'Construction Overview'}</h3><p>${detail || label}</p>${loading}</header></div>`;
+  }
   if (model.mode === 'page') {
     const page = model.page;
     const counts = Object.entries(page.objectCounts || {});
@@ -2420,6 +2432,18 @@ function constructionIntelligencePanelSignature(model = {}) {
       sourceEntityId: model.sourceEntityId || ''
     };
   return JSON.stringify(summary);
+}
+
+function drawingRequirementsIndexVersion() {
+  try {
+    return (specificationIndex?.documents?.() || []).map(item => `${item.documentId}:${item.indexedAt || ''}`).sort().join('|');
+  } catch {
+    return '';
+  }
+}
+
+function drawingRequirementsCacheKey({ projectId = '', documentId = '', drawingSetId = '', pageId = '', selectedObjectId = '', evidenceVersion = '' } = {}) {
+  return [projectId, drawingRequirementsIndexVersion(), documentId, drawingSetId, pageId, selectedObjectId, evidenceVersion].map(value => String(value || '')).join('::');
 }
 
 function relationshipGroupsMarkup(groups, sourceEntityId = '') {
@@ -2719,7 +2743,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   else if (sheet && activeViewportContext && (activeViewportContext.selectedObjectId !== (selectedDrawingObject?.objectId || null) || activeViewportContext.activeTradeChannel !== activeTrade.key)) activeViewportContext = drawingViewportContextService.update({ ...activeViewportContext, selectedObjectId: selectedDrawingObject?.objectId || null, selectedRoomId: selectedDrawingObject?.type === 'room' ? selectedDrawingObject.roomId : null, activeTradeChannel: activeTrade.key, source: selectedDrawingObject ? (selectedDrawingObject.type === 'room' ? 'room-selection' : 'object-selection') : activeViewportContext.selectedRegion ? 'manual-selection' : 'page-context' }, { immediate: true });
   const visibleRooms = activeViewportContext ? containedConstructionIntelligence('rooms', [], () => drawingViewportContextService.visibleRooms(activeViewportContext, exactRooms), { pageId: sheet?.pageId || '' }) : [];
   const requirementInput = { projectId: analysis?.projectId || selected.projectId || state().activeProject, pageEntityId: activeRelationshipContext.sourceEntityId && !selectedDrawingObject ? activeRelationshipContext.sourceEntityId : `drawing-page:${sheet?.pageId || ''}`, selectedObjectEntityId: selectedDrawingObject ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedRoomEntityId: selectedDrawingObject?.type === 'room' ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedObjectId: selectedDrawingObject?.objectId || '', viewportContext: activeViewportContext, tradeChannel: activeTrade, drawingSpecLinks: sheetSpecificationLinks, projectWideRequirements: [] };
-  const pendingRequirements = { status: 'partial', requirements: [], confirmedSpecifications: [], suggestedSpecifications: [], projectWideRequirements: [], fieldRequirements: {}, warnings: providerWarnings, providerFailures: workspaceProviderFailures };
+  const pendingRequirements = { status: 'loading', requirements: [], confirmedSpecifications: [], suggestedSpecifications: [], projectWideRequirements: [], fieldRequirements: {}, warnings: providerWarnings, providerFailures: workspaceProviderFailures };
   const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
   const returnLabel = shell === 'professional' && returnAction?.kind === 'mission-control' ? 'Return to Chief' : returnAction?.label;
   const focusTarget = drawingFocusTarget({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion });
@@ -2785,26 +2809,56 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const nextIntelligence = host.querySelector('.mc-drawing-evidence');
   if (nextIntelligence) { nextIntelligence.scrollTop = pendingDrawingPanelScroll ?? constructionIntelligenceScroll[constructionIntelligencePanel.mode] ?? 0; pendingDrawingPanelScroll = null; }
   if (source && sheet) await paintDrawingPage(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), overlayRecords, { preserveSidebarScroll: true });
-  const intelligenceStartedAt = globalThis.performance?.now?.() ?? Date.now();
-  void drawingRequirementsResolver.resolveLatest(requirementInput).then(outcome => {
-    if (!outcome.committed || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
-    const resolved = outcome.result;
-    const activeRequirements = { ...resolved, status: providerWarnings.length && resolved.status === 'complete' ? 'partial' : resolved.status, warnings: [...(resolved.warnings || []), ...providerWarnings], providerFailures: [...(resolved.providerFailures || []), ...workspaceProviderFailures] };
-    for (const failure of activeRequirements.providerFailures) logger.warning('Construction intelligence provider failure', { ...failure, pageId: sheet?.pageId || '', objectId: selectedDrawingObject?.objectId || '', timestamp: new Date().toISOString(), contained: true });
-    activeDrawingTransientRequirementCount = activeRequirements.requirements?.length || 0;
-    const panel = host.querySelector('.mc-drawing-evidence'); if (!panel) return;
-    const panelRequest = ++drawingPanelRefreshRequest;
-    requestAnimationFrame(() => {
-      if (panelRequest !== drawingPanelRefreshRequest || !panel.isConnected || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
-      const panelStartedAt = globalThis.performance?.now?.() ?? Date.now(); const scrollTop = panel.scrollTop; const panelModel = buildIntelligencePanel(activeRequirements); const panelSignature = constructionIntelligencePanelSignature(panelModel); const panelNodeCountBefore = panel.querySelectorAll('*').length; const rightPanelCardCountBefore = panel.querySelectorAll('.mc-ci-group, .mc-ci-specifications li, .mc-ci-record-list li, .mc-ci-work-phase li').length;
-      const panelUpdated = panel.dataset.panelSignature !== panelSignature;
-      if (panelUpdated) { panel.innerHTML = constructionIntelligencePanelMarkup(panelModel); panel.dataset.panelSignature = panelSignature; }
-      panel.scrollTop = scrollTop;
-      const panelNodeCountAfter = panel.querySelectorAll('*').length;
-      const rightPanelCardCountAfter = panel.querySelectorAll('.mc-ci-group, .mc-ci-specifications li, .mc-ci-record-list li, .mc-ci-work-phase li').length;
-      logger.debug('Drawing workspace DOM', { region: 'right-panel', pageId: sheet?.pageId || '', panelUpdated, panelNodeCountBefore, panelNodeCountAfter, rightPanelCardCountBefore, rightPanelCardCountAfter, domUpdateMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - panelStartedAt), resolutionMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - intelligenceStartedAt), providerFailureCount: activeRequirements.providerFailures.length, contained: true });
-    });
-  }).catch(error => logger.warning('Construction intelligence provider failure', { provider: 'requirements-resolver', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }));
+  const requirementsPageKey = drawingTarget?.pageId || sheet?.pageId || '';
+  const requirementsObjectKey = selectedDrawingObject?.objectId || '';
+  const requirementsEvidenceVersion = [
+    sheetSpecificationLinks.map(item => `${item.linkId}:${item.status}:${item.updatedAt || item.createdAt || ''}`).join(','),
+    activeDrawingObjects.map(item => `${item.objectId}:${item.verificationState}:${item.updatedAt || ''}`).join(','),
+    sheetLegends.length,
+    sheetSchedules.length,
+    sheetKeyedNotes.length,
+    sheetOccurrences.length,
+    pageSpecificationLinks.length,
+    selectedSpecificationLinks.length
+  ].join('|');
+  const requirementsRequestKey = drawingRequirementsCacheKey({ projectId: analysis?.projectId || selected.projectId || state().activeProject, documentId: selected.id, drawingSetId: analysis?.drawingSetId || '', pageId: requirementsPageKey, selectedObjectId: requirementsObjectKey, evidenceVersion: requirementsEvidenceVersion });
+  const requirementsRequestGeneration = ++drawingRequirementsRequestGeneration;
+  drawingRequirementsRequestKey = requirementsRequestKey;
+  if (drawingRequirementsRefreshTimer) clearTimeout(drawingRequirementsRefreshTimer);
+  drawingRequirementsRefreshTimer = setTimeout(() => {
+    drawingRequirementsRefreshTimer = null;
+    if (requirementsRequestGeneration !== drawingRequirementsRequestGeneration || drawingRequirementsRequestKey !== requirementsRequestKey || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
+    const intelligenceStartedAt = globalThis.performance?.now?.() ?? Date.now();
+    const commitRequirements = activeRequirements => {
+      if (requirementsRequestGeneration !== drawingRequirementsRequestGeneration || drawingRequirementsRequestKey !== requirementsRequestKey || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
+      const panel = host.querySelector('.mc-drawing-evidence'); if (!panel) return;
+      const panelRequest = ++drawingPanelRefreshRequest;
+      requestAnimationFrame(() => {
+        if (panelRequest !== drawingPanelRefreshRequest || !panel.isConnected || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
+        const panelStartedAt = globalThis.performance?.now?.() ?? Date.now(); const scrollTop = panel.scrollTop; const panelModel = buildIntelligencePanel(activeRequirements); const panelSignature = constructionIntelligencePanelSignature(panelModel); const panelNodeCountBefore = panel.querySelectorAll('*').length; const rightPanelCardCountBefore = panel.querySelectorAll('.mc-ci-group, .mc-ci-specifications li, .mc-ci-record-list li, .mc-ci-work-phase li').length;
+        const panelUpdated = panel.dataset.panelSignature !== panelSignature;
+        if (panelUpdated) { panel.innerHTML = constructionIntelligencePanelMarkup(panelModel); panel.dataset.panelSignature = panelSignature; }
+        panel.scrollTop = scrollTop;
+        const panelNodeCountAfter = panel.querySelectorAll('*').length;
+        const rightPanelCardCountAfter = panel.querySelectorAll('.mc-ci-group, .mc-ci-specifications li, .mc-ci-record-list li, .mc-ci-work-phase li').length;
+        logger.debug('Drawing workspace DOM', { region: 'right-panel', pageId: sheet?.pageId || '', panelUpdated, panelNodeCountBefore, panelNodeCountAfter, rightPanelCardCountBefore, rightPanelCardCountAfter, domUpdateMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - panelStartedAt), resolutionMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - intelligenceStartedAt), providerFailureCount: activeRequirements.providerFailures.length, contained: true });
+      });
+    };
+    const cached = drawingRequirementsResultCache.get(requirementsRequestKey);
+    if (cached) {
+      commitRequirements(cached);
+      return;
+    }
+    void drawingRequirementsResolver.resolveLatest(requirementInput).then(outcome => {
+      if (!outcome.committed || requirementsRequestGeneration !== drawingRequirementsRequestGeneration || drawingRequirementsRequestKey !== requirementsRequestKey || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
+      const resolved = outcome.result;
+      const activeRequirements = { ...resolved, status: providerWarnings.length && resolved.status === 'complete' ? 'partial' : resolved.status, warnings: [...(resolved.warnings || []), ...providerWarnings], providerFailures: [...(resolved.providerFailures || []), ...workspaceProviderFailures] };
+      drawingRequirementsResultCache.set(requirementsRequestKey, structuredClone(activeRequirements));
+      for (const failure of activeRequirements.providerFailures) logger.warning('Construction intelligence provider failure', { ...failure, pageId: sheet?.pageId || '', objectId: selectedDrawingObject?.objectId || '', timestamp: new Date().toISOString(), contained: true });
+      activeDrawingTransientRequirementCount = activeRequirements.requirements?.length || 0;
+      commitRequirements(activeRequirements);
+    }).catch(error => logger.warning('Construction intelligence provider failure', { provider: 'requirements-resolver', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }));
+  }, 0);
   const restoredFocus = preservedFocusSelector ? host.querySelector(preservedFocusSelector) : null;
   if (restoredFocus) restoredFocus.focus({ preventScroll: true });
   else if (focusTarget && host.querySelector(`#${focusTarget}`)) {
