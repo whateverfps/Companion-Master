@@ -25,6 +25,13 @@ function harness() {
   return { viewer, proxies, rendered, events };
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 test('ordinary section lookup keeps the specification PDF dormant', () => {
   const { viewer, proxies } = harness();
   assert.deepEqual(viewer.diagnostics(), { specificationPdfProxyActive: false, specificationSourcePage: null, sourceViewRenderTaskActive: false, sourceViewCanvasPixels: { width: 0, height: 0 }, sourceViewCacheEntryCount: 0, sourceViewCleanupTimestamp: '', retainedSpecificationPageRecordsInMemory: 0 });
@@ -33,29 +40,58 @@ test('ordinary section lookup keeps the specification PDF dormant', () => {
 
 test('View Source Page opens one exact specification page without a page model', async () => {
   const { viewer, rendered } = harness();
-  const result = await viewer.open({ document: specification, sourceBlob: new Blob(['pdf'], { type: 'application/pdf' }), pageNumber: 417, sectionNumber: '23 31 00', sectionTitle: 'HVAC Ducts and Casings', canvas: canvas() });
+  const result = await viewer.open({ document: { ...specification, contentHash: 'spec-v1' }, sourceBlob: new Blob(['pdf'], { type: 'application/pdf' }), pageNumber: 417, sectionNumber: '23 31 00', sectionTitle: 'HVAC Ducts and Casings', canvas: canvas() });
   assert.equal(result.ok, true);
   assert.deepEqual(rendered, [417]);
   assert.equal(result.diagnostics.retainedSpecificationPageRecordsInMemory, 1);
   assert.equal(result.diagnostics.sourceViewCacheEntryCount, 0);
 });
 
-test('a second page replaces and destroys the first isolated proxy', async () => {
+test('a second page reuses the same isolated proxy handle', async () => {
   const { viewer, proxies, rendered } = harness();
-  await viewer.open({ document: specification, sourceBlob: new Blob(['one'], { type: 'application/pdf' }), pageNumber: 10, canvas: canvas() });
-  await viewer.open({ document: specification, sourceBlob: new Blob(['two'], { type: 'application/pdf' }), pageNumber: 11, canvas: canvas() });
+  await viewer.open({ document: { ...specification, contentHash: 'spec-v1' }, sourceBlob: new Blob(['one'], { type: 'application/pdf' }), pageNumber: 10, canvas: canvas() });
+  await viewer.open({ document: { ...specification, contentHash: 'spec-v1' }, sourceBlob: new Blob(['two'], { type: 'application/pdf' }), pageNumber: 11, canvas: canvas() });
   assert.deepEqual(rendered, [10, 11]);
-  assert.equal(proxies[0].destroyed, 1);
-  assert.equal(proxies[0].cleaned, 1);
+  assert.equal(proxies.length, 1);
   assert.equal(viewer.diagnostics().specificationSourcePage, 11);
+});
+
+test('same-page reopen uses the rendered-page cache', async () => {
+  const { viewer, rendered } = harness();
+  const first = await viewer.open({ document: { ...specification, contentHash: 'spec-v1' }, sourceBlob: new Blob(['pdf'], { type: 'application/pdf' }), pageNumber: 88, canvas: canvas() });
+  const second = await viewer.open({ document: { ...specification, contentHash: 'spec-v1' }, sourceBlob: new Blob(['pdf'], { type: 'application/pdf' }), pageNumber: 88, canvas: canvas() });
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(second.cacheHit, true);
+  assert.deepEqual(rendered, [88]);
+});
+
+test('stale source request is suppressed', async () => {
+  const pending = deferred();
+  const rendered = [];
+  const viewer = createSpecificationSourceViewer({
+    openPdf: async () => ({ numPages: 2363, cleanup() {}, destroy() {} }),
+    renderPage: async (_proxy, page, target) => {
+      rendered.push(page);
+      target.width = 1200;
+      target.height = 1600;
+      await pending.promise;
+      return { promise: Promise.resolve(), cancel() {}, release() {}, releasePage() {} };
+    }
+  });
+  const first = viewer.open({ document: { ...specification, contentHash: 'spec-v1' }, sourceBlob: new Blob(['pdf'], { type: 'application/pdf' }), pageNumber: 5, canvas: canvas() });
+  const second = viewer.open({ document: { ...specification, contentHash: 'spec-v2' }, sourceBlob: new Blob(['pdf2'], { type: 'application/pdf' }), pageNumber: 6, canvas: canvas() });
+  pending.resolve();
+  await Promise.all([first, second]);
+  assert.equal(viewer.diagnostics().specificationSourcePage, 6);
+  assert.deepEqual(rendered, [5, 6]);
 });
 
 test('return or workspace switching releases canvas, page, render, and proxy resources', async () => {
   const { viewer, proxies } = harness();
   const targetCanvas = canvas();
-  await viewer.open({ document: specification, sourceBlob: new Blob(['pdf'], { type: 'application/pdf' }), pageNumber: 100, canvas: targetCanvas });
+  await viewer.open({ document: { ...specification, contentHash: 'spec-v1' }, sourceBlob: new Blob(['pdf'], { type: 'application/pdf' }), pageNumber: 100, canvas: targetCanvas });
   const result = await viewer.close('workspace-changed');
-  assert.equal(proxies[0].destroyed, 1);
   assert.equal(targetCanvas.width, 0);
   assert.equal(targetCanvas.height, 0);
   assert.equal(result.specificationPdfProxyActive, false);
@@ -66,7 +102,7 @@ test('return or workspace switching releases canvas, page, render, and proxy res
 test('drawing documents and inexact requests cannot enter specification evidence', async () => {
   const { viewer, proxies } = harness();
   assert.equal((await viewer.open({ document: { ...specification, documentType: 'drawing-set' }, sourceBlob: new Blob(['pdf'], { type: 'application/pdf' }), pageNumber: 1, canvas: canvas() })).status, 'invalid-document-role');
-  assert.equal((await viewer.open({ document: specification, sourceBlob: new Blob(['pdf'], { type: 'application/pdf' }), pageNumber: 0, canvas: canvas() })).status, 'exact-source-page-required');
+  assert.equal((await viewer.open({ document: { ...specification, contentHash: 'spec-v1' }, sourceBlob: new Blob(['pdf'], { type: 'application/pdf' }), pageNumber: 0, canvas: canvas() })).status, 'exact-source-page-required');
   assert.equal(proxies.length, 0);
 });
 

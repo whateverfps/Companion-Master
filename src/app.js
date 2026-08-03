@@ -327,6 +327,7 @@ let specificationSourceTarget = null;
 let pendingDrawingPanelScroll = null;
 let constructionIntelligenceExpanded = new Set(loadConstructionIntelligencePanelState().expanded);
 const constructionIntelligenceScroll = { page: 0, object: 0 };
+let specificationSourceRequestId = 0;
 
 app.innerHTML = `
 <a id="skipLink" class="mc-skip-link" href="#missionControlMain">Skip to workspace</a>
@@ -8884,27 +8885,43 @@ async function renderSpecificationSourceEvidence() {
     host.innerHTML = '<div class="empty">No exact specification source page was requested.</div>';
     return;
   }
-  const documents = await engine.documents();
-  const documentRecord = documents.find(item => item.id === target.documentId);
-  if (!isSpecificationDocument(documentRecord)) {
-    host.innerHTML = '<div class="empty">The requested source is not an authoritative specification document.</div>';
-    return;
-  }
-  const source = await engine.sourceFile(documentRecord.id);
-  if (!source?.sourceBlob) {
-    host.innerHTML = '<div class="empty">The retained specification source PDF is unavailable. Indexed section content remains available.</div>';
-    return;
-  }
-  host.innerHTML = `<header class="source-title"><span>SPECIFICATION SOURCE EVIDENCE</span><h2>${esc(target.sectionNumber)} — ${esc(target.sectionTitle)}</h2><p>Exact source page ${fmt(target.pageNumber)} · one-page evidence view</p></header><div><button type="button" data-specification-source-return>${target.returnTarget === 'drawings' ? 'Return to Drawing' : 'Return to Specification'}</button></div><div class="mc-specification-source-stage"><canvas id="specificationSourceCanvas" aria-label="Specification ${esc(target.sectionNumber)} source page ${fmt(target.pageNumber)}"></canvas></div>`;
-  const result = await specificationSourceViewer.open({ document: documentRecord, sourceBlob: source.sourceBlob, pageNumber: target.pageNumber, sectionNumber: target.sectionNumber, sectionTitle: target.sectionTitle, articleReference: target.articleReference, returnTarget: specificationDrawingReturnTarget, canvas: $('#specificationSourceCanvas') });
-  if (!result.ok) host.insertAdjacentHTML('beforeend', `<p role="status">Source page unavailable: ${esc(result.status)}</p>`);
-  $('[data-specification-source-return]')?.addEventListener('click', async () => {
+  const requestId = ++specificationSourceRequestId;
+  host.innerHTML = `<header class="source-title"><span>SPECIFICATION SOURCE EVIDENCE</span><h2>${esc(target.sectionNumber)} — ${esc(target.sectionTitle)}</h2><p>Exact source page ${fmt(target.pageNumber)} · one-page evidence view</p></header><div><button type="button" data-specification-source-return>${target.returnTarget === 'drawings' ? 'Return to Drawing' : 'Return to Specification'}</button></div><div class="mc-specification-source-stage" aria-busy="true"><div class="empty">Loading source page ${fmt(target.pageNumber)}…</div><canvas id="specificationSourceCanvas" aria-label="Specification ${esc(target.sectionNumber)} source page ${fmt(target.pageNumber)}"></canvas></div>`;
+  const stageStarted = globalThis.performance?.now?.() ?? Date.now();
+  const stageMetric = (operation, extra = {}) => logger.debug('Specification source performance', { operation, durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - stageStarted), documentId: target.documentId, pageNumber: Number(target.pageNumber) || 0, sectionNumber: target.sectionNumber, ...extra });
+  const canvas = $('#specificationSourceCanvas');
+  const returnButton = $('[data-specification-source-return]');
+  returnButton?.addEventListener('click', async () => {
+    specificationSourceRequestId += 1;
     await specificationSourceViewer.close('return');
     specificationSourceTarget = null;
     if (specificationDrawingReturnTarget?.target) {
       restoreDrawingSupportReturnState();
     } else show('knowledge');
   });
+  stageMetric('shell-visible');
+  const documents = await engine.documents();
+  if (requestId !== specificationSourceRequestId) return;
+  stageMetric('documents-loaded');
+  const documentRecord = documents.find(item => item.id === target.documentId);
+  if (!isSpecificationDocument(documentRecord)) {
+    host.innerHTML = '<div class="empty">The requested source is not an authoritative specification document.</div>';
+    return;
+  }
+  stageMetric('document-lookup');
+  const source = await engine.sourceFile(documentRecord.id);
+  if (requestId !== specificationSourceRequestId) return;
+  stageMetric('retained-source-loaded');
+  if (!source?.sourceBlob) {
+    host.innerHTML = '<div class="empty">The retained specification source PDF is unavailable. Indexed section content remains available.</div>';
+    return;
+  }
+  const openStarted = globalThis.performance?.now?.() ?? Date.now();
+  stageMetric('lookup-complete');
+  const result = await specificationSourceViewer.open({ document: documentRecord, sourceBlob: source.sourceBlob, pageNumber: target.pageNumber, sectionNumber: target.sectionNumber, sectionTitle: target.sectionTitle, articleReference: target.articleReference, returnTarget: specificationDrawingReturnTarget, canvas });
+  if (requestId !== specificationSourceRequestId) return;
+  stageMetric('page-rendered', { cacheHit: Boolean(result.cacheHit), openDurationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - openStarted) });
+  if (!result.ok) host.insertAdjacentHTML('beforeend', `<p role="status">Source page unavailable: ${esc(result.status)}</p>`);
 }
 
 async function renderSources() {
