@@ -340,6 +340,7 @@ let drawingOverlayRenderCount = 0;
 let drawingSpecificationResolveCount = 0;
 let drawingPageSelectionRequest = 0;
 let drawingPagePaintRequest = 0;
+let drawingPageRenderFailureKeys = new Set();
 let drawingRequirementsRequestGeneration = 0;
 let drawingRequirementsRequestKey = '';
 let drawingRequirementsRefreshTimer = null;
@@ -2052,7 +2053,7 @@ async function paintDrawingSelectionFast({ shell, analysis, sheet, observation =
     return false;
   }
   const bitmapStartedAt = drawingPerfNow();
-  await paintDrawingPage(source, sheet, observation || null, [], { preserveSidebarScroll: !scrollActiveCard });
+  await paintDrawingPage(source, sheet, observation || null, [], { preserveSidebarScroll: !scrollActiveCard, shell, requestToken });
   drawingTraceSlowOperation('page bitmap creation', bitmapStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber });
   if (requestToken !== drawingPagePaintRequest) return false;
   if (navigationStartedAt) logger.debug('Drawing viewer performance', { operation: 'click-to-visible-bitmap', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: sheet.pageNumber });
@@ -2171,7 +2172,7 @@ function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
   drawingTraceSlowOperation('overlay generation', overlayStartedAt, { renderCount: drawingOverlayRenderCount, pageId: sheet.pageId, totalCount: overlayRecords.length, visibleCount: records.length });
 }
 
-async function paintDrawingPage(source, sheet, observation, overlayRecords = [], { preserveSidebarScroll = false } = {}) {
+async function paintDrawingPage(source, sheet, observation, overlayRecords = [], { preserveSidebarScroll = false, shell = 'professional', requestToken = 0 } = {}) {
   const paintStartedAt = drawingPerfNow();
   traceDrawingInteractionStep('paintDrawingPage', { documentId: source?.documentId || '', pageNumber: sheet?.pageNumber || 0, overlayCount: overlayRecords.length });
   const canvas = $('#mcDrawingCanvas');
@@ -2181,7 +2182,9 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
   stage.setAttribute('aria-label', 'Interactive drawing canvas. Use arrow keys to change pages, plus or minus to zoom, and zero to reset view.');
   let loadingKey = '';
   const clearCurrentLoading = () => { if (loadingKey && stage.dataset.renderLoadingKey === loadingKey) { stage.classList.remove('is-loading'); delete stage.dataset.renderLoadingKey; } };
+  const renderFailureKey = () => [source.documentId, sheet.pageNumber, drawingRenderGeneration, requestToken || 0].join(':');
   try {
+    if (requestToken && requestToken !== drawingPagePaintRequest) return;
     const pdfLookupStartedAt = drawingPerfNow();
     drawingViewportDocumentId = source.documentId;
     if (!activeDrawingPdf || activeDrawingDocumentId !== source.documentId) {
@@ -2249,6 +2252,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       canvas.dataset.renderReason = decision.reason;
       activeDrawingRenderIdentity = nextIdentity;
       clearCurrentLoading();
+      stage.querySelector('.mc-drawing-render-error')?.remove();
       drawingPdfRenderCount += 1;
       drawingTraceSlowOperation('PDF render', renderStartedAt, { renderCount: drawingPdfRenderCount, documentId: source.documentId, pageNumber: sheet.pageNumber, cacheKey });
       drawingTraceSlowOperation('page bitmap creation', bitmapStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber, width: canvas.width, height: canvas.height });
@@ -2372,15 +2376,20 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       activeDrawingResizeObserver = new ResizeObserver(() => {
         if (!drawingResizeRenderIsCurrent({ observedStage: stage, activeStage: activeDrawingResizeStage, observedPage: sheet.pageNumber, selectedPage: drawingTarget?.pageNumber })) return;
         const current = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) };
-        if (current.mode === 'fit-page' || current.mode === 'fit-width') void paintDrawingPage(source, sheet, observation, overlayRecords, { preserveSidebarScroll: true });
+        if (current.mode === 'fit-page' || current.mode === 'fit-width') void paintDrawingPage(source, sheet, observation, overlayRecords, { preserveSidebarScroll: true, shell, requestToken });
       });
       activeDrawingResizeObserver.observe(stage);
       activeDrawingResizeStage = stage;
     }
   } catch (error) {
     clearCurrentLoading();
-    if (drawingTarget?.pageNumber !== sheet.pageNumber) return;
+    if (requestToken && requestToken !== drawingPagePaintRequest) return;
+    if (drawingTarget?.documentId !== source.documentId || drawingTarget?.pageNumber !== sheet.pageNumber) return;
+    const failureKey = renderFailureKey();
+    if (drawingPageRenderFailureKeys.has(failureKey)) return;
+    drawingPageRenderFailureKeys.add(failureKey);
     stage.classList.remove('is-loading');
+    stage.querySelector('.mc-drawing-render-error')?.remove();
     canvas.insertAdjacentHTML('afterend', `<div class="mc-drawing-render-error" role="status"><strong>Drawing page could not be updated.</strong><p>${esc(error.message)}</p><small>The previously rendered sheet remains available when possible.</small></div>`);
   }
 }
@@ -3024,7 +3033,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   if (nextBrowser) nextBrowser.scrollTop = preservedBrowserScroll;
   const nextIntelligence = host.querySelector('.mc-drawing-evidence');
   if (nextIntelligence) { nextIntelligence.scrollTop = pendingDrawingPanelScroll ?? constructionIntelligenceScroll[constructionIntelligencePanel.mode] ?? 0; pendingDrawingPanelScroll = null; }
-  if (source && sheet) await paintDrawingPage(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), overlayRecords, { preserveSidebarScroll: true });
+  if (source && sheet) await paintDrawingPage(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), overlayRecords, { preserveSidebarScroll: true, shell, requestToken: workspaceRenderRequest });
   const requirementsPageKey = drawingTarget?.pageId || sheet?.pageId || '';
   const requirementsObjectKey = selectedDrawingObject?.objectId || '';
   const requirementsEvidenceVersion = [
