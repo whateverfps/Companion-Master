@@ -6,6 +6,12 @@ const clone = value => structuredClone(value);
 const RULES = Object.freeze({ signage: '10 14 00', 'resilient-base': '09 65 13', 'resilient-tile': '09 65 19', 'paint-finish': '09 91 00', 'wall-protection': '10 26 00', 'door-protection': '10 26 00', 'fire-extinguisher-cabinet': '10 44 13' });
 export const DRAWING_SPEC_AUDIT_HISTORY_LIMIT = 25;
 export const DRAWING_SPEC_EVIDENCE_LIMIT = 20;
+const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
+const logSlowOperation = (name, startedAt, details = {}) => {
+  const elapsed = Math.max(0, perfNow() - startedAt);
+  if (elapsed > 10) console.warn(name, elapsed, { ...details, stack: new Error().stack });
+  return elapsed;
+};
 
 function revisionKey(section) { return text(section?.revisionSource?.revisionId || section?.revisionSource?.id || section?.supersessionStatus || 'current'); }
 function activeKey(record, section) { return [text(record.projectId), text(record.drawingPageId), text(record.objectId) || 'page', text(record.specificationDocumentId), normalizeSpecificationNumber(record.sectionNumber).replace(/\s/g, ''), text(record.applicabilityScope || (record.objectId ? 'object-specific' : 'page-wide')), revisionKey(section)].join(':'); }
@@ -20,10 +26,11 @@ export function createDrawingSpecificationLinkService({ index, persistence = nul
   const report = patch => { diagnostics = { ...diagnostics, ...patch }; onDiagnostic(clone(diagnostics)); };
   const enqueue = operation => {
     if (!persistence) return Promise.resolve({ ok: true });
-    const started = globalThis.performance?.now?.() ?? Date.now();
-    persistenceQueue = persistenceQueue.then(operation).then(() => { report({ lastWriteDurationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - started), lastWriteFailure: null }); return { ok: true }; }).catch(error => {
+    const started = perfNow();
+    persistenceQueue = persistenceQueue.then(operation).then(() => { report({ lastWriteDurationMs: Math.max(0, perfNow() - started), lastWriteFailure: null }); logSlowOperation('drawing specification write', started, { backend: diagnostics.backend }); return { ok: true }; }).catch(error => {
       retryQueue.push(operation); if (retryQueue.length > 100) retryQueue.shift();
-      report({ lastWriteDurationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - started), lastWriteFailure: { message: error?.message || String(error), at: now() }, pendingRetryCount: retryQueue.length });
+      report({ lastWriteDurationMs: Math.max(0, perfNow() - started), lastWriteFailure: { message: error?.message || String(error), at: now() }, pendingRetryCount: retryQueue.length });
+      logSlowOperation('drawing specification write', started, { backend: diagnostics.backend, failed: true });
       return { ok: false, error };
     });
     return persistenceQueue;
@@ -64,6 +71,7 @@ export function createDrawingSpecificationLinkService({ index, persistence = nul
     if (!Array.isArray(parsed)) return;
     report({ legacyRecordCount: parsed.length });
     let migrated = 0; let duplicates = 0;
+    const migrateStartedAt = perfNow();
     for (const item of parsed) {
       if (projectId && text(item?.projectId) !== projectId) continue;
       const candidate = normalize(item); if (!candidate) continue;
@@ -77,10 +85,11 @@ export function createDrawingSpecificationLinkService({ index, persistence = nul
     if (verified.length < [...records.values()].filter(item => !projectId || item.projectId === projectId).length) { report({ lastWriteFailure: { message: 'Legacy migration verification failed.', at: now(), phase: 'legacy-verify' } }); return; }
     try { legacyStorage?.removeItem?.(legacyStorageKey); } catch (error) { report({ lastWriteFailure: { message: error?.message || String(error), at: now(), phase: 'legacy-cleanup' } }); }
     report({ migratedLegacyRecordCount: migrated, duplicateRecordsRemoved: duplicates, indexedDbRecordCount: verified.length, localStorageDrawingSpecBytes: bytes(legacyStorage?.getItem?.(legacyStorageKey) || '') });
+    logSlowOperation('drawing specification migrate', migrateStartedAt, { migrated, duplicates, verified: verified.length, projectId });
   };
   const api = {
-    async load(projectId = '') { if (loadedProjects.has(projectId)) return api.forProject(projectId); const stored = persistence ? await persistence.loadLinks(projectId).catch(error => { report({ lastWriteFailure: { message: error?.message || String(error), at: now(), phase: 'load' } }); return []; }) : []; for (const item of stored) { const normalized = normalize(item, item); if (normalized) records.set(normalized.linkId, normalized); } report({ indexedDbRecordCount: stored.length }); if (persistence) await migrateLegacy(projectId); loadedProjects.add(projectId); return api.forProject(projectId); },
-    link: upsert,
+    async load(projectId = '') { if (loadedProjects.has(projectId)) return api.forProject(projectId); const startedAt = perfNow(); const stored = persistence ? await persistence.loadLinks(projectId).catch(error => { report({ lastWriteFailure: { message: error?.message || String(error), at: now(), phase: 'load' } }); return []; }) : []; let storedCount = 0; for (const item of stored) { storedCount += 1; const normalized = normalize(item, item); if (normalized) records.set(normalized.linkId, normalized); } report({ indexedDbRecordCount: stored.length }); if (persistence) await migrateLegacy(projectId); loadedProjects.add(projectId); logSlowOperation('drawing specification load', startedAt, { projectId, storedCount, recordCount: records.size }); return api.forProject(projectId); },
+    link: input => { const startedAt = perfNow(); const result = upsert(input); logSlowOperation('drawing specification link', startedAt, { projectId: input?.projectId || '', pageId: input?.drawingPageId || '', hasResult: Boolean(result) }); return result; },
     suggestForObject(object, { specificationDocumentId } = {}) { const explicit = text(object?.evidenceText).match(/\b(\d{2})\s?(\d{2})\s?(\d{2})\b/g) || []; const proposals = explicit.map(number => ({ sectionNumber: number, origin: 'explicit', status: 'confirmed', confidence: .95, evidenceSource: 'drawing-explicit-reference' })); const rule = RULES[text(object?.subtype || object?.type).toLowerCase()]; if (rule) proposals.push({ sectionNumber: rule, origin: 'rule', status: 'suggested', confidence: .55, evidenceSource: 'verified-object-project-vocabulary' }); return proposals.map(proposal => upsert({ ...proposal, projectId: object.projectId, drawingDocumentId: object.documentId, drawingPageId: object.pageId, objectId: object.objectId, specificationDocumentId, evidenceText: object.evidenceText })).filter(Boolean); },
     confirm(linkIdValue, note = '') { const current = records.get(text(linkIdValue)); return current ? upsert({ ...current, status: 'confirmed', origin: 'manual', note }) : null; },
     reject(linkIdValue, note = '') { const current = records.get(text(linkIdValue)); return current ? upsert({ ...current, status: 'rejected', origin: 'manual', note }) : null; },

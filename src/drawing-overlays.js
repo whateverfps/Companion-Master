@@ -2,6 +2,12 @@ import { validNormalizedRegion } from './drawing-object-model.js';
 
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const list = value => Array.isArray(value) ? value : [];
+const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
+const logSlowOperation = (name, startedAt, details = {}) => {
+  const elapsed = Math.max(0, perfNow() - startedAt);
+  if (elapsed > 10) console.warn(name, elapsed, { ...details, stack: new Error().stack });
+  return elapsed;
+};
 
 export const DRAWING_OVERLAY_TYPES = Object.freeze(['rooms', 'confirmed', 'candidates', 'equipment', 'keyedNotes', 'callouts', 'scheduleLinks', 'warnings', 'selected']);
 
@@ -37,11 +43,14 @@ const intersectsRegion = (a, b, buffer = 0) => {
 };
 
 export function visibleDrawingOverlays(records = [], { projectId, documentId, pageId, visibility = {}, viewportRegion = null, viewportBuffer = .08, rotation = 0, reviewMode = false, maxVisible = 120, onDiagnostic = () => {} } = {}) {
+  const startedAt = perfNow();
   const suppressionReasons = {}; const suppress = reason => { suppressionReasons[reason] = (suppressionReasons[reason] || 0) + 1; };
   const normalized = list(records).map(createDrawingOverlay).filter(Boolean);
   const owned = normalized.filter(record => record.projectId === text(projectId) && record.documentId === text(documentId) && record.pageId === text(pageId));
   const accepted = []; const seen = new Set(); let oversizedRegionsRejected = 0;
+  let iterationCount = 0;
   for (const record of owned) {
+    iterationCount += 1;
     const pinned = record.type === 'selected' || record.verificationState === 'confirmed';
     if (!pinned && candidate(record) && !reviewMode && visibility.candidates !== true) { suppress('candidate-hidden'); continue; }
     if (!pinned && candidate(record) && !reviewMode && record.confidence < .75) { suppress('low-confidence-candidate'); continue; }
@@ -59,6 +68,7 @@ export function visibleDrawingOverlays(records = [], { projectId, documentId, pa
   if (accepted.length > visible.length) suppressionReasons['page-limit'] = accepted.length - visible.length;
   const result = visible.map(record => ({ ...record, displayRegion: transformOverlayRegion(record.region, rotation) }));
   onDiagnostic({ totalObservations: list(records).length, deduplicatedObjects: new Set(owned.map(item => item.overlayId)).size, regionsBeforeDeduplication: owned.length, regionsAfterDeduplication: accepted.length, oversizedRegionsRejected, normalViewOverlaysRendered: reviewMode ? 0 : result.length, reviewModeOverlaysRendered: reviewMode ? result.length : 0, suppressionReasons });
+  logSlowOperation('overlay generation', startedAt, { iterationCount, ownedCount: owned.length, acceptedCount: accepted.length, visibleCount: result.length });
   return result;
 }
 

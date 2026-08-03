@@ -134,6 +134,7 @@ import { createDrawingTradeContext, DRAWING_TRADE_CHANNELS } from './drawing-tra
 import { createDrawingRequirementsResolver } from './drawing-requirements-resolver.js';
 import { createProjectObjectRegistry } from './project-object-registry.js';
 import { buildConstructionIntelligencePanelModel, loadConstructionIntelligencePanelState, saveConstructionIntelligencePanelState } from './construction-intelligence-panel.js';
+import { acquireTrackedResource, clearTrackedResources, releaseTrackedResource, replaceTrackedResource, reportTrackedResources, snapshotTrackedResources } from './resource-lifecycle.js';
 import { BEDFORD_PROJECT_SPECIFICATION_VOCABULARY, createProjectSpecificationVocabulary } from './project-specification-vocabulary.js';
 import { preserveProjectObjectMerge, registerProjectObjectRelationships } from './project-object-operations.js';
 import { loadDrawingWorkspaceProviders } from './drawing-workspace-providers.js';
@@ -227,10 +228,21 @@ let drawingZoom = null;
 let drawingRotation = 0;
 const drawingViewportBySet = new Map();
 const drawingViewerEngine = createDrawingViewerEngine({ viewportStore: drawingViewportBySet, onMetric: metric => logger.debug('Drawing viewer performance', metric) });
-const drawingRenderCache = createDrawingRenderCache({ maxEntries: 6, onMetric: metric => logger.debug('Drawing viewer performance', metric) });
+const drawingRenderCache = createDrawingRenderCache({ maxEntries: 6, onMetric: metric => logger.debug('Drawing viewer performance', metric), onEvict: (canvas, cacheKey) => releaseTrackedResource('canvas', canvas, { cacheKey, reason: 'render-cache-evict' }) });
+const drawingPerfNow = () => globalThis.performance?.now?.() ?? Date.now();
+const drawingResourceSnapshot = (options = {}) => snapshotTrackedResources({ workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, ...options });
+const reportDrawingResourceSnapshot = (label, detail = {}, options = {}) => reportTrackedResources(label, detail, { workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, ...options });
+globalThis.__mcDrawingResourceSnapshot = drawingResourceSnapshot;
+globalThis.__mcDrawingResourceReport = reportDrawingResourceSnapshot;
+const drawingTraceSlowOperation = (name, startedAt, details = {}) => {
+  const elapsed = Math.max(0, drawingPerfNow() - startedAt);
+  if (elapsed > 10) console.warn(name, elapsed, { ...details, stack: new Error().stack });
+  return elapsed;
+};
 if (globalThis.PerformanceObserver && globalThis.PerformanceObserver.supportedEntryTypes?.includes('longtask')) {
   const drawingLongTaskObserver = new PerformanceObserver(entries => {
-    for (const entry of entries.getEntries()) logger.debug('Drawing viewer performance', { operation: 'long-task', durationMs: Math.max(0, entry.duration), startTime: Math.max(0, entry.startTime) });
+    const stack = new Error().stack;
+    for (const entry of entries.getEntries()) console.warn('long-task', Math.max(0, entry.duration), { startTime: Math.max(0, entry.startTime), stack });
   });
   drawingLongTaskObserver.observe({ entryTypes: ['longtask'] });
 }
@@ -289,6 +301,11 @@ let activeDrawingDocumentId = '';
 let activeDrawingSourceRecord = null;
 let activeDrawingRenderIdentity = null;
 let drawingWorkspaceRenderRequest = 0;
+let drawingWorkspaceRenderCount = 0;
+let drawingInspectorRenderCount = 0;
+let drawingPdfRenderCount = 0;
+let drawingOverlayRenderCount = 0;
+let drawingSpecificationResolveCount = 0;
 let drawingPageSelectionRequest = 0;
 let drawingPagePaintRequest = 0;
 let drawingRequirementsRequestGeneration = 0;
@@ -302,6 +319,24 @@ let drawingSearchRefreshTimer = 0;
 let drawingSelectionActiveSheetId = '';
 let drawingRecentSheets = [];
 const drawingOverlayNodeCache = new WeakMap();
+const drawingInteractionTrace = globalThis.__mcDrawingInteractionTrace || (globalThis.__mcDrawingInteractionTrace = { id: 0, kind: '', counts: Object.create(null) });
+
+function startDrawingInteractionTrace(kind, detail = {}) {
+  drawingInteractionTrace.id += 1;
+  drawingInteractionTrace.kind = kind;
+  drawingInteractionTrace.counts = Object.create(null);
+  console.warn('drawing interaction start', { interactionId: drawingInteractionTrace.id, kind, ...detail, stack: new Error().stack });
+  return drawingInteractionTrace.id;
+}
+
+function traceDrawingInteractionStep(step, detail = {}) {
+  if (!drawingInteractionTrace.id) return 0;
+  const counts = drawingInteractionTrace.counts;
+  const nextCount = (counts[step] || 0) + 1;
+  counts[step] = nextCount;
+  console.warn('drawing interaction step', { interactionId: drawingInteractionTrace.id, kind: drawingInteractionTrace.kind, step, count: nextCount, ...detail, stack: new Error().stack });
+  return nextCount;
+}
 let drawingRenderGeneration = 0;
 let portableDrawingCanvas = null;
 let activeDrawingViewerAnalysis = null;
@@ -1863,8 +1898,10 @@ function releaseDrawingSource() {
     drawingSearchRefreshTimer = 0;
   }
   drawingRenderCache.clear();
+  clearTrackedResources(['overlay', 'requirement-model', 'relationship-model', 'inspector-model']);
   activeDrawingPdf?.cleanup?.();
   activeDrawingPdf?.destroy?.();
+  releaseTrackedResource('pdf-document', activeDrawingPdf, { reason: 'workspace-release' });
   activeDrawingPdf = null;
   activeDrawingDocumentId = '';
   activeDrawingSourceRecord = null;
@@ -1879,6 +1916,7 @@ function releaseDrawingSource() {
 }
 
 function updateDrawingSelectionCards(sheetId = '', { scroll = true } = {}) {
+  traceDrawingInteractionStep('updateDrawingSelectionCards', { sheetId, scroll });
   const safeSheetId = String(sheetId || '');
   const previousSheetId = drawingSelectionActiveSheetId;
   drawingSelectionActiveSheetId = safeSheetId;
@@ -1944,23 +1982,32 @@ function scheduleDeferredDrawingWorkspaceRefresh(shell, requestToken) {
 
 async function paintDrawingSelectionFast({ shell, analysis, sheet, observation = null, navigationStartedAt = 0, requestToken = 0, scrollActiveCard = true } = {}) {
   if (!analysis || !sheet) return false;
+  traceDrawingInteractionStep('paintDrawingSelectionFast', { pageId: sheet.pageId, pageNumber: sheet.pageNumber, requestToken });
+  const selectionStartedAt = drawingPerfNow();
   updateDrawingSelectionCards(sheet.sheetId, { scroll: scrollActiveCard });
+  drawingTraceSlowOperation('sheet selection', selectionStartedAt, { stage: 'active-card', pageNumber: sheet.pageNumber });
+  const navigationButtonsStartedAt = drawingPerfNow();
   updateDrawingNavigationButtons(analysis, sheet.sheetId);
+  drawingTraceSlowOperation('sheet selection', navigationButtonsStartedAt, { stage: 'navigation-buttons', pageNumber: sheet.pageNumber });
   if (navigationStartedAt) logger.debug('Drawing viewer performance', { operation: 'click-to-active-card', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: sheet.pageNumber });
   if (selectedDrawingObject && selectedDrawingObject.pageId !== sheet.pageId) {
     selectedDrawingObject = null;
     selectedDrawingObjectIds = [];
   }
   activeDrawingObjects = [];
+  const sourceLookupStartedAt = drawingPerfNow();
   const source = activeDrawingSourceRecord?.documentId === analysis.documentId && activeDrawingSourceRecord?.projectId === state().activeProject
     ? activeDrawingSourceRecord
     : await engine.sourceFile(analysis.documentId);
+  drawingTraceSlowOperation('pdf lookup', sourceLookupStartedAt, { documentId: analysis.documentId, pageNumber: sheet.pageNumber });
   if (requestToken !== drawingPagePaintRequest) return false;
   if (!source) {
     scheduleDeferredDrawingWorkspaceRefresh(shell, requestToken);
     return false;
   }
+  const bitmapStartedAt = drawingPerfNow();
   await paintDrawingPage(source, sheet, observation || null, [], { preserveSidebarScroll: !scrollActiveCard });
+  drawingTraceSlowOperation('page bitmap creation', bitmapStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber });
   if (requestToken !== drawingPagePaintRequest) return false;
   if (navigationStartedAt) logger.debug('Drawing viewer performance', { operation: 'click-to-visible-bitmap', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: sheet.pageNumber });
   scheduleDeferredDrawingWorkspaceRefresh(shell, requestToken);
@@ -1970,6 +2017,7 @@ async function paintDrawingSelectionFast({ shell, analysis, sheet, observation =
 
 async function createRetainedPdfViewerAnalysis(documentRecord, source, requestedPage = 1, metadataAnalysis = null) {
   if (!source?.sourceBlob || !documentRecord?.id || !isDrawingDocumentRole(documentRecord)) return null;
+  const pageLoadStartedAt = drawingPerfNow();
   if (!activeDrawingPdf || activeDrawingDocumentId !== source.documentId) {
     activeDrawingPdf?.cleanup?.();
     activeDrawingPdf?.destroy?.();
@@ -1983,6 +2031,7 @@ async function createRetainedPdfViewerAnalysis(documentRecord, source, requested
   const pageNumber = Math.max(1, Math.min(pageCount, Math.trunc(Number(requestedPage) || 1)));
   drawingViewerEngine.openDocument(documentRecord.id, pageCount, pageNumber);
   const page = await activeDrawingPdf.getPage(pageNumber);
+  drawingTraceSlowOperation('PDF page load', pageLoadStartedAt, { documentId: documentRecord.id, pageNumber, pageCount });
   const viewport = page.getViewport({ scale: 1, rotation: 0 });
   const generatedCatalog = await generatedDrawingCatalogFor(documentRecord,pageCount);
   const catalogRecords = drawingCatalog.reconcile({ documentId: documentRecord.id, documentType: documentRecord.documentType, projectId: documentRecord.projectId || state().activeProject, drawingSetId: metadataAnalysis?.drawingSetId || '', pageCount, parserRecords: [...(metadataAnalysis?.sheets || []), ...(metadataAnalysis?.drawingRegistry || [])], storedMetadata: metadataAnalysis?.pageMetadata || [], authoritativeRecords:generatedCatalog.length?generatedCatalog:building61DrawingCatalogFor(documentRecord,pageCount) });
@@ -1994,6 +2043,7 @@ async function createRetainedPdfViewerAnalysis(documentRecord, source, requested
 function captureDrawingViewport(overrides = {}) {
   if (!drawingTarget?.documentId || !drawingTarget?.pageNumber) return;
   const { contextSource = 'viewport-inference', ...viewportOverrides } = overrides;
+  traceDrawingInteractionStep('captureDrawingViewport', { contextSource, pageNumber: drawingTarget.pageNumber, documentId: drawingTarget.documentId });
   const current = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(drawingTarget.pageNumber) };
   const stage = $('#mcDrawingStage');
   const canvas = stage?.querySelector('#mcDrawingCanvas');
@@ -2012,6 +2062,8 @@ function captureDrawingSupportReturnState(){if(!drawingTarget)return null;return
 function restoreDrawingSupportReturnState(){if(!specificationDrawingReturnTarget?.target)return false;const returnState=specificationDrawingReturnTarget;drawingTarget=structuredClone(returnState.target);drawingViewerEngine.restoreViewport(drawingTarget.pageNumber,returnState.viewport||{});selectedDrawingObjectIds=[...(returnState.selectedObjectIds||[])];selectedDrawingObject=returnState.selectedObjectId?projectObjectPresentation(projectObjectRegistry.getObject(returnState.selectedObjectId)):null;drawingCoverageReviewMode=Boolean(returnState.coverageReview?.open);drawingCoverageReviewFilter=returnState.coverageReview?.filter||'all';pendingDrawingPanelScroll=Number(returnState.panelScroll)||0;if(returnState.chiefDock?.open)chiefDrawingDock.open();else chiefDrawingDock.close();chiefDrawingDock.resize(returnState.chiefDock?.width||360);if(returnState.chiefDock?.collapsed)chiefDrawingDock.collapse();specificationDrawingReturnTarget=null;show('drawings');return true;}
 
 function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
+  const overlayStartedAt = drawingPerfNow();
+  traceDrawingInteractionStep('updateDrawingOverlays', { pageId: sheet.pageId, overlayCount: overlayRecords.length });
   const canvas = stage.querySelector('#mcDrawingCanvas');
   const layer = stage.querySelector('.mc-drawing-overlay-layer');
   if (!canvas || !layer) return;
@@ -2043,6 +2095,9 @@ function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
       overlay = document.createElement('button');
       overlay.type = 'button';
       overlayCache.set(key, overlay);
+      acquireTrackedResource('overlay', overlay, { pageId: sheet.pageId, overlayId: key, type: record.type });
+    } else {
+      markTrackedResourceReused('overlay', overlay, { pageId: sheet.pageId, overlayId: key, type: record.type });
     }
     overlay.className = `mc-drawing-object-overlay ${record.verificationState === 'confirmed' ? 'confirmed' : 'candidate'} ${record.type === 'selected' ? 'selected' : ''}`;
     if (record.styleToken) overlay.classList.add(record.styleToken);
@@ -2062,12 +2117,17 @@ function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
   for (const [key, node] of overlayCache.entries()) {
     if (nextKeys.has(key)) continue;
     if (node.isConnected) node.remove();
+    releaseTrackedResource('overlay', node, { pageId: sheet.pageId, overlayId: key, reason: 'overlay-cache-pruned' });
     overlayCache.delete(key);
   }
   layer.replaceChildren(...nextNodes);
+  drawingOverlayRenderCount += 1;
+  drawingTraceSlowOperation('overlay generation', overlayStartedAt, { renderCount: drawingOverlayRenderCount, pageId: sheet.pageId, totalCount: overlayRecords.length, visibleCount: records.length });
 }
 
 async function paintDrawingPage(source, sheet, observation, overlayRecords = [], { preserveSidebarScroll = false } = {}) {
+  const paintStartedAt = drawingPerfNow();
+  traceDrawingInteractionStep('paintDrawingPage', { documentId: source?.documentId || '', pageNumber: sheet?.pageNumber || 0, overlayCount: overlayRecords.length });
   const canvas = $('#mcDrawingCanvas');
   const stage = $('#mcDrawingStage');
   if (!canvas || !stage || !source || !sheet) return;
@@ -2076,6 +2136,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
   let loadingKey = '';
   const clearCurrentLoading = () => { if (loadingKey && stage.dataset.renderLoadingKey === loadingKey) { stage.classList.remove('is-loading'); delete stage.dataset.renderLoadingKey; } };
   try {
+    const pdfLookupStartedAt = drawingPerfNow();
     drawingViewportDocumentId = source.documentId;
     if (!activeDrawingPdf || activeDrawingDocumentId !== source.documentId) {
       activeDrawingPdf?.cleanup?.();
@@ -2084,6 +2145,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       activeDrawingDocumentId = source.documentId;
       drawingRenderGeneration += 1;
     }
+    drawingTraceSlowOperation('PDF lookup', pdfLookupStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber, loaded: Boolean(activeDrawingPdf) });
     drawingViewerEngine.openDocument(source.documentId, activeDrawingPdf.numPages, sheet.pageNumber);
     const viewportRestoreStartedAt = globalThis.performance?.now?.() ?? Date.now();
     const restored = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) };
@@ -2106,21 +2168,30 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
     const nextIdentity = createDrawingRenderIdentity({ documentId: source.documentId, drawingSetId: drawingTarget?.drawingSetId, pageNumber: sheet.pageNumber, scale: boundedScale, rotation: (sheet.rotation + drawingRotation) % 360, sourceAvailable: true, generation: drawingRenderGeneration });
     const decision = drawingRenderDecision({ previousIdentity: activeDrawingRenderIdentity, nextIdentity, canvas });
     if (decision.repaint) {
+      const renderStartedAt = drawingPerfNow();
       const cacheKey = [nextIdentity.documentId, nextIdentity.drawingSetId, nextIdentity.pageNumber, nextIdentity.scale, nextIdentity.rotation, nextIdentity.generation].join(':');
       let renderCanvas = drawingRenderCache.get(cacheKey);
+      let renderCanvasCreated = false;
       if (!renderCanvas) {
         renderCanvas = document.createElement('canvas');
-        loadingKey = cacheKey;
-        stage.dataset.renderLoadingKey = loadingKey;
-        stage.classList.add('is-loading');
-        const renderOutcome = await drawingViewerEngine.renderSelectedPage(pageNumber => renderPdfPage(activeDrawingPdf, pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation }));
-        if (!renderOutcome.committed || !canvas.isConnected || drawingTarget?.pageNumber !== sheet.pageNumber) {
-          renderOutcome.task?.release?.();
-          clearCurrentLoading();
-          return;
-        }
-        drawingRenderCache.set(cacheKey, renderCanvas);
+        renderCanvasCreated = true;
+        acquireTrackedResource('canvas', renderCanvas, { cacheKey, reason: 'render-cache-entry' });
+      } else {
+        markTrackedResourceReused('canvas', renderCanvas, { cacheKey, reason: 'render-cache-hit' });
       }
+      loadingKey = cacheKey;
+      stage.dataset.renderLoadingKey = loadingKey;
+      stage.classList.add('is-loading');
+      const renderOutcome = await drawingViewerEngine.renderSelectedPage(pageNumber => renderPdfPage(activeDrawingPdf, pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation }));
+      if (!renderOutcome.committed || !canvas.isConnected || drawingTarget?.pageNumber !== sheet.pageNumber) {
+        if (renderCanvasCreated) releaseTrackedResource('canvas', renderCanvas, { cacheKey, reason: 'render-superseded' });
+        renderOutcome.task?.release?.();
+        clearCurrentLoading();
+        reportDrawingResourceSnapshot('sheet-change', { pageId: sheet.pageId, pageNumber: sheet.pageNumber, phase: 'render-cancelled', renderCount: drawingPdfRenderCount, interactionId: drawingInteractionTrace.id });
+        return;
+      }
+      drawingRenderCache.set(cacheKey, renderCanvas);
+      const bitmapStartedAt = drawingPerfNow();
       canvas.width = renderCanvas.width;
       canvas.height = renderCanvas.height;
       const context = canvas.getContext('2d');
@@ -2132,14 +2203,21 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       canvas.dataset.renderReason = decision.reason;
       activeDrawingRenderIdentity = nextIdentity;
       clearCurrentLoading();
+      drawingPdfRenderCount += 1;
+      drawingTraceSlowOperation('PDF render', renderStartedAt, { renderCount: drawingPdfRenderCount, documentId: source.documentId, pageNumber: sheet.pageNumber, cacheKey });
+      drawingTraceSlowOperation('page bitmap creation', bitmapStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber, width: canvas.width, height: canvas.height });
+      reportDrawingResourceSnapshot('sheet-change', { pageId: sheet.pageId, pageNumber: sheet.pageNumber, phase: 'page-render', renderCount: drawingPdfRenderCount, interactionId: drawingInteractionTrace.id });
     }
     stage.scrollLeft = restored.scrollLeft || 0;
     stage.scrollTop = restored.scrollTop || 0;
     drawingViewerEngine.restoreViewport(sheet.pageNumber, { ...restored, zoom: drawingZoom, rotation: drawingRotation, selectedObservationId: observation?.observationId || restored.selectedObservationId, highlightedRegion: observation?.region || restored.highlightedRegion });
     logger.debug('Drawing viewer performance', { operation: 'viewport-restore', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - viewportRestoreStartedAt), pageNumber: sheet.pageNumber, mode: restored.mode });
     let scrollFrame = 0;
+    let drawingWheelPaintDelay = 0;
+    if (!drawingInteractionTrace.id) startDrawingInteractionTrace('stage-scroll', { pageNumber: sheet.pageNumber });
     stage.onscroll = () => { if (scrollFrame) return; scrollFrame = requestAnimationFrame(() => { scrollFrame = 0; captureDrawingViewport({ contextSource: 'viewport-inference' }); }); };
     stage.onwheel = event => {
+      if (!drawingInteractionTrace.id) startDrawingInteractionTrace('stage-wheel', { pageNumber: sheet.pageNumber });
       const bounds = stage.getBoundingClientRect();
       const next = drawingWheelZoom({
         deltaY: event.deltaY,
@@ -2156,14 +2234,19 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       drawingZoom = next.zoom;
       captureDrawingViewport({ mode: 'custom', zoom: next.zoom, scrollLeft: next.scrollLeft, scrollTop: next.scrollTop });
       if (drawingWheelPaintFrame) cancelAnimationFrame(drawingWheelPaintFrame);
+      if (drawingWheelPaintDelay) clearTimeout(drawingWheelPaintDelay);
       const wheelRequest = ++drawingPagePaintRequest;
-      drawingWheelPaintFrame = requestAnimationFrame(() => {
-        drawingWheelPaintFrame = 0;
-        if (wheelRequest !== drawingPagePaintRequest) return;
-        void paintDrawingPage(source, sheet, observation, overlayRecords, { preserveSidebarScroll: true });
-      });
+      drawingWheelPaintDelay = setTimeout(() => {
+        drawingWheelPaintDelay = 0;
+        drawingWheelPaintFrame = requestAnimationFrame(() => {
+          drawingWheelPaintFrame = 0;
+          if (wheelRequest !== drawingPagePaintRequest) return;
+          void paintDrawingPage(source, sheet, observation, overlayRecords, { preserveSidebarScroll: true });
+        });
+      }, 48);
     };
     stage.ondblclick = event => {
+      if (!drawingInteractionTrace.id) startDrawingInteractionTrace('stage-doubleclick', { pageNumber: sheet.pageNumber });
       if (event.target.closest('.mc-drawing-object-overlay')) return;
       event.preventDefault();
       const bounds = stage.getBoundingClientRect();
@@ -2175,6 +2258,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
     };
     let pan = null; let reviewRegionStart = null; let suppressObjectClick = false;
     stage.onpointerdown = event => {
+      if (!drawingInteractionTrace.id) startDrawingInteractionTrace('stage-pointerdown', { pageNumber: sheet.pageNumber, button: event.button });
       if (event.button !== 0 || event.target.closest('button')) return;
       if(drawingCoverageRegionItemId&&event.target===canvas){const bounds=canvas.getBoundingClientRect();reviewRegionStart=screenToNormalizedPoint({clientX:event.clientX,clientY:event.clientY,bounds,contentWidth:bounds.width,contentHeight:bounds.height,rotation:nextIdentity.rotation});stage.setPointerCapture?.(event.pointerId);event.preventDefault();return;}
       pan = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: stage.scrollLeft, top: stage.scrollTop }; suppressObjectClick = false;
@@ -2182,6 +2266,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       stage.classList.add('is-panning');
     };
     stage.onpointermove = event => {
+      if (!drawingInteractionTrace.id && pan) startDrawingInteractionTrace('stage-pointermove', { pageNumber: sheet.pageNumber });
       if(reviewRegionStart){const bounds=canvas.getBoundingClientRect(),point=screenToNormalizedPoint({clientX:event.clientX,clientY:event.clientY,bounds,contentWidth:bounds.width,contentHeight:bounds.height,rotation:nextIdentity.rotation}),region={x:Math.min(reviewRegionStart.x,point.x),y:Math.min(reviewRegionStart.y,point.y),width:Math.abs(point.x-reviewRegionStart.x),height:Math.abs(point.y-reviewRegionStart.y)};let preview=stage.querySelector('.mc-coverage-region-preview');if(!preview){preview=document.createElement('div');preview.className='mc-coverage-region-preview';stage.querySelector('.mc-drawing-overlay-layer')?.append(preview);}Object.assign(preview.style,{left:`${region.x*100}%`,top:`${region.y*100}%`,width:`${region.width*100}%`,height:`${region.height*100}%`});return;}
       if (!pan || pan.pointerId !== event.pointerId) return;
       if (Math.hypot(event.clientX-pan.x,event.clientY-pan.y)>3) suppressObjectClick = true;
@@ -2189,9 +2274,10 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       stage.scrollTop = pan.top - (event.clientY - pan.y);
     };
     const stopPan = event => { if (!pan || event?.pointerId !== undefined && pan.pointerId !== event.pointerId) return; pan = null; stage.classList.remove('is-panning'); captureDrawingViewport({ contextSource: 'viewport-inference' }); };
-    stage.onpointerup = event => {if(reviewRegionStart&&drawingCoverageRegionItemId){const bounds=canvas.getBoundingClientRect(),point=screenToNormalizedPoint({clientX:event.clientX,clientY:event.clientY,bounds,contentWidth:bounds.width,contentHeight:bounds.height,rotation:nextIdentity.rotation}),region={x:Math.max(0,Math.min(reviewRegionStart.x,point.x)),y:Math.max(0,Math.min(reviewRegionStart.y,point.y)),width:Math.min(1,Math.abs(point.x-reviewRegionStart.x)),height:Math.min(1,Math.abs(point.y-reviewRegionStart.y))},itemId=drawingCoverageRegionItemId;reviewRegionStart=null;drawingCoverageRegionItemId='';stage.querySelector('.mc-coverage-region-preview')?.remove();if(validNormalizedRegion(region)&&region.width>.001&&region.height>.001){const result=applyDrawingCoverageCorrection({registry:projectObjectRegistry,review:activeDrawingCoverageReview,itemId,action:'draw-region',region});logger.debug('Drawing coverage correction',{operation:'region-save',durationMs:result.durationMs,pageId:sheet.pageId,contained:true});void renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional');}return;}stopPan(event);};
+    stage.onpointerup = event => {if (!drawingInteractionTrace.id) startDrawingInteractionTrace('stage-pointerup', { pageNumber: sheet.pageNumber }); if(reviewRegionStart&&drawingCoverageRegionItemId){const bounds=canvas.getBoundingClientRect(),point=screenToNormalizedPoint({clientX:event.clientX,clientY:event.clientY,bounds,contentWidth:bounds.width,contentHeight:bounds.height,rotation:nextIdentity.rotation}),region={x:Math.max(0,Math.min(reviewRegionStart.x,point.x)),y:Math.max(0,Math.min(reviewRegionStart.y,point.y)),width:Math.min(1,Math.abs(point.x-reviewRegionStart.x)),height:Math.min(1,Math.abs(point.y-reviewRegionStart.y))},itemId=drawingCoverageRegionItemId;reviewRegionStart=null;drawingCoverageRegionItemId='';stage.querySelector('.mc-coverage-region-preview')?.remove();if(validNormalizedRegion(region)&&region.width>.001&&region.height>.001){const result=applyDrawingCoverageCorrection({registry:projectObjectRegistry,review:activeDrawingCoverageReview,itemId,action:'draw-region',region});logger.debug('Drawing coverage correction',{operation:'region-save',durationMs:result.durationMs,pageId:sheet.pageId,contained:true});void renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional');}return;}stopPan(event);};
     stage.onpointercancel = stopPan;
     stage.onclick = event => {
+      if (!drawingInteractionTrace.id) startDrawingInteractionTrace('stage-click', { pageNumber: sheet.pageNumber });
       if (event.target !== canvas) return;
       if (suppressObjectClick) { suppressObjectClick=false; return; }
       const bounds = canvas.getBoundingClientRect();
@@ -2216,6 +2302,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       void renderDrawingWorkspace(experience === 'mission-control' ? 'mission-control' : 'professional');
     };
     stage.onkeydown = event => {
+      if (!drawingInteractionTrace.id) startDrawingInteractionTrace('stage-keydown', { pageNumber: sheet.pageNumber, key: event.key });
       const action = { ArrowRight: '[data-drawing-next]', PageDown: '[data-drawing-next]', ArrowLeft: '[data-drawing-previous]', PageUp: '[data-drawing-previous]' }[event.key];
       if (action) { event.preventDefault(); stage.closest('.mc-drawing-viewer')?.querySelector(action)?.click(); }
       if (['+', '='].includes(event.key)) { event.preventDefault(); stage.closest('.mc-drawing-viewer')?.querySelector('[data-drawing-zoom="in"]')?.click(); }
@@ -2223,6 +2310,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       if (event.key === '0') { event.preventDefault(); stage.closest('.mc-drawing-viewer')?.querySelector('[data-drawing-reset-view]')?.click(); }
     };
     updateDrawingOverlays(stage, sheet, observation, overlayRecords);
+    drawingTraceSlowOperation('workspace render', paintStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber });
     const activeCard = stage.closest('.mc-drawing-workspace')?.querySelector(`[data-drawing-page-id="${CSS.escape(sheet.pageId || '')}"]`);
     if (!preserveSidebarScroll) activeCard?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
     if (globalThis.__MC_DEV_ASSERTIONS__) assertDrawingPageConsistency({ selectedPage: drawingViewerEngine.snapshot().selectedPage, renderedPage: Number(canvas.dataset.drawingPage), targetPage: drawingTarget?.pageNumber, toolbarPage: sheet.pageNumber, activePage: Number(activeCard?.dataset.drawingPageNumber) });
@@ -2252,6 +2340,7 @@ function drawingSearchResultMarkup(result, selectedSheetId, index) {
 
 async function updateDrawingSearchResults() {
   const startedAt = globalThis.performance?.now?.() ?? Date.now();
+  traceDrawingInteractionStep('updateDrawingSearchResults', { pageId: drawingTarget?.pageId || '', documentId: drawingTarget?.documentId || '' });
   const revision = ++drawingSearchRevision;
   const activeAnalysis = activeDrawingViewerAnalysis?.documentId === drawingTarget?.documentId ? activeDrawingViewerAnalysis : null;
   const analysis = activeAnalysis || (drawingTarget?.documentId ? await engine.drawingAnalysis(drawingTarget.documentId) : null);
@@ -2595,6 +2684,8 @@ function containedConstructionIntelligence(provider, fallback, operation, contex
 }
 
 async function renderDrawingWorkspaceWithProviders(shell = 'professional', { documents: providerDocuments, warnings: providerWarnings = [] } = {}) {
+  const workspaceRenderStartedAt = drawingPerfNow();
+  traceDrawingInteractionStep('renderDrawingWorkspaceWithProviders', { shell, documents: Array.isArray(providerDocuments) ? providerDocuments.length : 0, warnings: providerWarnings.length });
   const providerSections = Array.isArray(arguments[1]?.sections) ? arguments[1].sections : [];
   const workspaceProviderFailures = Array.isArray(arguments[1]?.providerFailures) ? arguments[1].providerFailures : [];
   const workspaceRenderRequest = ++drawingWorkspaceRenderRequest;
@@ -2712,12 +2803,24 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const sheetKeyedNotes = (analysis?.keyedNoteOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
   const sheetOccurrences = (analysis?.candidateOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
   if (sheetOccurrences.length) logger.debug('Candidate occurrence diagnostics', { pageId: sheet?.pageId || '', count: sheetOccurrences.length });
+  const pageEnrichmentCacheKey = [
+    objectBase.projectId,
+    objectBase.documentId,
+    objectBase.pageId,
+    observations.map(item => item.observationId).join(','),
+    sheetSchedules.map(item => `${item.scheduleId || item.scheduleOccurrenceId || item.identifier || ''}:${item.updatedAt || item.verification?.updatedAt || ''}`).join(','),
+    sheetLegends.map(item => `${item.legendId || item.legendOccurrenceId || item.identifier || ''}:${item.updatedAt || item.verification?.updatedAt || ''}`).join(','),
+    sheetOccurrences.map(item => `${item.occurrenceId || item.objectId || ''}:${item.updatedAt || item.verification?.updatedAt || ''}`).join(','),
+    sheetKeyedNotes.map(item => `${item.keyedNoteOccurrenceId || item.keyedNoteId || ''}:${item.updatedAt || item.verification?.updatedAt || ''}`).join(',')
+  ].join('|');
   const observationObjects = observations.filter(item => item.kind !== 'room-number-text').map(item => drawingObjectDecisions.apply(createDrawingObject({ ...objectBase, objectId: item.observationId, observationId: item.observationId,
     type: objectTypeForObservation(item.kind, 'generic-drawing-object'),
     label: `${observationKindLabel(item.kind)} ${item.value}`, evidenceText: item.value, region: item.region, confidence: item.confidence, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : item.verification?.status === 'Rejected' ? 'rejected' : 'candidate' })));
   const occurrenceObjects = sheetOccurrences.map(item => drawingObjectDecisions.apply(createDrawingObject({ ...objectBase, objectId: item.occurrenceId, type: item.type || 'generic-candidate-object', subtype: item.subtype, label: item.label || 'Plan object occurrence', evidenceText: item.evidenceText, region: item.region, confidence: item.confidence, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : item.verification?.status === 'Rejected' ? 'rejected' : 'candidate' })));
   for (const item of [...roomObjects, ...observationObjects, ...occurrenceObjects]) containedConstructionIntelligence('object-observations', null, () => projectObjectRegistry.mergeObservation({ observationId: item.sourceObservationIds?.[0] || item.objectId, projectId: objectBase.projectId, documentId: objectBase.documentId, pageId: objectBase.pageId, source: 'drawing-analysis', text: item.evidenceText || item.label, region: item.region, detectedType: item.type === 'equipment-tag' ? 'equipment' : item.type === 'generic-candidate-object' ? 'generic-drawing-object' : item.type, detectedTag: item.tag || item.roomNumber || String(item.label || '').split(' ').at(-1), confidence: item.confidence, parserVersion: String(analysis?.analysisVersion || '') }), { pageId: objectBase.pageId });
-  const enrichment = containedConstructionIntelligence('object-enrichment', { objects:[], diagnostics:{} }, () => enrichPageConstructionObjects({ ...objectBase, observations, schedules:sheetSchedules, legends:sheetLegends, occurrences:sheetOccurrences, keyedNotes:sheetKeyedNotes }), { pageId:objectBase.pageId });
+  const enrichmentStartedAt = drawingPerfNow();
+  const enrichment = containedConstructionIntelligence('object-enrichment', { objects:[], diagnostics:{} }, () => enrichPageConstructionObjects({ ...objectBase, observations, schedules:sheetSchedules, legends:sheetLegends, occurrences:sheetOccurrences, keyedNotes:sheetKeyedNotes, cacheKey: pageEnrichmentCacheKey }), { pageId:objectBase.pageId });
+  drawingTraceSlowOperation('object enrichment', enrichmentStartedAt, { pageId: objectBase.pageId, objectCount: enrichment.objects.length, evidenceCount: enrichment.diagnostics.evidenceCount });
   const enrichmentResult = containedConstructionIntelligence('object-enrichment-persistence', { objects:[], diagnostics:enrichment.diagnostics }, () => applyPageObjectEnrichment(projectObjectRegistry,enrichment), { pageId:objectBase.pageId });
   logger.debug('Drawing object coverage', { pageId:objectBase.pageId, ...enrichmentResult.diagnostics });
   activeDrawingObjects = containedConstructionIntelligence('project-objects', [], () => projectObjectRegistry.getObjectsForPage(sheet?.pageId || '', { projectId: objectBase.projectId })).map(item => ({ ...item, documentId: item.drawingDocumentId, pageId: item.drawingPageId, type: item.objectType, subtype: item.objectSubtype, region: item.graphicalRegion, evidenceText: item.sourceText }));
@@ -2760,13 +2863,19 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     });
     const pageCandidates = projectSpecificationVocabulary.matchPage({ projectId: objectBase.projectId, specificationDocumentId: specificationDocument.id, pageId: sheet.pageId, evidence: pageEvidence });
     vocabularyCandidateCount += pageCandidates.length;
-    for (const candidate of pageCandidates) { const link = drawingSpecificationLinks.link({ ...candidate, drawingDocumentId: selected.id, drawingPageId: sheet.pageId, objectId: null }); if (link && !existingLinkIds.has(link.linkId)) { relationshipWriteCount += 1; existingLinkIds.add(link.linkId); } }
+    const pageCandidatesStartedAt = drawingPerfNow();
+    let pageCandidateCount = 0;
+    for (const candidate of pageCandidates) { pageCandidateCount += 1; const link = drawingSpecificationLinks.link({ ...candidate, drawingDocumentId: selected.id, drawingPageId: sheet.pageId, objectId: null }); if (link && !existingLinkIds.has(link.linkId)) { relationshipWriteCount += 1; existingLinkIds.add(link.linkId); } }
+    drawingTraceSlowOperation('specification matching', pageCandidatesStartedAt, { iterationCount: pageCandidateCount, scope: 'page', pageId: sheet.pageId, candidateCount: pageCandidates.length });
     for (const drawingObject of activeDrawingObjects) {
       const objectEvidence = buildObjectSpecificationEvidence(drawingObject);
       if (!objectEvidence.length) continue;
       const objectCandidates = projectSpecificationVocabulary.matchObject({ projectId: objectBase.projectId, specificationDocumentId: specificationDocument.id, pageId: sheet.pageId, objectId: drawingObject.objectId, evidence: objectEvidence });
       vocabularyCandidateCount += objectCandidates.length;
-      for (const candidate of objectCandidates) { const link = drawingSpecificationLinks.link({ ...candidate, drawingDocumentId: selected.id, drawingPageId: sheet.pageId, objectId: drawingObject.objectId }); if (link && !existingLinkIds.has(link.linkId)) { relationshipWriteCount += 1; existingLinkIds.add(link.linkId); } }
+      const objectCandidatesStartedAt = drawingPerfNow();
+      let objectCandidateCount = 0;
+      for (const candidate of objectCandidates) { objectCandidateCount += 1; const link = drawingSpecificationLinks.link({ ...candidate, drawingDocumentId: selected.id, drawingPageId: sheet.pageId, objectId: drawingObject.objectId }); if (link && !existingLinkIds.has(link.linkId)) { relationshipWriteCount += 1; existingLinkIds.add(link.linkId); } }
+      drawingTraceSlowOperation('specification matching', objectCandidatesStartedAt, { iterationCount: objectCandidateCount, scope: 'object', objectId: drawingObject.objectId, candidateCount: objectCandidates.length });
     }
   } } catch (error) { logger.warning('Construction intelligence provider failure', { provider: 'specification-vocabulary', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }); }
   const sheetSpecificationLinks = sheet ? drawingSpecificationLinks.forPage(sheet.pageId) : [];
@@ -2774,8 +2883,11 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const selectedSpecificationLinks = sheet && selectedDrawingObjectIds.length > 1 ? selectedDrawingObjectIds.flatMap(objectId=>sheetSpecificationLinks.filter(item => item.objectId === objectId || !item.objectId)) : selectedDrawingObject ? sheetSpecificationLinks.filter(item => item.objectId === selectedDrawingObject.objectId || !item.objectId) : pageSpecificationLinks;
   if (sheet) logger.debug('Drawing requirement evidence resolution', { pageId: sheet.pageId, selectedObjectId: selectedDrawingObject?.objectId || null, vocabularyMatches: vocabularyCandidateCount, relationshipWrites: relationshipWriteCount, rejectedOrSuppressedCandidates: sheetSpecificationLinks.filter(item => item.status === 'rejected').length });
   let activeRelationshipContext;
+  const relationshipGraphStartedAt = drawingPerfNow();
   try { activeRelationshipContext = synchronizeActiveDrawingRelationships({ projectId: analysis?.projectId || selected.projectId || state().activeProject, document: selected, analysis, sheet, objects: activeDrawingObjects, specificationLinks: sheetSpecificationLinks }); }
   catch (error) { logger.warning('Construction intelligence provider failure', { provider: 'relationships', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }); activeRelationshipContext = { sourceEntityId: '', groups: {} }; }
+  drawingTraceSlowOperation('relationship graph generation', relationshipGraphStartedAt, { pageId: sheet?.pageId || '', relationshipGroupCount: Object.keys(activeRelationshipContext.groups || {}).length });
+  replaceTrackedResource('relationship-model', activeRelationshipContext, { pageId: sheet?.pageId || '', sourceEntityId: activeRelationshipContext.sourceEntityId || '' });
   drawingWorkspace.setPages((analysis?.sheets || []).map(item => ({ ...item, documentId: item.documentId || selected.id, drawingSetId: item.drawingSetId || analysis?.drawingSetId, projectId: item.projectId || analysis?.projectId, pdfPageNumber: item.pdfPageNumber || item.pageNumber })));
   const pageContext = containedConstructionIntelligence('page-context', null, () => drawingWorkspace.getContext(sheet ? { ...sheet, documentId: sheet.documentId || selected.id, drawingSetId: sheet.drawingSetId || analysis?.drawingSetId, projectId: sheet.projectId || analysis?.projectId, pdfPageNumber: sheet.pdfPageNumber || sheet.pageNumber } : drawingTarget?.pageNumber || 1), { pageId: sheet?.pageId || '' });
   if (pageContext) pageContext.rooms = exactRooms.map(item => ({ id: item.roomId, label: `Room ${item.roomNumber}`, verificationState: item.verificationState, region: item.region }));
@@ -2789,6 +2901,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const visibleRooms = activeViewportContext ? containedConstructionIntelligence('rooms', [], () => drawingViewportContextService.visibleRooms(activeViewportContext, exactRooms), { pageId: sheet?.pageId || '' }) : [];
   const requirementInput = { projectId: analysis?.projectId || selected.projectId || state().activeProject, pageEntityId: activeRelationshipContext.sourceEntityId && !selectedDrawingObject ? activeRelationshipContext.sourceEntityId : `drawing-page:${sheet?.pageId || ''}`, selectedObjectEntityId: selectedDrawingObject ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedRoomEntityId: selectedDrawingObject?.type === 'room' ? `drawing-object:${selectedDrawingObject.objectId}` : '', selectedObjectId: selectedDrawingObject?.objectId || '', viewportContext: activeViewportContext, tradeChannel: activeTrade, drawingSpecLinks: sheetSpecificationLinks, projectWideRequirements: [] };
   const pendingRequirements = { status: 'loading', requirements: [], confirmedSpecifications: [], suggestedSpecifications: [], projectWideRequirements: [], fieldRequirements: {}, warnings: providerWarnings, providerFailures: workspaceProviderFailures };
+  replaceTrackedResource('requirement-model', pendingRequirements, { pageId: sheet?.pageId || '', status: 'loading' });
   const returnAction = drawingReturnAction(drawingTarget?.returnTarget || '');
   const returnLabel = shell === 'professional' && returnAction?.kind === 'mission-control' ? 'Return to Chief' : returnAction?.label;
   const focusTarget = drawingFocusTarget({ sheet, observation: effectiveObservation, planObject: effectivePlanObject, region: effectiveRegion });
@@ -2816,7 +2929,10 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     canLinkSpecification: Boolean(selectedDrawingObject && specificationDocument), graphSummary: activeRelationshipContext.graphSummary || null,
     multiSelection: sharedDrawingObjectContext(activeDrawingObjects.filter(item=>selectedDrawingObjectIds.includes(item.objectId)), { specificationLinks:selectedSpecificationLinks })
   });
+  const inspectorModelStartedAt = drawingPerfNow();
   const constructionIntelligencePanel = buildIntelligencePanel(pendingRequirements);
+  replaceTrackedResource('inspector-model', constructionIntelligencePanel, { pageId: sheet?.pageId || '', mode: constructionIntelligencePanel.mode, phase: 'initial' });
+  drawingTraceSlowOperation('inspector model creation', inspectorModelStartedAt, { pageId: sheet?.pageId || '', mode: constructionIntelligencePanel.mode });
   const visibleChiefObjects=activeViewportContext?containedConstructionIntelligence('chief-visible-objects',activeDrawingObjects,()=>projectObjectRegistry.getObjectsForViewport(activeViewportContext,{limit:100}),{pageId:sheet?.pageId||''}):activeDrawingObjects.slice(0,100);
   const chiefSnapshot=buildChiefDrawingContext({project:state().projects.find(item=>item.id===state().activeProject),documentId:selected.id,drawingSetId:analysis?.drawingSetId,page:sheet,viewport:{...viewport,bounds:activeViewportContext?.bounds},selectedObject:selectedDrawingObject,selectedObjectIds:selectedDrawingObjectIds,activeTrade,visibleObjects:visibleChiefObjects,visibleRooms,pageSpecifications:pageSpecificationLinks,objectSpecifications:selectedDrawingObject?selectedSpecificationLinks.filter(item=>item.objectId===selectedDrawingObject.objectId):[],fieldRequirements:[],relatedDrawings:activeRelationshipContext.groups?.relatedDrawings,drawingNotes:pageContext?.drawingNotes,keynotes:sheetKeyedNotes,schedules:sheetSchedules,details:observations.filter(item=>/detail|callout/i.test(item.kind)),graphSummary:activeRelationshipContext.graphSummary,evidencePaths:[],providerWarnings:[...providerWarnings,...workspaceProviderFailures]});
   activeChiefDrawingContext=chiefSnapshot.context;void chiefDrawingContextSynchronizer.update({project:state().projects.find(item=>item.id===state().activeProject),documentId:selected.id,drawingSetId:analysis?.drawingSetId,page:sheet,viewport:{...viewport,bounds:activeViewportContext?.bounds},selectedObject:selectedDrawingObject,selectedObjectIds:selectedDrawingObjectIds,activeTrade,visibleObjects:visibleChiefObjects,visibleRooms,pageSpecifications:pageSpecificationLinks,objectSpecifications:selectedDrawingObject?selectedSpecificationLinks.filter(item=>item.objectId===selectedDrawingObject.objectId):[],relatedDrawings:activeRelationshipContext.groups?.relatedDrawings,graphSummary:activeRelationshipContext.graphSummary,providerWarnings:[...providerWarnings,...workspaceProviderFailures]});
@@ -2832,6 +2948,8 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       </main>
       <aside class="mc-drawing-evidence" aria-label="Construction Intelligence">${constructionIntelligencePanelMarkup(constructionIntelligencePanel)}</aside>${chiefDrawingDockMarkup(chiefCards)}
     </div>${drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list" aria-label="Unavailable drawing lifecycle records"><h2>Drawing records requiring attention</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : ''}`;
+  drawingWorkspaceRenderCount += 1;
+  drawingTraceSlowOperation('workspace render', workspaceRenderStartedAt, { renderCount: drawingWorkspaceRenderCount, pageId: sheet?.pageId || '', documentId: selected.id, leftPanel: Boolean(host.querySelector('.mc-drawing-index')) });
   const placeholderCanvas = host.querySelector('#mcDrawingCanvas');
   const drawingStageForObjectTools = host.querySelector('#mcDrawingStage');
   if (drawingStageForObjectTools && activeDrawingObjects.length) {
@@ -2874,6 +2992,8 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     drawingRequirementsRefreshTimer = null;
     if (requirementsRequestGeneration !== drawingRequirementsRequestGeneration || drawingRequirementsRequestKey !== requirementsRequestKey || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
     const intelligenceStartedAt = globalThis.performance?.now?.() ?? Date.now();
+    drawingSpecificationResolveCount += 1;
+    console.warn('specification resolve count', drawingSpecificationResolveCount, { pageId: sheet?.pageId || '', pageNumber: sheet?.pageNumber, stack: new Error().stack });
     const commitRequirements = activeRequirements => {
       if (requirementsRequestGeneration !== drawingRequirementsRequestGeneration || drawingRequirementsRequestKey !== requirementsRequestKey || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
       const panel = host.querySelector('.mc-drawing-evidence'); if (!panel) return;
@@ -2882,11 +3002,13 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
         if (panelRequest !== drawingPanelRefreshRequest || !panel.isConnected || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
         const panelStartedAt = globalThis.performance?.now?.() ?? Date.now(); const scrollTop = panel.scrollTop; const panelModel = buildIntelligencePanel(activeRequirements); const panelSignature = constructionIntelligencePanelSignature(panelModel); const panelNodeCountBefore = panel.querySelectorAll('*').length; const rightPanelCardCountBefore = panel.querySelectorAll('.mc-ci-group, .mc-ci-specifications li, .mc-ci-record-list li, .mc-ci-work-phase li').length;
         const panelUpdated = panel.dataset.panelSignature !== panelSignature;
-        if (panelUpdated) { panel.innerHTML = constructionIntelligencePanelMarkup(panelModel); panel.dataset.panelSignature = panelSignature; }
+        replaceTrackedResource('inspector-model', panelModel, { pageId: sheet?.pageId || '', mode: panelModel.mode, phase: panelUpdated ? 'updated' : 'cached' });
+        if (panelUpdated) { const rightPanelStartedAt = drawingPerfNow(); panel.innerHTML = constructionIntelligencePanelMarkup(panelModel); panel.dataset.panelSignature = panelSignature; drawingInspectorRenderCount += 1; drawingTraceSlowOperation('right panel update', rightPanelStartedAt, { renderCount: drawingInspectorRenderCount, pageId: sheet?.pageId || '', mode: panelModel.mode }); }
         panel.scrollTop = scrollTop;
         const panelNodeCountAfter = panel.querySelectorAll('*').length;
         const rightPanelCardCountAfter = panel.querySelectorAll('.mc-ci-group, .mc-ci-specifications li, .mc-ci-record-list li, .mc-ci-work-phase li').length;
         logger.debug('Drawing workspace DOM', { region: 'right-panel', pageId: sheet?.pageId || '', panelUpdated, panelNodeCountBefore, panelNodeCountAfter, rightPanelCardCountBefore, rightPanelCardCountAfter, domUpdateMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - panelStartedAt), resolutionMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - intelligenceStartedAt), providerFailureCount: activeRequirements.providerFailures.length, contained: true });
+        reportDrawingResourceSnapshot('sheet-change', { pageId: sheet?.pageId || '', pageNumber: sheet?.pageNumber || 0, phase: 'inspector-update', panelUpdated, interactionId: drawingInteractionTrace.id });
       });
     };
     const cached = drawingRequirementsResultCache.get(requirementsRequestKey);
@@ -2898,6 +3020,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       if (!outcome.committed || requirementsRequestGeneration !== drawingRequirementsRequestGeneration || drawingRequirementsRequestKey !== requirementsRequestKey || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
       const resolved = outcome.result;
       const activeRequirements = { ...resolved, status: providerWarnings.length && resolved.status === 'complete' ? 'partial' : resolved.status, warnings: [...(resolved.warnings || []), ...providerWarnings], providerFailures: [...(resolved.providerFailures || []), ...workspaceProviderFailures] };
+      replaceTrackedResource('requirement-model', activeRequirements, { pageId: sheet?.pageId || '', status: activeRequirements.status });
       drawingRequirementsResultCache.set(requirementsRequestKey, structuredClone(activeRequirements));
       for (const failure of activeRequirements.providerFailures) logger.warning('Construction intelligence provider failure', { ...failure, pageId: sheet?.pageId || '', objectId: selectedDrawingObject?.objectId || '', timestamp: new Date().toISOString(), contained: true });
       activeDrawingTransientRequirementCount = activeRequirements.requirements?.length || 0;
@@ -3372,6 +3495,23 @@ app.addEventListener('change', async event => {
 app.addEventListener('click', async event => {
   const button = event.target.closest('button');
   if (!button || !button.closest('.mc-drawing-workspace')) return;
+  if (!drawingInteractionTrace.id) {
+    const traceKind = button.dataset.drawingSheet ? 'sheet-card click'
+      : button.hasAttribute('data-drawing-previous') ? 'previous'
+      : button.hasAttribute('data-drawing-next') ? 'next'
+      : button.hasAttribute('data-drawing-zoom') ? `zoom-${button.dataset.drawingZoom}`
+      : button.hasAttribute('data-drawing-fit') ? `fit-${button.dataset.drawingFit}`
+      : button.hasAttribute('data-drawing-rotate') ? 'rotate'
+      : button.hasAttribute('data-drawing-reset-view') ? 'reset-view'
+      : button.hasAttribute('data-drawing-object-center') ? 'object-center'
+      : button.dataset.overlayId ? 'overlay-click'
+      : button.hasAttribute('data-drawing-clear-object') ? 'clear-object'
+      : button.dataset.drawingSelectObject ? 'select-object'
+      : button.dataset.drawingObjectNav ? `object-nav-${button.dataset.drawingObjectNav}`
+      : button.hasAttribute('data-drawing-clear-search') ? 'clear-search'
+      : 'drawing-button';
+    startDrawingInteractionTrace(traceKind, { buttonText: (button.textContent || '').trim().slice(0, 120) });
+  }
   const shell = experience === 'mission-control' ? 'mission-control' : 'professional';
   if(button.hasAttribute('data-chief-dock-close')){chiefDrawingDock.close();const dock=button.closest('.mc-chief-drawing-dock');if(dock)dock.hidden=true;return;}
   if(button.hasAttribute('data-chief-dock-collapse')){const next=chiefDrawingDock.state().collapsed?chiefDrawingDock.expand():chiefDrawingDock.collapse();const dock=button.closest('.mc-chief-drawing-dock');if(dock){dock.classList.toggle('collapsed',next.collapsed);button.textContent=next.collapsed?'Expand':'Collapse';for(const child of [...dock.children].slice(1))child.hidden=next.collapsed;}return;}
@@ -3587,6 +3727,7 @@ app.addEventListener('click', async event => {
     await renderDrawingWorkspace(shell); return;
   }
   if (button.dataset.drawingSheet && analysis) {
+    const sheetClickStartedAt = drawingPerfNow();
     captureDrawingViewport();
     const sheet = analysis.sheets.find(item => button.dataset.drawingPageId && item.pageId === button.dataset.drawingPageId) || analysis.sheets.find(item => item.sheetId === button.dataset.drawingSheet);
     if (!sheet) return;
@@ -3595,6 +3736,7 @@ app.addEventListener('click', async event => {
     drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, pageId: sheet.pageId, drawingId: sheet.drawingId || '', sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
     const paintRequest = ++drawingPagePaintRequest;
     await paintDrawingSelectionFast({ shell, analysis, sheet, observation, navigationStartedAt, requestToken: paintRequest });
+    drawingTraceSlowOperation('sheet click handler', sheetClickStartedAt, { pageId: sheet.pageId, pageNumber: sheet.pageNumber, requestToken: paintRequest });
     return;
   }
   if (button.hasAttribute('data-drawing-reanalyze') && analysis && shell === 'professional') {

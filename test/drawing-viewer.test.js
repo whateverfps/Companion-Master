@@ -56,6 +56,8 @@ test('drawing stage gesture handling reuses the existing zoom controls and viewp
   assert.match(app, /stage\.onwheel = event =>/);
   assert.match(app, /if \(!next\.recognized\) return;\s*event\.preventDefault\(\)/);
   assert.match(app, /drawingWheelPaintFrame = requestAnimationFrame\(/);
+  assert.match(app, /drawingWheelPaintDelay = setTimeout\(/);
+  assert.match(app, /clearTimeout\(drawingWheelPaintDelay\)/);
   assert.match(app, /captureDrawingViewport\(\{ mode: 'custom', zoom: next\.zoom, scrollLeft: next\.scrollLeft, scrollTop: next\.scrollTop \}\)/);
   assert.match(app, /preserveSidebarScroll: true/);
   assert.match(app, /viewOutput\.textContent = `\$\{Math\.round\(boundedScale \* 100\)\}% · \$\{drawingRotation\}°`/);

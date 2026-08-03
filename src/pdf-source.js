@@ -1,3 +1,5 @@
+import { acquireTrackedResource, releaseTrackedResource } from './resource-lifecycle.js';
+
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 const clamp = value => Math.max(0, Math.min(1, finite(value)));
@@ -96,6 +98,17 @@ export async function openPdfBlob(blob, options = {}) {
   if (!(blob instanceof Blob) || blob.type !== 'application/pdf') throw new Error('A valid PDF Blob is required.');
   const pdfjs = options.pdfjs || await loadPdfJs(options.importer);
   const pdf = await pdfjs.getDocument({ data: await blob.arrayBuffer() }).promise;
+  acquireTrackedResource('pdf-document', pdf, { byteLength: blob.size, mimeType: blob.type });
+  const originalDestroy = typeof pdf.destroy === 'function' ? pdf.destroy.bind(pdf) : null;
+  if (originalDestroy) {
+    pdf.destroy = async (...args) => {
+      try {
+        return await originalDestroy(...args);
+      } finally {
+        releaseTrackedResource('pdf-document', pdf, { reason: 'destroy' });
+      }
+    };
+  }
   try { Object.defineProperty(pdf, '__mcPdfjsOps', { value: pdfjs.OPS || {}, enumerable: false }); } catch {}
   return pdf;
 }
@@ -113,33 +126,38 @@ export async function readPdfPageGraphics(pdf, pageNumber, { signal = null, maxO
   if (!pdf?.getPage) return { supported: false, status: 'missing-source', pageNumber, primitives: [], warnings: ['PDF source is unavailable.'] };
   if (signal?.aborted) return { supported: false, status: 'cancelled', pageNumber, primitives: [], warnings: [] };
   const page = await pdf.getPage(Math.trunc(finite(pageNumber)));
-  if (!page.getOperatorList) return { supported: false, status: 'unsupported', pageNumber, primitives: [], warnings: ['PDF graphics operators are unavailable.'] };
-  const viewport = page.getViewport({ scale: 1, rotation: 0 });
-  const metadata = normalizePageMetadata({ pageNumber, width: viewport.width, height: viewport.height, rotation: page.rotate || 0 });
-  const operationNames = new Map(Object.entries(ops || pdf.__mcPdfjsOps || {}).map(([name, value]) => [value, name]));
-  const operatorList = await page.getOperatorList();
-  const count = Math.min(operatorList.fnArray?.length || 0, Math.max(1, Math.trunc(finite(maxOperations, 12000))));
-  const primitives = [];
-  for (let index = 0; index < count; index += 1) {
-    if (signal?.aborted) return { supported: true, status: 'cancelled', pageNumber, primitives: [], warnings: [] };
-    const raw = operatorList.fnArray[index];
-    const name = typeof raw === 'string' ? raw : operationNames.get(raw) || '';
-    const args = operatorList.argsArray?.[index] || [];
-    if (name === 'constructPath') {
-      const coordinates = Array.isArray(args[1]) ? args[1] : args;
-      const bounds = args.length >= 6 && args.slice(2, 6).every(Number.isFinite)
-        ? normalizeRegion({ x: args[2] / metadata.width, y: (metadata.height - args[5]) / metadata.height, width: (args[4] - args[2]) / metadata.width, height: (args[5] - args[3]) / metadata.height })
-        : primitiveBounds(coordinates, metadata);
-      primitives.push({ primitiveId: `primitive-${pageNumber}-${index}`, kind: 'path', bounds, points: coordinates.slice(0, 256).reduce((output, value, pointIndex) => { if (pointIndex % 2 === 0 && Number.isFinite(Number(value)) && Number.isFinite(Number(coordinates[pointIndex + 1]))) output.push({ x: Number(value) / metadata.width, y: (metadata.height - Number(coordinates[pointIndex + 1])) / metadata.height }); return output; }, []), stroke: false, fill: false, lineWidth: 0, sourceOperation: index });
-    } else if (/paintImageXObject|paintInlineImageXObject/.test(name)) primitives.push({ primitiveId: `primitive-${pageNumber}-${index}`, kind: 'image-boundary', bounds: normalizeRegion({}), points: [], stroke: false, fill: true, lineWidth: 0, sourceOperation: index });
-    else if (/stroke|fill/i.test(name) && primitives.length) {
-      const current = primitives[primitives.length - 1];
-      if (current.kind === 'path') { current.stroke ||= /stroke/i.test(name); current.fill ||= /fill/i.test(name); }
+  acquireTrackedResource('pdf-page', page, { documentId: pdf?.fingerprint || '', pageNumber: Math.trunc(finite(pageNumber)) });
+  try {
+    if (!page.getOperatorList) return { supported: false, status: 'unsupported', pageNumber, primitives: [], warnings: ['PDF graphics operators are unavailable.'] };
+    const viewport = page.getViewport({ scale: 1, rotation: 0 });
+    const metadata = normalizePageMetadata({ pageNumber, width: viewport.width, height: viewport.height, rotation: page.rotate || 0 });
+    const operationNames = new Map(Object.entries(ops || pdf.__mcPdfjsOps || {}).map(([name, value]) => [value, name]));
+    const operatorList = await page.getOperatorList();
+    const count = Math.min(operatorList.fnArray?.length || 0, Math.max(1, Math.trunc(finite(maxOperations, 12000))));
+    const primitives = [];
+    for (let index = 0; index < count; index += 1) {
+      if (signal?.aborted) return { supported: true, status: 'cancelled', pageNumber, primitives: [], warnings: [] };
+      const raw = operatorList.fnArray[index];
+      const name = typeof raw === 'string' ? raw : operationNames.get(raw) || '';
+      const args = operatorList.argsArray?.[index] || [];
+      if (name === 'constructPath') {
+        const coordinates = Array.isArray(args[1]) ? args[1] : args;
+        const bounds = args.length >= 6 && args.slice(2, 6).every(Number.isFinite)
+          ? normalizeRegion({ x: args[2] / metadata.width, y: (metadata.height - args[5]) / metadata.height, width: (args[4] - args[2]) / metadata.width, height: (args[5] - args[3]) / metadata.height })
+          : primitiveBounds(coordinates, metadata);
+        primitives.push({ primitiveId: `primitive-${pageNumber}-${index}`, kind: 'path', bounds, points: coordinates.slice(0, 256).reduce((output, value, pointIndex) => { if (pointIndex % 2 === 0 && Number.isFinite(Number(value)) && Number.isFinite(Number(coordinates[pointIndex + 1]))) output.push({ x: Number(value) / metadata.width, y: (metadata.height - Number(coordinates[pointIndex + 1])) / metadata.height }); return output; }, []), stroke: false, fill: false, lineWidth: 0, sourceOperation: index });
+      } else if (/paintImageXObject|paintInlineImageXObject/.test(name)) primitives.push({ primitiveId: `primitive-${pageNumber}-${index}`, kind: 'image-boundary', bounds: normalizeRegion({}), points: [], stroke: false, fill: true, lineWidth: 0, sourceOperation: index });
+      else if (/stroke|fill/i.test(name) && primitives.length) {
+        const current = primitives[primitives.length - 1];
+        if (current.kind === 'path') { current.stroke ||= /stroke/i.test(name); current.fill ||= /fill/i.test(name); }
+      }
     }
+    const truncated = (operatorList.fnArray?.length || 0) > count;
+    return { supported: true, status: truncated ? 'bounded' : 'ready', ...metadata, primitives, operationCount: count, warnings: truncated ? ['Graphics analysis was bounded to the configured operation limit.'] : [] };
+  } finally {
+    page.cleanup?.();
+    releaseTrackedResource('pdf-page', page, { pageNumber: Math.trunc(finite(pageNumber)), reason: 'graphics-read' });
   }
-  const truncated = (operatorList.fnArray?.length || 0) > count;
-  page.cleanup?.();
-  return { supported: true, status: truncated ? 'bounded' : 'ready', ...metadata, primitives, operationCount: count, warnings: truncated ? ['Graphics analysis was bounded to the configured operation limit.'] : [] };
 }
 
 export async function readPdfPage(pdf, pageNumber) {
@@ -147,20 +165,34 @@ export async function readPdfPage(pdf, pageNumber) {
   const number = Math.trunc(finite(pageNumber));
   if (number < 1 || number > finite(pdf.numPages)) throw new Error('Requested PDF page is unavailable.');
   const page = await pdf.getPage(number);
-  const viewport = page.getViewport({ scale: 1, rotation: 0 });
-  const content = await page.getTextContent();
-  const annotations = page.getAnnotations ? await page.getAnnotations() : [];
-  const metadata = normalizePageMetadata({ pageNumber: number, width: viewport.width, height: viewport.height, rotation: page.rotate || viewport.rotation });
-  return {
-    ...metadata,
-    textItems: (content.items || []).map(item => positionedTextItem(item, metadata)).filter(item => item.text.trim()),
-    annotations: Array.isArray(annotations) ? annotations : []
-  };
+  acquireTrackedResource('pdf-page', page, { documentId: pdf?.fingerprint || '', pageNumber: number });
+  try {
+    const viewport = page.getViewport({ scale: 1, rotation: 0 });
+    const content = await page.getTextContent();
+    const annotations = page.getAnnotations ? await page.getAnnotations() : [];
+    const metadata = normalizePageMetadata({ pageNumber: number, width: viewport.width, height: viewport.height, rotation: page.rotate || viewport.rotation });
+    return {
+      ...metadata,
+      textItems: (content.items || []).map(item => positionedTextItem(item, metadata)).filter(item => item.text.trim()),
+      annotations: Array.isArray(annotations) ? annotations : []
+    };
+  } finally {
+    page.cleanup?.();
+    releaseTrackedResource('pdf-page', page, { pageNumber: number, reason: 'page-read' });
+  }
 }
 
 export async function renderPdfPage(pdf, pageNumber, canvas, { scale = 1, rotation = null } = {}) {
   if (!canvas?.getContext) throw new Error('A canvas rendering target is required.');
   const page = await pdf.getPage(Math.trunc(finite(pageNumber)));
+  acquireTrackedResource('pdf-page', page, { documentId: pdf?.fingerprint || '', pageNumber: Math.trunc(finite(pageNumber)) });
+  let released = false;
+  const releasePage = () => {
+    if (released) return;
+    released = true;
+    page.cleanup?.();
+    releaseTrackedResource('pdf-page', page, { pageNumber: Math.trunc(finite(pageNumber)), reason: 'render-complete' });
+  };
   const viewport = page.getViewport({ scale: Math.max(.1, Math.min(6, finite(scale, 1))), rotation: rotation === null ? page.rotate || 0 : finite(rotation) });
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
@@ -170,7 +202,7 @@ export async function renderPdfPage(pdf, pageNumber, canvas, { scale = 1, rotati
     viewport,
     promise: task.promise,
     cancel() { try { task.cancel(); } catch {} },
-    releasePage() { page.cleanup?.(); },
-    release() { canvas.width = 0; canvas.height = 0; page.cleanup?.(); }
+    releasePage,
+    release() { canvas.width = 0; canvas.height = 0; releasePage(); }
   };
 }

@@ -46,6 +46,13 @@ function sectionCategory(section) {
   return { submittals: categories.has('submittal'), quality: categories.has('quality assurance'), testing: categories.has('testing'), inspection: categories.has('inspection'), commissioning: categories.has('commissioning'), closeout: categories.has('closeout') };
 }
 
+const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
+const logSlowOperation = (name, startedAt, details = {}) => {
+  const elapsed = Math.max(0, perfNow() - startedAt);
+  if (elapsed > 10) console.warn(name, elapsed, { ...details, stack: new Error().stack });
+  return elapsed;
+};
+
 export function createDrawingRequirementsResolver({ specificationIndex, relationshipEngine, providers = [], onMetric = () => {}, now = () => Date.now() } = {}) {
   const cache = new Map(); let generation = 0;
   const providerList = list(providers).filter(item => typeof item === 'function');
@@ -62,12 +69,18 @@ export function createDrawingRequirementsResolver({ specificationIndex, relation
     const providerFailure = (provider, error) => { const failure = { provider, code: 'construction-intelligence-provider-failure', message: error?.message || String(error), contained: true }; providerFailures.push(failure); warnings.push(failure.message); };
     const relatedEntities = (provider, entityId, options) => { if (!entityId || typeof relationshipEngine?.getRelatedEntities !== 'function') return []; try { return list(relationshipEngine.getRelatedEntities(entityId, options)).filter(item => item && typeof item === 'object'); } catch (error) { providerFailure(provider, error); return []; } };
     const chosenSourceId = sourceIds[0]; const chosenSource = relationshipEngine?.getEntity?.(chosenSourceId);
+    const relatedDrawingsStartedAt = perfNow();
     if (input.pageEntityId) {
       const page = relationshipEngine?.getEntity?.(input.pageEntityId);
       if (page) governingDrawings.push({ entity: page, relationship: null, status: page.verificationState, reason: 'Current active drawing page.' });
-      for (const related of relatedEntities('related-drawings', input.pageEntityId, { projectId, entityTypes: ['drawing-page'], verificationStates: ['confirmed', 'suggested'], limit: 50 })) if (related.relationship) governingDrawings.push({ ...related, status: related.relationship.verificationState, reason: list(related.relationship.evidence)[0]?.confidenceReason || 'Explicit drawing relationship.' }); else skippedRecordCount += 1;
+      let relatedDrawingCount = 0;
+      for (const related of relatedEntities('related-drawings', input.pageEntityId, { projectId, entityTypes: ['drawing-page'], verificationStates: ['confirmed', 'suggested'], limit: 50 })) { relatedDrawingCount += 1; if (related.relationship) governingDrawings.push({ ...related, status: related.relationship.verificationState, reason: list(related.relationship.evidence)[0]?.confidenceReason || 'Explicit drawing relationship.' }); else skippedRecordCount += 1; }
+      logSlowOperation('governing drawings', relatedDrawingsStartedAt, { iterationCount: relatedDrawingCount, governingDrawingCount: governingDrawings.length, pageEntityId: input.pageEntityId });
     }
+    const requirementRelationshipsStartedAt = perfNow();
+    let requirementRelationshipCount = 0;
     for (const related of relatedEntities('requirement-relationships', chosenSourceId, { projectId, entityTypes: ['specification-section', 'specification-article'], relationshipTypes: ['governed-by', 'requires', 'references'], verificationStates: ['confirmed', 'suggested'], limit: 100 })) {
+      requirementRelationshipCount += 1;
       if (!related.entity || !related.relationship) { skippedRecordCount += 1; continue; }
       const sectionEntity = related.entity.entityType === 'specification-section' ? related.entity : relatedEntities('specification-article-parent', related.entity.entityId, { projectId, entityTypes: ['specification-section'], relationshipTypes: ['belongs-to'], verificationStates: ['confirmed'], limit: 1 })[0]?.entity;
       if (!sectionEntity) continue;
@@ -79,7 +92,11 @@ export function createDrawingRequirementsResolver({ specificationIndex, relation
       if (record) record.relationshipId = related.relationship.relationshipId;
       if (record) requirements.push(record);
     }
+    logSlowOperation('requirement relationships', requirementRelationshipsStartedAt, { iterationCount: requirementRelationshipCount, requirementCount: requirements.length, chosenSourceId });
+    const drawingSpecLinksStartedAt = perfNow();
+    let drawingSpecLinkCount = 0;
     for (const rawLink of list(input.drawingSpecLinks).filter(item => item && item.status !== 'rejected')) {
+      drawingSpecLinkCount += 1;
       const link = asObject(rawLink);
       const sourceScope = link.objectId && input.selectedObjectId === link.objectId ? 'object-specific' : link.objectId ? '' : 'page-wide';
       if (!sourceScope) continue;
@@ -89,23 +106,37 @@ export function createDrawingRequirementsResolver({ specificationIndex, relation
       if (record) record.drawingSpecLinkId = link.linkId;
       if (record) requirements.push(record);
     }
+    logSlowOperation('drawing spec links', drawingSpecLinksStartedAt, { iterationCount: drawingSpecLinkCount, requirementCount: requirements.length });
+    const projectRequirementsStartedAt = perfNow();
+    let projectRequirementCount = 0;
     for (const related of relatedEntities('project-requirements', `project:${projectId}`, { projectId, entityTypes: ['specification-section'], relationshipTypes: ['governed-by', 'requires'], verificationStates: ['confirmed', 'suggested'], limit: 100 })) {
+      projectRequirementCount += 1;
       if (!related.entity || !related.relationship) { skippedRecordCount += 1; continue; }
       const evidence = related.relationship.evidence?.[0] || {};
       const record = createRequirementRecord({ projectId, relationshipId: related.relationship.relationshipId, specificationDocumentId: related.entity.sourceDocumentId, sectionNumber: related.entity.normalizedKey, applicabilityScope: 'project-wide', evidenceType: evidence.evidenceType || 'project-wide requirement', evidenceText: evidence.sourceText || related.relationship.metadata?.note || 'Imported authoritative project-wide relationship.', confidence: related.relationship.confidence, status: related.relationship.verificationState, reason: evidence.confidenceReason || 'Explicit project-wide relationship.', origin: related.relationship.origin }, specificationIndex);
       if (record) requirements.push(record);
     }
+    logSlowOperation('project requirements', projectRequirementsStartedAt, { iterationCount: projectRequirementCount, requirementCount: requirements.length });
+    const projectWideStartedAt = perfNow();
+    let projectWideCount = 0;
     for (const item of list(input.projectWideRequirements).filter(item => item && item.status !== 'rejected')) {
+      projectWideCount += 1;
       const record = createRequirementRecord({ ...item, projectId, applicabilityScope: 'project-wide', evidenceType: item.evidenceType || 'project-wide requirement', evidenceText: item.evidenceText, reason: item.reason || 'Explicitly identified project-wide baseline requirement.' }, specificationIndex);
       if (record) requirements.push(record);
     }
+    logSlowOperation('project-wide requirements', projectWideStartedAt, { iterationCount: projectWideCount, requirementCount: requirements.length });
     if (input.viewportContext?.selectedRegion && !chosenSource) warnings.push('Selected drawing region has no verified object or room requirement relationship.');
-    for (const provider of providerList) { try { const provided = provider(structuredClone(input)); if (provided && typeof provided.then === 'function') { void Promise.resolve(provided).catch(error => providerFailure(provider.name || 'requirement-provider', error)); continue; } for (const candidate of list(provided)) { const record = createRequirementRecord(asObject(candidate), specificationIndex); if (record) requirements.push(record); else skippedRecordCount += 1; } } catch (error) { providerFailure(provider.name || 'requirement-provider', error); } }
+    const providerStartedAt = perfNow();
+    let providerCount = 0;
+    for (const provider of providerList) { providerCount += 1; try { const provided = provider(structuredClone(input)); if (provided && typeof provided.then === 'function') { void Promise.resolve(provided).catch(error => providerFailure(provider.name || 'requirement-provider', error)); continue; } for (const candidate of list(provided)) { const record = createRequirementRecord(asObject(candidate), specificationIndex); if (record) requirements.push(record); else skippedRecordCount += 1; } } catch (error) { providerFailure(provider.name || 'requirement-provider', error); } }
+    logSlowOperation('requirement providers', providerStartedAt, { iterationCount: providerCount, requirementCount: requirements.length });
     const deduplicated = [...new Map(requirements.sort((a, b) => (a.status === 'confirmed' ? 0 : 1) - (b.status === 'confirmed' ? 0 : 1) || a.applicabilityScope.localeCompare(b.applicabilityScope) || a.sectionNumber.localeCompare(b.sectionNumber)).map(item => [item.requirementId, item])).values()];
     const allowed = trade.key === 'all-trades' ? deduplicated : deduplicated.filter(item => item.applicabilityScope === 'project-wide' || trade.divisions.includes(text(item.sectionNumber).replace(/\D/g, '').slice(0, 2)) || list(item.tradeChannels).includes(trade.key));
     const articleLookupStarted = now();
     const fieldRequirements = { submittals: [], 'quality assurance': [], 'products/materials': [], execution: [], 'examination/preparation': [], installation: [], testing: [], inspection: [], protection: [], commissioning: [], closeout: [] };
+    let allowedCount = 0;
     for (const requirement of allowed) {
+      allowedCount += 1;
       let section = null; try { section = specificationIndex.get(requirement.specificationDocumentId, requirement.sectionNumber); } catch (error) { providerFailure('specification-articles', error); }
       try {
         for (const article of list(section?.articles)) if (article?.kind && fieldRequirements[article.kind]) fieldRequirements[article.kind].push({ ...requirement, article: structuredClone(article) });
@@ -113,6 +144,7 @@ export function createDrawingRequirementsResolver({ specificationIndex, relation
         if (legacy.quality && !fieldRequirements['quality assurance'].some(item => item.requirementId === requirement.requirementId)) fieldRequirements['quality assurance'].push(requirement);
       } catch (error) { providerFailure('specification-articles', error); }
     }
+    logSlowOperation('requirement article lookup', articleLookupStarted, { iterationCount: allowedCount, requirementCount: allowed.length, articleCount: Object.entries(fieldRequirements).filter(([key]) => key !== 'quality').reduce((sum, [, items]) => sum + items.length, 0) });
     fieldRequirements.quality = fieldRequirements['quality assurance'];
     onMetric({ operation: 'requirement-article-lookup', durationMs: Math.max(0, now() - articleLookupStarted), sectionCount: allowed.length, articleCount: Object.entries(fieldRequirements).filter(([key]) => key !== 'quality').reduce((sum, [, items]) => sum + items.length, 0) });
     const output = { status: providerFailures.length ? (allowed.length || governingDrawings.length ? 'partial' : 'unavailable') : 'complete', projectId, contextSourceEntityId: chosenSourceId || null, tradeChannel: trade.key, governingDrawings, requirements: allowed, confirmedSpecifications: allowed.filter(item => item.status === 'confirmed' && item.applicabilityScope !== 'project-wide'), suggestedSpecifications: allowed.filter(item => item.status === 'suggested' && item.applicabilityScope !== 'project-wide'), projectWideRequirements: allowed.filter(item => item.applicabilityScope === 'project-wide'), fieldRequirements, warnings, providerFailures, diagnostics: { skippedRecordCount, providerFailureCount: providerFailures.length }, resolvedAt: new Date().toISOString() };

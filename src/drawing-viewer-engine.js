@@ -9,7 +9,7 @@ export function drawingResizeRenderIsCurrent({ observedStage, activeStage, obser
   );
 }
 
-export function createDrawingRenderCache({ maxEntries = 6, onMetric = () => {} } = {}) {
+export function createDrawingRenderCache({ maxEntries = 6, onMetric = () => {}, onEvict = () => {} } = {}) {
   const entries = new Map();
   return {
     get(cacheKey) {
@@ -26,10 +26,18 @@ export function createDrawingRenderCache({ maxEntries = 6, onMetric = () => {} }
       if (!keyValue || !value) return false;
       entries.delete(keyValue);
       entries.set(keyValue, value);
-      while (entries.size > Math.max(1, Number(maxEntries) || 6)) entries.delete(entries.keys().next().value);
+      while (entries.size > Math.max(1, Number(maxEntries) || 6)) {
+        const evictedKey = entries.keys().next().value;
+        const evictedValue = entries.get(evictedKey);
+        entries.delete(evictedKey);
+        onEvict(evictedValue, evictedKey);
+      }
       return true;
     },
-    clear() { entries.clear(); },
+    clear() {
+      for (const [entryKey, entryValue] of entries.entries()) onEvict(entryValue, entryKey);
+      entries.clear();
+    },
     size: () => entries.size
   };
 }
@@ -84,6 +92,8 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
       } catch (error) {
         if (!api.canCommit(token)) return { committed: false, cancelled: true, token, task };
         throw error;
+      } finally {
+        task?.releasePage?.();
       }
       if (activeRender === task) {
         activeRender = null;
