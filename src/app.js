@@ -488,7 +488,7 @@ function scheduleDrawingHydration({ generationId, sheetId, projectId, shell, wor
       updateDrawingOverlays(stage, sheet, effectiveObservation || null, overlayRecords || []);
       reportDrawingMemorySnapshot('stage', { phase: 'overlay-generation', pageNumber: sheet.pageNumber, overlayCount: overlayRecords.length, elapsedMs: Math.max(0, drawingPerfNow() - overlayStartedAt) });
     }
-    const requirementsRequestKey = drawingRequirementsCacheKey({ projectId: analysis?.projectId || selected.projectId || state().activeProject, documentId: selected.id, drawingSetId: analysis?.drawingSetId || '', pageId: drawingTarget?.pageId || sheet?.pageId || '', selectedObjectId: selectedDrawingObject?.objectId || '', evidenceVersion: [sheetLegends.length, sheetSchedules.length, sheetKeyedNotes.length, sheetOccurrences.length, pageSpecificationLinks.length, selectedSpecificationLinks.length].join('|') });
+    const requirementsRequestKey = drawingRequirementsCacheKey({ projectId: plansContext?.projectId || analysis?.projectId || selected.projectId || state().activeProject, documentId: plansContext?.documentId || selected.id, drawingSetId: plansContext?.drawingSetId || analysis?.drawingSetId || '', pageId: plansContext?.pageId || drawingTarget?.pageId || sheet?.pageId || '', selectedObjectId: selectedDrawingObject?.objectId || '', evidenceVersion: [sheetLegends.length, sheetSchedules.length, sheetKeyedNotes.length, sheetOccurrences.length, pageSpecificationLinks.length, selectedSpecificationLinks.length].join('|') });
     const requirementsRequestGeneration = ++drawingRequirementsRequestGeneration;
     drawingRequirementsRequestKey = requirementsRequestKey;
     const finish = resolvedRequirements => {
@@ -594,9 +594,13 @@ function normalizePlansInspectorContext(detail = {}) {
   return Object.freeze({
     projectId: detail.projectId || '',
     drawingSetId: detail.drawingSetId || '',
+    documentId: detail.documentId || '',
+    drawingId: detail.drawingId || '',
+    pageId: detail.pageId || '',
     sheetId: detail.sheetId || '',
     sheetNumber: detail.sheet?.sheetNumber || detail.sheetNumber || '',
     sheetTitle: detail.sheet?.sheetTitle || detail.sheetTitle || '',
+    pageNumber: Number(detail.sheet?.pageNumber || detail.pageNumber || detail.pdfPage) || 0,
     pdfPage: Number(detail.sheet?.pageNumber || detail.pdfPage || detail.pageNumber) || 0,
     generationId: Number(detail.generationId) || 0,
     shell: detail.shell || '',
@@ -615,9 +619,13 @@ function getActivePlansSheetContext(overrides = {}) {
     ...overrides,
     projectId: overrides.projectId || analysis?.projectId || state().activeProject || '',
     drawingSetId: overrides.drawingSetId || analysis?.drawingSetId || '',
+    documentId: overrides.documentId || target.documentId || analysis?.documentId || '',
+    drawingId: overrides.drawingId || target.drawingId || sheet?.drawingId || '',
+    pageId: overrides.pageId || target.pageId || sheet?.pageId || '',
     sheetId: overrides.sheetId || sheet?.sheetId || target.sheetId || '',
     sheetNumber: overrides.sheetNumber || sheet?.sheetNumber || '',
     sheetTitle: overrides.sheetTitle || sheet?.sheetTitle || '',
+    pageNumber: overrides.pageNumber || sheet?.pageNumber || target.pageNumber || 0,
     pdfPage: overrides.pdfPage || sheet?.pageNumber || target.pageNumber || 0,
     sheet,
     generationId: overrides.generationId ?? drawingWorkspaceRenderRequest,
