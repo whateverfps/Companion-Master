@@ -11,6 +11,7 @@ const sections = [
   ['01 45 00', 'Quality Control'], ['01 91 00', 'General Commissioning Requirements'],
   ['09 65 13', 'Resilient Base and Accessories'], ['09 65 19', 'Resilient Tile Flooring'], ['09 91 00', 'Painting'],
   ['10 14 00', 'Signage'], ['10 26 00', 'Wall and Door Protection'], ['10 44 13', 'Fire Extinguisher Cabinets'],
+  ['21 13 13', 'Wet-Pipe Sprinkler Systems'], ['22 05 00', 'Common Work Results for Plumbing'],
   ['23 05 11', 'Common Work Results for HVAC'], ['23 05 93', 'Testing, Adjusting, and Balancing'], ['23 08 00', 'Commissioning of HVAC Systems'], ['23 31 00', 'HVAC Ducts and Casings'], ['23 37 00', 'Air Outlets and Inlets'],
   ['26 05 00', 'Common Work Results for Electrical'], ['26 05 26', 'Grounding and Bonding for Electrical Systems'], ['26 05 33', 'Raceways and Boxes for Electrical Systems'], ['26 24 16', 'Panelboards'],
   ['27 05 00','Common Work Results for Communications'],['27 05 26','Grounding and Bonding for Telecommunications'],['27 05 33','Raceways and Boxes for Communications'],['27 05 36','Cable Trays for Communications Systems'],['27 05 53','Identification for Communications Systems'],['27 10 00','Structured Cabling'],['27 11 16','Communications Cabinets, Racks, Frames, and Enclosures'],['27 13 23','Optical Fiber Backbone Cabling'],['27 15 13','Communications Copper Horizontal Cabling']
@@ -44,6 +45,14 @@ test('mechanical and electrical evidence resolve to indexed governing sections w
   assert.deepEqual(mechanical.map(item => item.sectionNumber), ['23 05 93', '23 08 00', '23 31 00', '23 37 00']);
   const electrical = vocabulary.matchPage({ projectId: 'bedford', specificationDocumentId: 'bedford-spec', pageId: '61e401', evidence: ['ELECTRICAL PLAN', 'PANELBOARD', 'GROUNDING AND BONDING', 'RACEWAYS AND BOXES'] });
   assert.deepEqual(electrical.map(item => item.sectionNumber), ['26 05 00', '26 05 26', '26 05 33', '26 24 16']);
+});
+
+test('plumbing and fire protection evidence resolve to indexed governing sections without leakage', () => {
+  const { vocabulary } = fixture();
+  const plumbing = vocabulary.matchPage({ projectId: 'bedford', specificationDocumentId: 'bedford-spec', pageId: '61p100', evidence: ['PLUMBING PLAN', 'PLUMBING PIPING', 'VALVE', 'FIXTURE', 'DOMESTIC WATER'] });
+  assert.deepEqual(plumbing.map(item => item.sectionNumber), ['22 05 00']);
+  const fireProtection = vocabulary.matchPage({ projectId: 'bedford', specificationDocumentId: 'bedford-spec', pageId: '61fx100', evidence: ['FIRE PROTECTION PLAN', 'SPRINKLER HEAD', 'SPRINKLER RISER'] });
+  assert.deepEqual(fireProtection.map(item => item.sectionNumber), ['21 13 13']);
 });
 
 test('generic discipline titles do not produce unsupported matches without specific evidence', () => {

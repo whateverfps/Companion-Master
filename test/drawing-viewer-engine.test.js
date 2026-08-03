@@ -115,8 +115,10 @@ test('viewer engine measures page selection, render, and zoom without changing b
   engine.selectPage(2);
   await engine.renderSelectedPage(() => ({ promise: Promise.resolve(), cancel() {} }));
   engine.zoomAtPoint({ deltaY: -20, pointerX: 10, pointerY: 10 });
-  assert.deepEqual(metrics.map(item => item.operation), ['page-selection', 'page-render', 'zoom']);
-  assert.ok(metrics.every(item => item.durationMs >= 0));
+  assert.deepEqual(metrics.filter(item => item.operation !== 'render-task').map(item => item.operation), ['page-selection', 'page-render', 'zoom']);
+  assert.ok(metrics.some(item => item.operation === 'render-task' && item.state === 'attached'));
+  assert.ok(metrics.some(item => item.operation === 'render-task' && item.state === 'completed'));
+  assert.ok(metrics.filter(item => 'durationMs' in item).every(item => item.durationMs >= 0));
 });
 
 test('bounded render cache reports hits and misses and evicts the oldest bitmap', () => {

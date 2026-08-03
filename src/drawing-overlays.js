@@ -27,16 +27,26 @@ export function transformOverlayRegion(region, rotation = 0) {
 const regionKey = region => [region.x, region.y, region.width, region.height].map(value => Math.round(Number(value) * 1000)).join(':');
 const candidate = record => record.verificationState === 'candidate' || record.type === 'candidates';
 const priority = record => record.type === 'selected' ? 0 : record.verificationState === 'confirmed' ? 1 : record.metadata?.related || record.styleToken === 'related' ? 2 : 3 + (1 - record.confidence);
+const intersectsRegion = (a, b, buffer = 0) => {
+  if (!validNormalizedRegion(a) || !validNormalizedRegion(b)) return true;
+  const x1 = Math.max(0, Number(b.x) - Number(buffer) || 0);
+  const y1 = Math.max(0, Number(b.y) - Number(buffer) || 0);
+  const x2 = Math.min(1, Number(b.x) + Number(b.width) + Number(buffer) || 1);
+  const y2 = Math.min(1, Number(b.y) + Number(b.height) + Number(buffer) || 1);
+  return Number(a.x) + Number(a.width) >= x1 && Number(a.y) + Number(a.height) >= y1 && Number(a.x) <= x2 && Number(a.y) <= y2;
+};
 
-export function visibleDrawingOverlays(records = [], { projectId, documentId, pageId, visibility = {}, rotation = 0, reviewMode = false, maxVisible = 120, onDiagnostic = () => {} } = {}) {
+export function visibleDrawingOverlays(records = [], { projectId, documentId, pageId, visibility = {}, viewportRegion = null, viewportBuffer = .08, rotation = 0, reviewMode = false, maxVisible = 120, onDiagnostic = () => {} } = {}) {
   const suppressionReasons = {}; const suppress = reason => { suppressionReasons[reason] = (suppressionReasons[reason] || 0) + 1; };
   const normalized = list(records).map(createDrawingOverlay).filter(Boolean);
   const owned = normalized.filter(record => record.projectId === text(projectId) && record.documentId === text(documentId) && record.pageId === text(pageId));
   const accepted = []; const seen = new Set(); let oversizedRegionsRejected = 0;
   for (const record of owned) {
-    if (candidate(record) && !reviewMode && visibility.candidates !== true) { suppress('candidate-hidden'); continue; }
-    if (candidate(record) && !reviewMode && record.confidence < .75) { suppress('low-confidence-candidate'); continue; }
+    const pinned = record.type === 'selected' || record.verificationState === 'confirmed';
+    if (!pinned && candidate(record) && !reviewMode && visibility.candidates !== true) { suppress('candidate-hidden'); continue; }
+    if (!pinned && candidate(record) && !reviewMode && record.confidence < .75) { suppress('low-confidence-candidate'); continue; }
     if (!record.visible || (visibility[record.type] === false && !(reviewMode && candidate(record)))) { suppress('visibility-disabled'); continue; }
+    if (!pinned && viewportRegion && !intersectsRegion(record.region, viewportRegion, viewportBuffer)) { suppress('offscreen-region'); continue; }
     const area = record.region.width * record.region.height;
     if (candidate(record) && record.type !== 'rooms' && area > .2) { oversizedRegionsRejected += 1; suppress('oversized-candidate'); continue; }
     const identity = candidate(record) ? `${text(record.metadata?.objectType).toLowerCase()}:${record.label.toLowerCase()}` : record.overlayId;

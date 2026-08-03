@@ -44,7 +44,7 @@ function specificationRecords(requirements, links, { mode = 'page', objectId = '
     ...list(links).filter(item => item.status !== 'rejected')
   ].filter(item => mode === 'object'
     ? text(item.objectId || item.sourceObjectId) === text(objectId) || text(item.applicabilityScope) === 'object-specific' || (!text(item.objectId || item.sourceObjectId) && !text(item.applicabilityScope))
-    : !text(item.objectId || item.sourceObjectId) && text(item.applicabilityScope || 'page-wide') !== 'object-specific');
+    : text(item.applicabilityScope || 'page-wide') === 'page-wide' || text(item.objectId || item.sourceObjectId) || text(item.applicabilityScope) === 'object-specific' || !text(item.applicabilityScope));
   return unique(records, item => `${text(item.specificationDocumentId)}:${text(item.sectionNumber).replace(/\D/g, '')}:${text(item.article?.id || item.articleReference)}`)
     .map(item => ({
       ...item,

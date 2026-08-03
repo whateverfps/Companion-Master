@@ -5,13 +5,13 @@ Generated from the current checked-in Bedford drawing catalog and the current Be
 ## Summary
 
 - Sheets audited: 70
-- Supported sheets: 4
-- Unsupported / unresolved sheets: 66
+- Supported sheets: 6
+- Unsupported / unresolved sheets: 64
 
 ### Failure breakdown
 
 - Intentional reference / no-governance sheets: 21
-- Missing vocabulary / applicability rule: 8
+- Missing vocabulary / applicability rule: 6
 - Missing drawing evidence: 37
 - Resolver / provider failures: 0
 
@@ -23,6 +23,8 @@ These are the only Building 61 sheets the current title-based vocabulary probe c
 - 61E-100 - ELECTRICAL PLAN - BASEMENT LEVEL -> 26 05 00
 - 61E-101 - ELECTRICAL PLAN - FIRST LEVEL -> 26 05 00
 - 61E-102 - ELECTRICAL PLAN - SECOND LEVEL -> 26 05 00
+- 61FX100 - FIRE PROTECTION PLAN - FIRST LEVEL -> 21 13 13
+- 61P-100 - PLUMBING PLAN - BASEMENT LEVEL -> 22 05 00
 
 ## Definitive No-Governance Sheets
 
@@ -56,12 +58,10 @@ These sheets are technical, but the current checked-in Bedford vocabulary does n
 
 - 61H-101
 - 61H-102
-- 61FX100
 - 61FX101
 - 61FX102
 - 61FX401
 - 61FX501
-- 61P-100
 
 ## Missing Drawing Evidence
 
@@ -121,8 +121,8 @@ These sheets are technical and likely governed in the workspace, but the checked
 
 - 61IN101: supported; matched 09 91 00 and 10 14 00.
 - 61FX001: intentional reference / no-governance.
-- 61FX100: missing vocabulary / applicability rule.
-- 61P-100: missing vocabulary / applicability rule.
+- 61FX100: supported; matched 21 13 13.
+- 61P-100: supported; matched 22 05 00.
 - 61M-101: missing drawing evidence.
 - 61M-501: missing drawing evidence.
 - 61E-401: missing drawing evidence.

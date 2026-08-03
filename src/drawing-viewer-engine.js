@@ -40,6 +40,8 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
   let selectedPage = 0;
   let renderGeneration = 0;
   let activeRender = null;
+  let activeRenderTaskCount = 0;
+  let staleTasksCancelled = 0;
 
   const api = {
     openDocument(nextDocumentId, nextPageCount, requestedPage = 1) {
@@ -67,8 +69,9 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
       return { generation: renderGeneration, documentId, pageNumber: selectedPage };
     },
     attachRender(token, task) {
-      if (token?.generation !== renderGeneration) { task?.cancel?.(); return false; }
+      if (token?.generation !== renderGeneration) { task?.cancel?.(); staleTasksCancelled += 1; onMetric({ operation: 'render-task', activeRenderTaskCount, staleTasksCancelled, state: 'stale-cancelled' }); return false; }
       activeRender = task || null;
+      if (task) { activeRenderTaskCount += 1; onMetric({ operation: 'render-task', activeRenderTaskCount, staleTasksCancelled, state: 'attached' }); }
       return true;
     },
     async renderSelectedPage(startRender) {
@@ -82,7 +85,11 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
         if (!api.canCommit(token)) return { committed: false, cancelled: true, token, task };
         throw error;
       }
-      if (activeRender === task) activeRender = null;
+      if (activeRender === task) {
+        activeRender = null;
+        activeRenderTaskCount = Math.max(0, activeRenderTaskCount - 1);
+        onMetric({ operation: 'render-task', activeRenderTaskCount, staleTasksCancelled, state: 'completed' });
+      }
       const committed = api.canCommit(token);
       onMetric({ operation: 'page-render', durationMs: Math.max(0, clock() - startedAt), pageNumber: token.pageNumber, committed });
       return { committed, cancelled: !committed, token, task };
@@ -91,6 +98,11 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
       return Boolean(canvasConnected) && token?.generation === renderGeneration && token?.documentId === documentId && token?.pageNumber === selectedPage;
     },
     cancelRender() {
+      if (activeRender) {
+        staleTasksCancelled += 1;
+        activeRenderTaskCount = Math.max(0, activeRenderTaskCount - 1);
+        onMetric({ operation: 'render-task', activeRenderTaskCount, staleTasksCancelled, state: 'cancelled' });
+      }
       activeRender?.cancel?.();
       activeRender?.release?.();
       activeRender = null;

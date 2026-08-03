@@ -13,6 +13,8 @@ export const BEDFORD_PROJECT_SPECIFICATION_VOCABULARY = Object.freeze([
   { sectionNumber: '10 14 00', pageTerms: ['signage schedules', 'signage schedule', 'signage reference', 'sign type', 'sign legends'], objectTerms: ['signage schedule', 'signage reference', 'sign type', 'signage', 'sign'] },
   { sectionNumber: '10 26 00', pageTerms: ['wall protection', 'corner guard', 'wall guard', 'door protection'], objectTerms: ['resilient wall protection', 'wall protection', 'corner guard', 'wall guard', 'door protection'] },
   { sectionNumber: '10 44 13', pageTerms: ['fire extinguisher cabinet', 'extinguisher cabinet', 'recessed cabinet'], objectTerms: ['fire extinguisher cabinet', 'extinguisher cabinet', 'recessed cabinet', 'fec'] },
+  { sectionNumber: '21 13 13', pageTerms: ['fire protection plan', 'sprinkler plan', 'sprinkler system', 'fire protection'], objectTerms: ['sprinkler', 'sprinkler head', 'sprinkler heads', 'sprinkler riser', 'fire sprinkler', 'pipe', 'piping'] },
+  { sectionNumber: '22 05 00', pageTerms: ['plumbing plan', 'plumbing system', 'plumbing notes', 'plumbing'], objectTerms: ['plumbing', 'plumbing plan', 'piping', 'pipe', 'valve', 'fixture', 'fixtures', 'sanitary', 'domestic water'] },
   { sectionNumber: '23 05 11', pageTerms: ['hvac common work', 'common work results for hvac', 'hvac work'], objectTerms: ['hvac', 'mechanical'] },
   { sectionNumber: '23 05 93', pageTerms: ['testing and balancing', 'tab', 'balance report'], objectTerms: ['testing and balancing', 'tab', 'balance report'] },
   { sectionNumber: '23 08 00', pageTerms: ['commissioning', 'commissioning of hvac systems', 'hvac commissioning', 'startup and testing'], objectTerms: ['commissioning', 'startup', 'startup and testing'] },

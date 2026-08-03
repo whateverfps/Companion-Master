@@ -55,7 +55,9 @@ test('drawing stage gesture handling reuses the existing zoom controls and viewp
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.match(app, /stage\.onwheel = event =>/);
   assert.match(app, /if \(!next\.recognized\) return;\s*event\.preventDefault\(\)/);
+  assert.match(app, /drawingWheelPaintFrame = requestAnimationFrame\(/);
   assert.match(app, /captureDrawingViewport\(\{ mode: 'custom', zoom: next\.zoom, scrollLeft: next\.scrollLeft, scrollTop: next\.scrollTop \}\)/);
+  assert.match(app, /preserveSidebarScroll: true/);
   assert.match(app, /viewOutput\.textContent = `\$\{Math\.round\(boundedScale \* 100\)\}% · \$\{drawingRotation\}°`/);
   assert.match(app, /button\.dataset\.drawingZoom/);
   assert.equal((app.match(/const drawingViewportBySet = new Map\(\);/g) || []).length, 1);
@@ -186,7 +188,7 @@ test('page clicks prefer the rendered retained-PDF page model and select the eng
 test('rapid page switching paints first and defers heavy workspace reconstruction', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.match(app, /async function paintDrawingSelectionFast\(/);
-  assert.match(app, /await paintDrawingPage\(source, sheet, observation \|\| null, \[\]\)/);
+  assert.match(app, /await paintDrawingSelectionFast\(/);
   assert.match(app, /function scheduleDeferredDrawingWorkspaceRefresh\(shell, requestToken\)/);
   assert.match(app, /if \(requestToken !== drawingPagePaintRequest\) return;\s*void renderDrawingWorkspace\(shell\);/);
 });
@@ -195,9 +197,48 @@ test('sheet-card click path issues one page selection and one fast paint request
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const clickStart = app.indexOf("app.addEventListener('click', async event =>");
   const click = app.slice(clickStart, app.indexOf("if (button.hasAttribute('data-drawing-reanalyze')", clickStart));
-  const sheetBranch = click.slice(click.indexOf("if (button.dataset.drawingSheet && analysis)"), click.indexOf("if (button.hasAttribute('data-drawing-reanalyze')"));
+  const sheetBranch = click.slice(click.indexOf("if (button.dataset.drawingSheet && analysis)"));
   assert.equal((sheetBranch.match(/drawingViewerEngine\.selectPage\(sheet\.pageNumber\)/g) || []).length, 1);
   assert.equal((sheetBranch.match(/paintDrawingSelectionFast\(/g) || []).length, 1);
+});
+
+test('zoom fit rotate reset and object selection stay on the fast repaint path', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const clickStart = app.indexOf("app.addEventListener('click', async event =>");
+  const click = app.slice(clickStart, app.indexOf("const activationTimestamp =", clickStart));
+  const fastPaths = [
+    'button.dataset.drawingZoom',
+    'button.dataset.drawingFit',
+    'button.hasAttribute(\'data-drawing-rotate\')',
+    'button.hasAttribute(\'data-drawing-reset-view\')',
+    'button.dataset.drawingObjectNav',
+    'button.dataset.drawingSelectObject',
+    'button.hasAttribute(\'data-drawing-clear-object\')',
+    'button.hasAttribute(\'data-drawing-return-location\')',
+  ];
+  for (const token of fastPaths) assert.match(click, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(click, /await repaintCurrentSheet\(\{ preserveSidebarScroll: true \}\)/);
+});
+
+test('scroll and panel updates are deferred rather than rebuilding synchronously', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /stage\.onscroll = \(\) => \{ if \(scrollFrame\) return; scrollFrame = requestAnimationFrame\(/);
+  assert.match(app, /requestAnimationFrame\(\(\) => \{/);
+  assert.match(app, /drawingPanelRefreshRequest/);
+  assert.match(app, /operation: 'click-to-visible-bitmap'/);
+  assert.match(app, /operation: 'click-to-active-card'/);
+});
+
+test('drawing workspace dom helpers reuse list, overlay, and panel nodes', () => {
+  const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /drawingSelectionActiveSheetId/);
+  assert.match(app, /scheduleDrawingSearchResultsUpdate\(/);
+  assert.match(app, /__drawingSearchNodeCache/);
+  assert.match(app, /__drawingSearchNodesBySheetId/);
+  assert.match(app, /drawingOverlayNodeCache/);
+  assert.match(app, /viewportRegion, viewportBuffer: \.12/);
+  assert.match(app, /panel\.dataset\.panelSignature/);
+  assert.match(app, /Drawing workspace DOM/);
 });
 
 test('repeated page switches do not register duplicate drawing click handlers', () => {
