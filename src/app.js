@@ -2908,6 +2908,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const preservedViewport = { scrollLeft: preservedStage?.scrollLeft || 0, scrollTop: preservedStage?.scrollTop || 0 };
   const preservedBrowserScroll = host.querySelector('.mc-drawing-index')?.scrollTop || 0;
   const priorIntelligence = host.querySelector('.mc-drawing-evidence');
+  const preservedIntelligenceScroll = priorIntelligence?.scrollTop || 0;
   if (priorIntelligence?.querySelector('[data-panel-mode]')) constructionIntelligenceScroll[priorIntelligence.querySelector('[data-panel-mode]').dataset.panelMode] = priorIntelligence.scrollTop;
   const focusedElement = host.contains(document.activeElement) ? document.activeElement : null;
   const preservedFocusSelector = focusedElement?.id ? `#${CSS.escape(focusedElement.id)}` : focusedElement?.dataset?.drawingSheet ? `[data-drawing-sheet="${CSS.escape(focusedElement.dataset.drawingSheet)}"]` : focusedElement?.dataset?.drawingZoom ? `[data-drawing-zoom="${CSS.escape(focusedElement.dataset.drawingZoom)}"]` : focusedElement?.dataset?.drawingFit ? `[data-drawing-fit="${CSS.escape(focusedElement.dataset.drawingFit)}"]` : '';
@@ -3182,7 +3183,10 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const nextBrowser = host.querySelector('.mc-drawing-index');
   if (nextBrowser) nextBrowser.scrollTop = preservedBrowserScroll;
   const nextIntelligence = host.querySelector('.mc-drawing-evidence');
-  if (nextIntelligence) { nextIntelligence.scrollTop = pendingDrawingPanelScroll ?? constructionIntelligenceScroll[constructionIntelligencePanel.mode] ?? 0; pendingDrawingPanelScroll = null; }
+  if (nextIntelligence) {
+    nextIntelligence.scrollTop = pendingDrawingPanelScroll ?? preservedIntelligenceScroll ?? constructionIntelligenceScroll[constructionIntelligencePanel.mode] ?? 0;
+    pendingDrawingPanelScroll = null;
+  }
   // compatibility marker for viewer tests: await paintDrawingPage(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), overlayRecords, { preserveSidebarScroll: true, shell, requestToken: workspaceRenderRequest });
   if (source && sheet) await renderDrawingFirstPaint(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), { preserveSidebarScroll: true, shell, requestToken: workspaceRenderRequest });
   scheduleDrawingHydration({

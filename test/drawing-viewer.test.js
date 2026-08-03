@@ -287,6 +287,8 @@ test('production hardening preserves focus and browser scroll while reporting ca
   assert.match(diagnostics, /const diagnosticsPersistenceEnabled=diagnosticsEnabled\|\|globalThis\.__MC_DIAGNOSTICS_PERSISTENCE_ENABLED===true;/);
   assert.match(engine, /const diagnosticsEnabled = globalThis\.__MC_DIAGNOSTICS_ENABLED === true;/);
   assert.match(app, /preservedBrowserScroll/);
+  assert.match(app, /const preservedIntelligenceScroll = priorIntelligence\?\.scrollTop \|\| 0;/);
+  assert.match(app, /nextIntelligence\.scrollTop = pendingDrawingPanelScroll \?\? preservedIntelligenceScroll \?\? constructionIntelligenceScroll\[constructionIntelligencePanel\.mode\] \?\? 0;/);
   assert.match(app, /preservedFocusSelector/);
   assert.match(app, /operation: 'viewport-restore'/);
   assert.match(app, /operation: 'search'/);
