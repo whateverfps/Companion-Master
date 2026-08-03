@@ -1,4 +1,5 @@
 import { acquireTrackedResource, releaseTrackedResource } from './resource-lifecycle.js';
+import { tracePdfError, tracePdfStage, pdfTraceEnabled } from './pdf-trace.js';
 
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -12,6 +13,7 @@ export async function loadPdfJs(importer = specifier => import(specifier)) {
   if (!pdfJsPromise) {
     pdfJsPromise = importer(PDF_JS_URL).then(pdfjs => {
       if (pdfjs?.GlobalWorkerOptions) pdfjs.GlobalWorkerOptions.workerSrc = PDF_WORKER_URL;
+      if (pdfTraceEnabled) console.info('[pdf-trace]', 'pdfjs worker config', { workerSrc: pdfjs?.GlobalWorkerOptions?.workerSrc || '', mode: pdfjs?.GlobalWorkerOptions?.workerSrc ? 'dedicated-worker' : 'fake-worker' });
       return pdfjs;
     }).catch(error => {
       pdfJsPromise = null;
@@ -97,7 +99,10 @@ export async function inspectStorageCapacity(byteLength, storage = globalThis.na
 export async function openPdfBlob(blob, options = {}) {
   if (!(blob instanceof Blob) || blob.type !== 'application/pdf') throw new Error('A valid PDF Blob is required.');
   const pdfjs = options.pdfjs || await loadPdfJs(options.importer);
+  if (pdfTraceEnabled) console.info('[pdf-trace]', 'pdf url resolved', { byteLength: blob.size, workerSrc: pdfjs?.GlobalWorkerOptions?.workerSrc || '', userAgent: globalThis.navigator?.userAgent || '' });
+  tracePdfStage('pdf document load start', { byteLength: blob.size });
   const pdf = await pdfjs.getDocument({ data: await blob.arrayBuffer() }).promise;
+  tracePdfStage('pdf document loaded', { numPages: pdf?.numPages || 0 });
   acquireTrackedResource('pdf-document', pdf, { byteLength: blob.size, mimeType: blob.type });
   const originalDestroy = typeof pdf.destroy === 'function' ? pdf.destroy.bind(pdf) : null;
   if (originalDestroy) {
@@ -165,9 +170,11 @@ export async function readPdfPage(pdf, pageNumber) {
   const number = Math.trunc(finite(pageNumber));
   if (number < 1 || number > finite(pdf.numPages)) throw new Error('Requested PDF page is unavailable.');
   const page = await pdf.getPage(number);
+  tracePdfStage('pdf page loaded', { pageNumber: number });
   acquireTrackedResource('pdf-page', page, { documentId: pdf?.fingerprint || '', pageNumber: number });
   try {
     const viewport = page.getViewport({ scale: 1, rotation: 0 });
+    tracePdfStage('viewport created', { width: viewport.width, height: viewport.height, scale: 1 });
     const content = await page.getTextContent();
     const annotations = page.getAnnotations ? await page.getAnnotations() : [];
     const metadata = normalizePageMetadata({ pageNumber: number, width: viewport.width, height: viewport.height, rotation: page.rotate || viewport.rotation });
@@ -185,6 +192,7 @@ export async function readPdfPage(pdf, pageNumber) {
 export async function renderPdfPage(pdf, pageNumber, canvas, { scale = 1, rotation = null } = {}) {
   if (!canvas?.getContext) throw new Error('A canvas rendering target is required.');
   const page = await pdf.getPage(Math.trunc(finite(pageNumber)));
+  tracePdfStage('pdf page loaded for render', { pageNumber: Math.trunc(finite(pageNumber)) });
   acquireTrackedResource('pdf-page', page, { documentId: pdf?.fingerprint || '', pageNumber: Math.trunc(finite(pageNumber)) });
   let released = false;
   const releasePage = () => {
@@ -194,9 +202,15 @@ export async function renderPdfPage(pdf, pageNumber, canvas, { scale = 1, rotati
     releaseTrackedResource('pdf-page', page, { pageNumber: Math.trunc(finite(pageNumber)), reason: 'render-complete' });
   };
   const viewport = page.getViewport({ scale: Math.max(.1, Math.min(6, finite(scale, 1))), rotation: rotation === null ? page.rotate || 0 : finite(rotation) });
+  if (pdfTraceEnabled) console.info('[pdf-trace]', 'render config', { canvasWidth: Math.ceil(viewport.width), canvasHeight: Math.ceil(viewport.height), viewportWidth: viewport.width, viewportHeight: viewport.height, scale: Math.max(.1, Math.min(6, finite(scale, 1))), outputScale: Math.max(.1, Math.min(6, finite(scale, 1))), imageBitmap: typeof createImageBitmap === 'function', offscreenCanvas: typeof OffscreenCanvas === 'function', devicePixelRatio: globalThis.devicePixelRatio || 1 });
+  tracePdfStage('viewport created for render', { width: viewport.width, height: viewport.height, scale: Math.max(.1, Math.min(6, finite(scale, 1))) });
   canvas.width = Math.ceil(viewport.width);
   canvas.height = Math.ceil(viewport.height);
-  const task = page.render({ canvasContext: canvas.getContext('2d'), viewport });
+  tracePdfStage('canvas created', { width: canvas.width, height: canvas.height });
+  const context = canvas.getContext('2d');
+  tracePdfStage('canvas context acquired', { width: canvas.width, height: canvas.height });
+  const task = page.render({ canvasContext: context, viewport });
+  tracePdfStage('renderTask created', { pageNumber: Math.trunc(finite(pageNumber)) });
   return {
     task,
     viewport,

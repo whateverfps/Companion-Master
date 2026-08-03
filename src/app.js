@@ -96,6 +96,8 @@ import {
   resolvePreviousProject,
   separateMissionControlProjects
 } from './mission-control.js';
+import { drawingSafeMode } from './drawing-safe-mode.js';
+import { pdfTraceEnabled, tracePdfError, tracePdfStage } from './pdf-trace.js';
 import {
   firstText,
   sectionHeadingValue,
@@ -155,6 +157,8 @@ installGlobalHandlers();
 setLifecycle('loading-ui');
 
 const app = document.querySelector('#app');
+const $ = selector => document.querySelector(selector);
+const $$ = selector => [...document.querySelectorAll(selector)];
 const safeText = textValue;
 const preferredText = firstText;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -532,6 +536,45 @@ let pendingDrawingPanelScroll = null;
 let constructionIntelligenceExpanded = new Set(loadConstructionIntelligencePanelState().expanded);
 const constructionIntelligenceScroll = { page: 0, object: 0 };
 let specificationSourceRequestId = 0;
+const RenderState = Object.freeze({
+  IDLE: 'IDLE',
+  LOADING_DOCUMENT: 'LOADING_DOCUMENT',
+  LOADING_PAGE: 'LOADING_PAGE',
+  VIEWPORT_READY: 'VIEWPORT_READY',
+  CANVAS_CREATED: 'CANVAS_CREATED',
+  RENDER_STARTED: 'RENDER_STARTED',
+  RENDER_COMPLETED: 'RENDER_COMPLETED',
+  CANVAS_PRESENTED: 'CANVAS_PRESENTED',
+  FAILED: 'FAILED'
+});
+
+function updateMissionRenderState(state, detail = {}) {
+  const next = {
+    state,
+    sheet: detail.sheet || null,
+    canvasWidth: Number(detail.canvasWidth) || 0,
+    canvasHeight: Number(detail.canvasHeight) || 0,
+    viewportWidth: Number(detail.viewportWidth) || 0,
+    viewportHeight: Number(detail.viewportHeight) || 0,
+    timestamp: globalThis.performance?.now?.() ?? Date.now()
+  };
+  if (detail.lastError) next.lastError = String(detail.lastError);
+  if (detail.lastCleanupReason) next.lastCleanupReason = String(detail.lastCleanupReason);
+  globalThis.MISSION_RENDER_STATE = next;
+  const panel = $('#missionRenderStatePanel');
+  if (panel) {
+    panel.innerHTML = `
+      <strong>Render State</strong><span>${esc(next.state)}</span>
+      <strong>Current Sheet</strong><span>${esc(next.sheet?.sheetNumber || next.sheet?.sheetId || '—')}</span>
+      <strong>Canvas Size</strong><span>${next.canvasWidth} × ${next.canvasHeight}</span>
+      <strong>Viewport Size</strong><span>${next.viewportWidth} × ${next.viewportHeight}</span>
+      <strong>Last Error</strong><span>${esc(next.lastError || '—')}</span>
+      <strong>Cleanup Reason</strong><span>${esc(next.lastCleanupReason || '—')}</span>`;
+  }
+  return next;
+}
+
+updateMissionRenderState(RenderState.IDLE);
 
 app.innerHTML = `
 <a id="skipLink" class="mc-skip-link" href="#missionControlMain">Skip to workspace</a>
@@ -1356,9 +1399,10 @@ app.innerHTML = `
   </div>
 </div>
 `;
-
-const $ = selector => document.querySelector(selector);
-const $$ = selector => [...document.querySelectorAll(selector)];
+document.body.insertAdjacentHTML('beforeend', `
+  <aside id="missionRenderStatePanel" style="position:fixed;top:8px;right:8px;z-index:9999;max-width:220px;padding:8px 10px;border:1px solid #38555a;border-radius:8px;background:#07171de6;color:#d7e6ea;font:11px/1.35 system-ui,sans-serif;display:grid;grid-template-columns:auto 1fr;gap:2px 8px;pointer-events:none">
+  </aside>
+`);
 
 function setChiefState(name = 'idle') {
   const stateName = chiefStateCopy[name] ? name : 'idle';
@@ -2167,6 +2211,7 @@ function updateDrawingNavigationButtons(analysis, sheetId = '') {
 }
 
 function scheduleDeferredDrawingWorkspaceRefresh(shell, requestToken) {
+  if (drawingSafeMode) return;
   if (drawingDeferredWorkspaceRefresh) clearTimeout(drawingDeferredWorkspaceRefresh);
   drawingDeferredWorkspaceRefresh = setTimeout(() => {
     drawingDeferredWorkspaceRefresh = null;
@@ -2190,6 +2235,7 @@ function syncDrawingOverlaySelectionState(stage = $('#mcDrawingStage')) {
 
 async function paintDrawingSelectionFast({ shell, analysis, sheet, observation = null, navigationStartedAt = 0, requestToken = 0, scrollActiveCard = true } = {}) {
   if (!analysis || !sheet) return false;
+  tracePdfStage('Stage 1 user selected sheet', { sheetId: sheet.sheetId, pageNumber: sheet.pageNumber });
   traceDrawingInteractionStep('paintDrawingSelectionFast', { pageId: sheet.pageId, pageNumber: sheet.pageNumber, requestToken });
   const selectionStartedAt = drawingPerfNow();
   updateDrawingSelectionCards(sheet.sheetId, { scroll: scrollActiveCard });
@@ -2207,16 +2253,19 @@ async function paintDrawingSelectionFast({ shell, analysis, sheet, observation =
   const source = activeDrawingSourceRecord?.documentId === analysis.documentId && activeDrawingSourceRecord?.projectId === state().activeProject
     ? activeDrawingSourceRecord
     : await engine.sourceFile(analysis.documentId);
+  tracePdfStage('Stage 2 catalog lookup complete', { documentId: analysis.documentId, sheetId: sheet.sheetId, found: Boolean(source) });
   drawingTraceSlowOperation('pdf lookup', sourceLookupStartedAt, { documentId: analysis.documentId, pageNumber: sheet.pageNumber });
   if (requestToken !== drawingPagePaintRequest) return false;
   if (!source) {
     scheduleDeferredDrawingWorkspaceRefresh(shell, requestToken);
     return false;
   }
+  tracePdfStage('Stage 3 pdf url resolved', { documentId: source.documentId, hasBlob: Boolean(source.sourceBlob), href: globalThis.location?.href || '' });
   const bitmapStartedAt = drawingPerfNow();
   await paintDrawingPage(source, sheet, observation || null, [], { preserveSidebarScroll: !scrollActiveCard, shell, requestToken });
   drawingTraceSlowOperation('page bitmap creation', bitmapStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber });
   if (requestToken !== drawingPagePaintRequest) return false;
+  tracePdfStage('Stage 14 requestAnimationFrame completed', { sheetId: sheet.sheetId, pageNumber: sheet.pageNumber });
   if (navigationStartedAt) logger.debug('Drawing viewer performance', { operation: 'click-to-visible-bitmap', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: sheet.pageNumber });
   scheduleDeferredDrawingWorkspaceRefresh(shell, requestToken);
   logger.debug('Drawing viewer performance', { operation: 'navigation', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - navigationStartedAt), pageNumber: sheet.pageNumber });
@@ -2348,28 +2397,41 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
   let loadingKey = '';
   const clearCurrentLoading = () => { if (loadingKey && stage.dataset.renderLoadingKey === loadingKey) { stage.classList.remove('is-loading'); delete stage.dataset.renderLoadingKey; } };
   const renderFailureKey = () => [source.documentId, sheet.pageNumber, drawingRenderGeneration, requestToken || 0].join(':');
+  const measureDrawingLayout = () => {
+    const viewer = stage.closest('.mc-drawing-viewer');
+    const stageWidth = stage.clientWidth || stage.offsetWidth || viewer?.clientWidth || viewer?.offsetWidth || 0;
+    const stageHeight = stage.clientHeight || stage.offsetHeight || viewer?.clientHeight || viewer?.offsetHeight || 0;
+    return { viewer, stageWidth, stageHeight };
+  };
   try {
     if (requestToken && requestToken !== drawingPagePaintRequest) return;
+    updateMissionRenderState(RenderState.LOADING_DOCUMENT, { sheet });
     const pdfLookupStartedAt = drawingPerfNow();
     drawingViewportDocumentId = source.documentId;
+    tracePdfStage('Stage 4 pdf.js worker initialized', { workerSrc: globalThis.pdfjsLib?.GlobalWorkerOptions?.workerSrc || '', pdfTraceEnabled, userAgent: navigator.userAgent, baseURI: document.baseURI });
     if (!activeDrawingPdf || activeDrawingDocumentId !== source.documentId) {
       activeDrawingPdf?.cleanup?.();
+      updateMissionRenderState(RenderState.LOADING_DOCUMENT, { sheet, lastCleanupReason: 'previous PDF document released' });
       activeDrawingPdf?.destroy?.();
       activeDrawingPdf = await openPdfBlob(source.sourceBlob);
       activeDrawingDocumentId = source.documentId;
       drawingRenderGeneration += 1;
     }
     drawingTraceSlowOperation('PDF lookup', pdfLookupStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber, loaded: Boolean(activeDrawingPdf) });
+    tracePdfStage('Stage 5 PDF document loaded', { documentId: source.documentId, numPages: activeDrawingPdf?.numPages || 0 });
     drawingViewerEngine.openDocument(source.documentId, activeDrawingPdf.numPages, sheet.pageNumber);
+    updateMissionRenderState(RenderState.LOADING_PAGE, { sheet });
     const viewportRestoreStartedAt = globalThis.performance?.now?.() ?? Date.now();
     const restored = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) };
     drawingZoom = restored.zoom;
     drawingRotation = restored.rotation;
     if (!Number.isFinite(drawingZoom) || restored.mode === 'fit-page' || restored.mode === 'fit-width') {
-      let fit = calculateDrawingFit({ containerWidth: stage.clientWidth, containerHeight: stage.clientHeight, pageWidth: sheet.pageWidth, pageHeight: sheet.pageHeight, rotation: (sheet.rotation + drawingRotation) % 360, padding: 18, mode: restored.mode });
-      for (let attempt = 0; !fit.ready && attempt < 12; attempt += 1) {
+      let { stageWidth, stageHeight } = measureDrawingLayout();
+      let fit = calculateDrawingFit({ containerWidth: stageWidth, containerHeight: stageHeight, pageWidth: sheet.pageWidth, pageHeight: sheet.pageHeight, rotation: (sheet.rotation + drawingRotation) % 360, padding: 18, mode: restored.mode });
+      if (!fit.ready) {
         await new Promise(resolve => requestAnimationFrame(resolve));
-        fit = calculateDrawingFit({ containerWidth: stage.clientWidth, containerHeight: stage.clientHeight, pageWidth: sheet.pageWidth, pageHeight: sheet.pageHeight, rotation: (sheet.rotation + drawingRotation) % 360, padding: 18, mode: restored.mode });
+        ({ stageWidth, stageHeight } = measureDrawingLayout());
+        fit = calculateDrawingFit({ containerWidth: stageWidth, containerHeight: stageHeight, pageWidth: sheet.pageWidth, pageHeight: sheet.pageHeight, rotation: (sheet.rotation + drawingRotation) % 360, padding: 18, mode: restored.mode });
       }
       if (!fit.ready) throw new Error('Drawing viewer is waiting for a measurable layout.');
       drawingZoom = fit.scale;
@@ -2377,6 +2439,8 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
     const boundedScale = ['fit-page', 'fit-width'].includes(restored.mode)
       ? Math.max(.05, Math.min(3, drawingZoom))
       : Math.max(.35, Math.min(3, drawingZoom));
+    tracePdfStage('Stage 7 viewport created', { width: boundedScale * sheet.pageWidth, height: boundedScale * sheet.pageHeight, scale: boundedScale });
+    updateMissionRenderState(RenderState.VIEWPORT_READY, { sheet, viewportWidth: boundedScale * sheet.pageWidth, viewportHeight: boundedScale * sheet.pageHeight });
     const viewOutput = stage.closest('.mc-drawing-viewer')?.querySelector('.mc-drawing-toolbar output');
     if (viewOutput) viewOutput.textContent = `${Math.round(boundedScale * 100)}% · ${drawingRotation}°`;
     const nextIdentity = createDrawingRenderIdentity({ documentId: source.documentId, drawingSetId: drawingTarget?.drawingSetId, pageNumber: sheet.pageNumber, scale: boundedScale, rotation: (sheet.rotation + drawingRotation) % 360, sourceAvailable: true, generation: drawingRenderGeneration });
@@ -2393,10 +2457,48 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       } else {
         markTrackedResourceReused('canvas', renderCanvas, { cacheKey, reason: 'render-cache-hit' });
       }
+      tracePdfStage('Stage 8 canvas created', { width: renderCanvas.width || 0, height: renderCanvas.height || 0 });
+      updateMissionRenderState(RenderState.CANVAS_CREATED, { sheet, canvasWidth: renderCanvas.width || 0, canvasHeight: renderCanvas.height || 0, viewportWidth: boundedScale * sheet.pageWidth, viewportHeight: boundedScale * sheet.pageHeight });
       loadingKey = cacheKey;
       stage.dataset.renderLoadingKey = loadingKey;
       stage.classList.add('is-loading');
-      const renderOutcome = await drawingViewerEngine.renderSelectedPage(pageNumber => renderPdfPage(activeDrawingPdf, pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation }));
+      updateMissionRenderState(RenderState.RENDER_STARTED, { sheet, canvasWidth: renderCanvas.width || 0, canvasHeight: renderCanvas.height || 0, viewportWidth: boundedScale * sheet.pageWidth, viewportHeight: boundedScale * sheet.pageHeight });
+      const renderOutcome = await drawingViewerEngine.renderSelectedPage(async pageNumber => {
+        const renderTarget = await renderPdfPage(activeDrawingPdf, pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation });
+        console.info('[pdf-trace]', 'paintDrawingPage render task returned', {
+          file: 'src/app.js',
+          function: 'paintDrawingPage',
+          line: 2458,
+          pageNumber,
+          hasTask: Boolean(renderTarget?.task),
+          hasPromise: Boolean(renderTarget?.promise),
+          taskPromiseType: typeof renderTarget?.promise,
+          taskPromiseState: renderTarget?.promise ? 'pending-or-settled' : 'missing',
+          renderCanvasWidth: renderCanvas.width || 0,
+          renderCanvasHeight: renderCanvas.height || 0,
+          displayCanvasWidth: canvas.width || 0,
+          displayCanvasHeight: canvas.height || 0,
+          sameCanvasObject: renderCanvas === canvas
+        });
+        tracePdfStage('Stage 9 canvas context acquired', { width: renderCanvas.width, height: renderCanvas.height });
+        tracePdfStage('Stage 10 renderTask created', { pageNumber });
+        return renderTarget;
+      });
+      console.info('[pdf-trace]', 'paintDrawingPage render outcome before commit', {
+        file: 'src/app.js',
+        function: 'paintDrawingPage',
+        line: 2471,
+        pageNumber: sheet.pageNumber,
+        committed: Boolean(renderOutcome?.committed),
+        cancelled: Boolean(renderOutcome?.cancelled),
+        hasTask: Boolean(renderOutcome?.task),
+        hasPromise: Boolean(renderOutcome?.task?.promise),
+        renderCanvasWidth: renderCanvas.width || 0,
+        renderCanvasHeight: renderCanvas.height || 0,
+        displayCanvasWidth: canvas.width || 0,
+        displayCanvasHeight: canvas.height || 0,
+        sameCanvasObject: renderCanvas === canvas
+      });
       if (requestToken && requestToken !== drawingPagePaintRequest) {
         if (renderCanvasCreated) releaseTrackedResource('canvas', renderCanvas, { cacheKey, reason: 'render-superseded' });
         renderOutcome.task?.release?.();
@@ -2412,12 +2514,35 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
         return;
       }
       drawingRenderCache.set(cacheKey, renderCanvas);
+      tracePdfStage('Stage 12 renderTask.promise resolves', { pageNumber: sheet.pageNumber });
+      updateMissionRenderState(RenderState.RENDER_COMPLETED, { sheet, canvasWidth: renderCanvas.width || 0, canvasHeight: renderCanvas.height || 0, viewportWidth: boundedScale * sheet.pageWidth, viewportHeight: boundedScale * sheet.pageHeight });
       const bitmapStartedAt = drawingPerfNow();
       canvas.width = renderCanvas.width;
       canvas.height = renderCanvas.height;
       const context = canvas.getContext('2d');
       context.clearRect(0, 0, canvas.width, canvas.height);
       context.drawImage(renderCanvas, 0, 0);
+      let sampledPixel = null;
+      try {
+        sampledPixel = Array.from(context.getImageData(10, 10, 1, 1).data);
+      } catch (error) {
+        sampledPixel = { error: error?.message || String(error) };
+      }
+      console.info('[pdf-trace]', 'paintDrawingPage canvas sample after render', {
+        file: 'src/app.js',
+        function: 'paintDrawingPage',
+        line: 2484,
+        pageNumber: sheet.pageNumber,
+        rgba: sampledPixel,
+        displayCanvasWidth: canvas.width || 0,
+        displayCanvasHeight: canvas.height || 0,
+        renderCanvasWidth: renderCanvas.width || 0,
+        renderCanvasHeight: renderCanvas.height || 0,
+        sameCanvasObject: renderCanvas === canvas,
+        canvasConnected: canvas.isConnected,
+        renderCanvasConnected: renderCanvas?.isConnected ?? false
+      });
+      tracePdfStage('Stage 13 canvas inserted into DOM', { width: canvas.width, height: canvas.height, pageNumber: sheet.pageNumber });
       canvas.dataset.drawingDocument = source.documentId;
       canvas.dataset.drawingSet = drawingTarget?.drawingSetId || '';
       canvas.dataset.drawingPage = String(sheet.pageNumber);
@@ -2425,6 +2550,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       activeDrawingRenderIdentity = nextIdentity;
       clearCurrentLoading();
       stage.querySelector('.mc-drawing-render-error')?.remove();
+      updateMissionRenderState(RenderState.CANVAS_PRESENTED, { sheet, canvasWidth: canvas.width, canvasHeight: canvas.height, viewportWidth: boundedScale * sheet.pageWidth, viewportHeight: boundedScale * sheet.pageHeight });
       drawingPdfRenderCount += 1;
       drawingTraceSlowOperation('PDF render', renderStartedAt, { renderCount: drawingPdfRenderCount, documentId: source.documentId, pageNumber: sheet.pageNumber, cacheKey });
       drawingTraceSlowOperation('page bitmap creation', bitmapStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber, width: canvas.width, height: canvas.height });
@@ -2435,7 +2561,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
     stage.scrollTop = restored.scrollTop || 0;
     drawingViewerEngine.restoreViewport(sheet.pageNumber, { ...restored, zoom: drawingZoom, rotation: drawingRotation, selectedObservationId: observation?.observationId || restored.selectedObservationId, highlightedRegion: observation?.region || restored.highlightedRegion });
     logger.debug('Drawing viewer performance', { operation: 'viewport-restore', durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - viewportRestoreStartedAt), pageNumber: sheet.pageNumber, mode: restored.mode });
-    if (!deferEnhancements) {
+    if (!deferEnhancements && !drawingSafeMode) {
       let scrollFrame = 0;
       if (!drawingInteractionTrace.id) startDrawingInteractionTrace('stage-scroll', { pageNumber: sheet.pageNumber });
       drawingInteractionSession.updateContext({ stage, sheet, observation, overlayRecords, shell });
@@ -2491,16 +2617,17 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       stage.onkeydown = event => {
         if (event.key === '0') { event.preventDefault(); stage.closest('.mc-drawing-viewer')?.querySelector('[data-drawing-reset-view]')?.click(); }
       };
-      updateDrawingOverlays(stage, sheet, observation, overlayRecords);
+      if (!drawingSafeMode) updateDrawingOverlays(stage, sheet, observation, overlayRecords);
     }
     drawingTraceSlowOperation('workspace render', paintStartedAt, { documentId: source.documentId, pageNumber: sheet.pageNumber });
-    if (!deferEnhancements) {
+    if (!deferEnhancements && !drawingSafeMode) {
       const activeCard = stage.closest('.mc-drawing-workspace')?.querySelector(`[data-drawing-page-id="${CSS.escape(sheet.pageId || '')}"]`);
       if (!preserveSidebarScroll) activeCard?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
       if (globalThis.__MC_DEV_ASSERTIONS__) assertDrawingPageConsistency({ selectedPage: drawingViewerEngine.snapshot().selectedPage, renderedPage: Number(canvas.dataset.drawingPage), targetPage: drawingTarget?.pageNumber, toolbarPage: sheet.pageNumber, activePage: Number(activeCard?.dataset.drawingPageNumber) });
-      if (globalThis.ResizeObserver && activeDrawingResizeStage !== stage) {
+      if (!drawingSafeMode && globalThis.ResizeObserver && activeDrawingResizeStage !== stage) {
         activeDrawingResizeObserver?.disconnect();
         activeDrawingResizeObserver = new ResizeObserver(() => {
+          console.info('[pdf-trace]', 'ResizeObserver fired', { file: 'src/app.js', function: 'paintDrawingPage', line: 2504, pageNumber: sheet.pageNumber });
           if (!drawingResizeRenderIsCurrent({ observedStage: stage, activeStage: activeDrawingResizeStage, observedPage: sheet.pageNumber, selectedPage: drawingTarget?.pageNumber })) return;
           const current = { ...defaultDrawingViewport(), ...drawingViewerEngine.getViewport(sheet.pageNumber) };
           if (current.mode === 'fit-page' || current.mode === 'fit-width') void paintDrawingPage(source, sheet, observation, overlayRecords, { preserveSidebarScroll: true, shell, requestToken });
@@ -2512,6 +2639,14 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
     markFirstPaint();
     reportDrawingMemorySnapshot('alloc-stage', { phase: 'paintDrawingPage:end', pageNumber: sheet?.pageNumber || 0 });
   } catch (error) {
+    console.error('[pdf-trace]', 'paintDrawingPage failed', {
+      file: 'src/app.js',
+      function: 'paintDrawingPage',
+      line: 2541,
+      pageNumber: sheet?.pageNumber || 0,
+      message: error?.message || String(error),
+      stack: error?.stack || null
+    });
     clearCurrentLoading();
     if (requestToken && requestToken !== drawingPagePaintRequest) return;
     if (drawingTarget?.documentId !== source.documentId || drawingTarget?.pageNumber !== sheet.pageNumber) return;
@@ -2520,6 +2655,7 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
     drawingPageRenderFailureKeys.add(failureKey);
     stage.classList.remove('is-loading');
     stage.querySelector('.mc-drawing-render-error')?.remove();
+    updateMissionRenderState(RenderState.FAILED, { sheet, lastError: error?.message || String(error), lastCleanupReason: 'render failure' });
     canvas.insertAdjacentHTML('afterend', `<div class="mc-drawing-render-error" role="status"><strong>Drawing page could not be updated.</strong><p>${esc(error.message)}</p><small>The previously rendered sheet remains available when possible.</small></div>`);
   }
 }
@@ -3189,6 +3325,9 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   }
   // compatibility marker for viewer tests: await paintDrawingPage(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), overlayRecords, { preserveSidebarScroll: true, shell, requestToken: workspaceRenderRequest });
   if (source && sheet) await renderDrawingFirstPaint(source, sheet, effectiveObservation || (effectiveRegion ? { observationId: drawingTarget?.observationId || '', region: effectiveRegion, kind: 'positioned-pdf-text', value: 'Selected region', verification: { status: 'Unreviewed' } } : null), { preserveSidebarScroll: true, shell, requestToken: workspaceRenderRequest });
+  if (drawingSafeMode) {
+    return;
+  }
   scheduleDrawingHydration({
     generationId: drawingWorkspaceRenderRequest,
     sheetId: sheet?.sheetId || '',
@@ -3768,6 +3907,39 @@ app.addEventListener('click', async event => {
     startDrawingInteractionTrace(traceKind, { buttonText: (button.textContent || '').trim().slice(0, 120) });
   }
   const shell = experience === 'mission-control' ? 'mission-control' : 'professional';
+  if (drawingSafeMode && (
+    button.hasAttribute('data-coverage-review-open') ||
+    button.hasAttribute('data-coverage-review-close') ||
+    button.hasAttribute('data-drawing-ask') ||
+    button.hasAttribute('data-drawing-current-work') ||
+    button.hasAttribute('data-drawing-inspection') ||
+    button.hasAttribute('data-drawing-edit-metadata') ||
+    button.hasAttribute('data-drawing-source') ||
+    button.hasAttribute('data-drawing-reanalyze') ||
+    button.hasAttribute('data-drawing-analyze-page') ||
+    button.hasAttribute('data-project-object-create') ||
+    button.hasAttribute('data-project-object-confirm') ||
+    button.hasAttribute('data-project-object-reject') ||
+    button.hasAttribute('data-project-object-edit') ||
+    button.hasAttribute('data-project-object-alias') ||
+    button.hasAttribute('data-project-object-adjust-region') ||
+    button.hasAttribute('data-project-object-history') ||
+    button.hasAttribute('data-project-object-merge') ||
+    button.hasAttribute('data-project-object-keep-separate') ||
+    button.hasAttribute('data-project-object-split') ||
+    button.hasAttribute('data-drawing-open-spec') ||
+    button.hasAttribute('data-drawing-confirm-spec') ||
+    button.hasAttribute('data-drawing-reject-spec') ||
+    button.dataset.drawingRecoveryAction ||
+    button.dataset.projectRelationshipConfirm ||
+    button.dataset.projectRelationshipReject ||
+    button.dataset.projectRelationshipOpen ||
+    button.dataset.projectRelationshipLink ||
+    button.dataset.drawingObservation ||
+    button.dataset.drawingVerify ||
+    button.dataset.drawingOccurrence ||
+    button.dataset.drawingVerifyOccurrence
+  )) return;
   if(button.hasAttribute('data-chief-dock-close')){chiefDrawingDock.close();const dock=button.closest('.mc-chief-drawing-dock');if(dock)dock.hidden=true;return;}
   if(button.hasAttribute('data-chief-dock-collapse')){const next=chiefDrawingDock.state().collapsed?chiefDrawingDock.expand():chiefDrawingDock.collapse();const dock=button.closest('.mc-chief-drawing-dock');if(dock){dock.classList.toggle('collapsed',next.collapsed);button.textContent=next.collapsed?'Expand':'Collapse';for(const child of [...dock.children].slice(1))child.hidden=next.collapsed;}return;}
   if(button.dataset.chiefCardAction){let target={};try{target=JSON.parse(button.dataset.chiefCardTarget||'{}');}catch{}const result=await drawingActionRouter.execute(button.dataset.chiefCardAction,target,{executionToken:`card:${event.timeStamp}`});if(!result.ok){button.insertAdjacentHTML('afterend','<small class="mc-chief-action-error">That drawing action is no longer available.</small>');}return;}
