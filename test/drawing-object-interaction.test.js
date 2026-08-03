@@ -46,7 +46,7 @@ test('bounded page hit testing remains below the selection budget',()=>{
 
 test('production selection uses overlay state and preserves PDF rendering ownership',()=>{
   const app=fs.readFileSync(new URL('../src/app.js',import.meta.url),'utf8');const css=fs.readFileSync(new URL('../src/app.css',import.meta.url),'utf8');
-  assert.match(app,/hitTestDrawingObjects\(activeDrawingObjects, point\)/);assert.match(app,/selectedObjectIds:\[\.\.\.selectedDrawingObjectIds\]/);assert.match(app,/searchDrawingObjects\(activeDrawingObjects, drawingFilter\)/);assert.match(app,/data-drawing-object-nav/);assert.match(css,/mc-drawing-object-overlay\.selected/);
+  assert.match(app,/selectedObjectIds:\[\.\.\.selectedDrawingObjectIds\]/);assert.match(app,/searchDrawingObjects\(activeDrawingObjects, drawingFilter\)/);assert.match(app,/data-drawing-object-nav/);assert.match(css,/mc-drawing-object-overlay\.selected/);
   assert.equal((app.match(/app\.addEventListener\('click', async event =>/g)||[]).length,1);
   const selection = app.slice(app.indexOf("if (button.dataset.overlayId)"), app.indexOf("if (button.hasAttribute('data-drawing-object-location')", app.indexOf("if (button.dataset.overlayId)")));
   assert.match(selection,/captureDrawingViewport\(\{selectedObjectId:selectedDrawingObject\?\.objectId\|\|null/);

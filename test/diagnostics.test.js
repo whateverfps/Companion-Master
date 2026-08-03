@@ -24,7 +24,7 @@ test('diagnostics are disabled by default and do not persist or console-log', as
     const { logger } = await import(`${diagnosticsUrl}?t=${Date.now()}`);
     logger.debug('sheet-change', { pageId: '61G-000' });
     assert.equal(writes.length, 0);
-    assert.equal(logger.list().length, 1);
+    assert.equal(logger.list().length, 0);
   } finally {
     globalThis.localStorage = originalLocalStorage;
     globalThis.__MC_DIAGNOSTICS_ENABLED = originalDiagnosticsEnabled;

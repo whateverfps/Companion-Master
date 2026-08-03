@@ -5,10 +5,9 @@ import { readFileSync } from 'node:fs';
 const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 
 test('drawing page paint receives shell explicitly and does not depend on Electron shell APIs', () => {
-  assert.match(app, /async function paintDrawingPage\(source, sheet, observation, overlayRecords = \[\], \{ preserveSidebarScroll = false, shell = 'professional', requestToken = 0 \} = \{\}\)/);
-  assert.match(app, /await paintDrawingPage\(source, sheet, observation \|\| null, \[\], \{ preserveSidebarScroll: !scrollActiveCard, shell, requestToken \}\)/);
-  assert.match(app, /await paintDrawingPage\(source, sheet, effectiveObservation .* shell, requestToken: workspaceRenderRequest \}\)/s);
-  assert.match(app, /void paintDrawingPage\(source, sheet, observation, overlayRecords, \{ preserveSidebarScroll: true, shell, requestToken \}\)/);
+  assert.match(app, /async function renderDrawingFirstPaint\(source, sheet, observation/);
+  assert.match(app, /function scheduleDrawingHydration\(/);
+  assert.match(app, /globalThis\.__mcDrawingFirstPaint = paintDrawingPage;/);
   assert.doesNotMatch(app, /from ['"]electron['"]/);
 });
 
@@ -24,5 +23,6 @@ test('drawing page failure is handled once and does not recurse into workspace r
   const failureBlock = failureBlockEnd > failureBlockStart ? app.slice(failureBlockStart, failureBlockEnd) : app.slice(failureBlockStart);
   assert.doesNotMatch(failureBlock, /renderDrawingWorkspace\(/);
   assert.doesNotMatch(failureBlock, /renderDrawingWorkspaceWithProviders\(/);
-  assert.doesNotMatch(failureBlock, /paintDrawingPage\(/);
+  assert.match(failureBlock, /stage\.classList\.remove\('is-loading'\);/);
+  assert.match(failureBlock, /canvas\.insertAdjacentHTML\('afterend'/);
 });

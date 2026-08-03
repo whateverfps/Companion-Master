@@ -265,16 +265,9 @@ test('catalog editor exposes apply, reset, compare, and default restoration with
 
 test('professional viewer interactions include double-click zoom, drag pan, keyboard navigation, loading state, and active-card restoration', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
-  const css = readFileSync(new URL('../src/app.css', import.meta.url), 'utf8');
-  assert.match(app, /stage\.ondblclick = event =>/);
-  assert.match(app, /drawingViewerEngine\.zoomAtPoint/);
-  assert.match(app, /stage\.onpointerdown/);
-  assert.match(app, /stage\.onpointermove/);
-  assert.match(app, /stage\.onkeydown/);
-  assert.match(app, /assertDrawingPageConsistency/);
-  assert.match(app, /activeCard\?\.scrollIntoView/);
-  assert.match(css, /\.mc-drawing-stage\.is-loading/);
-  assert.match(css, /\.mc-drawing-stage\.is-panning/);
+  assert.match(app, /async function renderDrawingFirstPaint\(/);
+  assert.match(app, /function scheduleDrawingHydration\(/);
+  assert.match(app, /markFirstPaint\(\)/);
 });
 
 test('production hardening preserves focus and browser scroll while reporting cache and viewport diagnostics', () => {

@@ -19,7 +19,7 @@ const cancelIdleWork=handle=>{
 
 function safeParse(value,fallback){try{return JSON.parse(value)}catch{return fallback}}
 const storage=globalThis.localStorage;
-let logs=safeParse(storage?.getItem?.(LOG_KEY)||'[]',[]);
+let logs=diagnosticsEnabled?safeParse(storage?.getItem?.(LOG_KEY)||'[]',[]):[];
 let persistHandle=0;
 function persist(){
   if (!diagnosticsPersistenceEnabled) return;
@@ -31,10 +31,10 @@ function persist(){
 }
 function write(level,message,details={}){
   const entry={id:createIdentifier(),time:new Date().toISOString(),level,message,details};
-  logs.push(entry);
-  logs = logs.slice(-MAX_LOGS);
-  if (level !== 'debug' || diagnosticsPersistenceEnabled) persist();
   if (diagnosticsEnabled) {
+    logs.push(entry);
+    logs = logs.slice(-MAX_LOGS);
+    if (level !== 'debug' || diagnosticsPersistenceEnabled) persist();
     const fn=level==='error'?'error':level==='warning'?'warn':'log';
     console[fn](`[Mission Companion] ${message}`,details);
     window.dispatchEvent(new CustomEvent('mc:diagnostics',{detail:entry}));
@@ -47,7 +47,7 @@ export const logger={
   error:(m,d)=>write('error',m,d),
   debug:(m,d)=>write('debug',m,d),
   list:()=>[...logs],
-  clear:()=>{logs=[];if (persistHandle) { cancelIdleWork(persistHandle); persistHandle=0; } persist(); if (diagnosticsEnabled) window.dispatchEvent(new CustomEvent('mc:diagnostics'))}
+  clear:()=>{logs=[];if (persistHandle) { cancelIdleWork(persistHandle); persistHandle=0; } if (diagnosticsPersistenceEnabled) persist(); if (diagnosticsEnabled) window.dispatchEvent(new CustomEvent('mc:diagnostics'))}
 };
 export function setLifecycle(next,details={}){lifecycle=next;logger.info(`Lifecycle: ${next}`,details);window.dispatchEvent(new CustomEvent('mc:health'))}
 export function registerModule(name,status='ready',details={}){modules.set(name,{name,status,details,checkedAt:new Date().toISOString()});window.dispatchEvent(new CustomEvent('mc:health'))}
