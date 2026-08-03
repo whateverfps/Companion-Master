@@ -49,8 +49,9 @@ test('View Source Page opens one exact specification page without a page model',
 
 test('a second page reuses the same isolated proxy handle', async () => {
   const { viewer, proxies, rendered } = harness();
-  await viewer.open({ document: { ...specification, contentHash: 'spec-v1' }, sourceBlob: new Blob(['one'], { type: 'application/pdf' }), pageNumber: 10, canvas: canvas() });
-  await viewer.open({ document: { ...specification, contentHash: 'spec-v1' }, sourceBlob: new Blob(['two'], { type: 'application/pdf' }), pageNumber: 11, canvas: canvas() });
+  const isolatedDocument = { ...specification, id: 'spec-reuse-handle', contentHash: 'spec-v1' };
+  await viewer.open({ document: isolatedDocument, sourceBlob: new Blob(['one'], { type: 'application/pdf' }), pageNumber: 10, canvas: canvas() });
+  await viewer.open({ document: isolatedDocument, sourceBlob: new Blob(['two'], { type: 'application/pdf' }), pageNumber: 11, canvas: canvas() });
   assert.deepEqual(rendered, [10, 11]);
   assert.equal(proxies.length, 1);
   assert.equal(viewer.diagnostics().specificationSourcePage, 11);

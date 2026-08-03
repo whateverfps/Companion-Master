@@ -300,6 +300,7 @@ let drawingPanelRefreshRequest = 0;
 let drawingDeferredWorkspaceRefresh = null;
 let drawingSearchRefreshTimer = 0;
 let drawingSelectionActiveSheetId = '';
+let drawingRecentSheets = [];
 const drawingOverlayNodeCache = new WeakMap();
 let drawingRenderGeneration = 0;
 let portableDrawingCanvas = null;
@@ -2342,47 +2343,64 @@ function constructionIntelligencePanelMarkup(model) {
   const group = (key, title, content, { force = false } = {}) => !force && !content ? '' : `<details class="mc-ci-group" data-ci-group="${esc(key)}" ${constructionIntelligenceExpanded.has(key) ? 'open' : ''}><summary><span>${esc(title)}</span><span aria-hidden="true">⌄</span></summary><div class="mc-ci-group-body">${content || '<p>No governing specification has been confirmed.</p>'}</div></details>`;
   const recordList = items => `<ul class="mc-ci-record-list">${items.map(item => `<li><strong>${esc(item.label)}</strong>${item.relationship ? `<span class="mc-ci-badge">${esc(item.relationship.verificationState)}</span>` : ''}${item.target ? `<button data-project-relationship-open="${esc(item.relationship.relationshipId)}">Open</button>` : ''}</li>`).join('')}</ul>`;
   const relationshipGroups = groups => Object.entries(groups || {}).filter(([, items]) => items?.length).map(([title, items]) => `<div class="mc-ci-subgroup"><h5>${esc(title.replace(/([A-Z])/g, ' $1'))}</h5>${recordList(items)}</div>`).join('');
-  const specificationCards = items => `<ol class="mc-ci-specifications">${items.map(item => `<li><div><strong>${esc(item.sectionNumber)}</strong><span>${esc(item.sectionTitle)}</span></div><div class="mc-ci-spec-meta"><span class="mc-ci-badge ${esc(item.displayStatus)}">${esc(item.displayStatus)}</span><span>${Math.round((Number(item.confidence) || 0) * 100)}% confidence</span><span>${fmt(item.evidenceCount)} evidence</span></div>${item.evidenceText ? `<div class="mc-ci-evidence"><strong>${esc(item.evidenceSource || 'Drawing evidence')}</strong><p>${esc(item.evidenceText)}</p></div>` : ''}<div class="mc-ci-actions">${item.canShowSource ? `<button data-object-spec-source="${esc(item.specificationDocumentId)}" data-object-spec-page="${item.sourcePageNumber}" data-object-spec-section="${esc(item.sectionNumber)}">Open Source</button>` : ''}${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject</button>` : ''}</div></li>`).join('')}</ol>`;
+  const specificationCards = items => `<ol class="mc-ci-specifications">${items.map(item => `<li><div><strong>${esc(item.sectionNumber)}</strong><span>${esc(item.sectionTitle)}</span></div><div class="mc-ci-spec-meta"><span class="mc-ci-badge ${esc(item.displayStatus)}">${esc(item.displayStatus)}</span><span>${Math.round((Number(item.confidence) || 0) * 100)}% confidence</span><span>${fmt(item.evidenceCount)} evidence</span></div>${item.evidenceText ? `<div class="mc-ci-evidence"><strong>${esc(item.evidenceSource || 'Drawing evidence')}</strong><p>${esc(item.evidenceText)}</p></div>` : ''}<div class="mc-ci-actions">${item.canShowSource ? `<button data-object-spec-source="${esc(item.specificationDocumentId)}" data-object-spec-page="${item.sourcePageNumber}" data-object-spec-section="${esc(item.sectionNumber)}">View Source</button>` : ''}${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject</button>` : ''}</div></li>`).join('')}</ol>`;
   const fieldWork = groups => groups.map(group => `<div class="mc-ci-work-phase"><h5>${esc(group.phase)}</h5><ul>${group.items.map(item => `<li><span aria-hidden="true">□</span><div><strong>${esc(item.label)}</strong><small>${esc(item.sectionNumber)} · ${esc(item.sectionTitle)}</small></div></li>`).join('')}</ul></div>`).join('');
+  const compactFacts = items => `<dl class="mc-ci-facts">${items.filter(([, value]) => value !== null && value !== undefined && value !== '').map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>`;
+  const compactList = (items, { empty = '', title = '', detail = item => item.detail || item.reason || item.evidenceText || item.verificationState || '', label = item => item.label || item.title || item.sectionNumber || item.value || item.name || item.identifier || item.referenceNumber || item.reference || 'Item' } = {}) => items?.length ? `${title ? `<h5>${esc(title)}</h5>` : ''}<ul class="mc-ci-record-list">${items.map(item => `<li><strong>${esc(label(item))}</strong>${detail(item) ? `<span>${esc(detail(item))}</span>` : ''}${item.relationship ? `<span class="mc-ci-badge">${esc(item.relationship.verificationState)}</span>` : ''}${item.target ? `<button data-project-relationship-open="${esc(item.relationship.relationshipId)}">Open</button>` : ''}</li>`).join('')}</ul>` : empty;
+  const countGrid = items => items?.length ? `<div class="mc-ci-counts">${items.map(([label, count]) => `<div><strong>${fmt(count)}</strong><span>${esc(label)}</span></div>`).join('')}</div>` : '';
   if (model.status === 'loading') {
     const page = model.page || {};
     const object = model.object || {};
     const label = model.mode === 'object' ? esc(object.name || 'Selected object') : esc(page.sheet || 'Selected drawing page');
     const detail = model.mode === 'object' ? esc(object.location || '') : `${esc(page.sheet || '')}${page.sheetTitle ? ` · ${esc(page.sheetTitle)}` : ''}`;
-    return `<div class="mc-construction-intelligence" data-panel-mode="${esc(model.mode || 'page')}" data-intelligence-status="loading"><header><span>CONSTRUCTION WORKSPACE</span><h3>${model.mode === 'object' ? 'Selected Object' : 'Construction Overview'}</h3><p>${detail || label}</p>${loading}</header></div>`;
+    return `<div class="mc-construction-intelligence" data-panel-mode="${esc(model.mode || 'page')}" data-intelligence-status="loading"><header><span>CONSTRUCTION WORKSPACE</span><h3>${model.mode === 'object' ? 'Object Inspector' : 'Sheet Inspector'}</h3><p>${detail || label}</p>${loading}</header></div>`;
   }
   if (model.mode === 'page') {
     const page = model.page;
     const counts = Object.entries(page.objectCounts || {});
     const specs = [...model.specifications.confirmed, ...model.specifications.suggested];
-    const current = `<dl><div><dt>Building</dt><dd>${esc(page.building || 'Not identified')}</dd></div><div><dt>Sheet Number</dt><dd>${esc(page.sheet)}</dd></div>${page.sheetTitle ? `<div><dt>Sheet Title</dt><dd>${esc(page.sheetTitle)}</dd></div>` : ''}<div><dt>Discipline</dt><dd>${esc(page.discipline)}</dd></div><div><dt>Trade</dt><dd>${esc(page.activeTrade)}</dd></div><div><dt>Current Status</dt><dd>${esc(page.pageStatus)}</dd></div></dl>`;
-    const drawingContent = `${page.drawingNotes.length ? `<div class="mc-ci-subgroup"><h5>Drawing Notes</h5><ul>${page.drawingNotes.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>` : ''}${counts.length ? `<div class="mc-ci-counts">${counts.map(([label, count]) => `<div><strong>${fmt(count)}</strong><span>${esc(label)}</span></div>`).join('')}</div>` : ''}`;
-    const summary = `${current}${model.constructionSummary.governedWork.length ? `<div class="mc-ci-subgroup"><h5>This sheet governs</h5><ul>${model.constructionSummary.governedWork.map(item => `<li>${esc(item)}</li>`).join('')}</ul></div>` : ''}${drawingContent}`;
-    const chief = model.chiefRecommendation ? `<p class="mc-ci-chief-copy">${esc(model.chiefRecommendation.text)}</p>` : '';
-    return `<div class="mc-construction-intelligence" data-panel-mode="page" data-intelligence-status="${esc(model.status)}"><header><span>CONSTRUCTION WORKSPACE</span><h3>Construction Overview</h3><p>${esc(page.sheet)} · ${esc(page.sheetTitle || page.discipline)}</p>${degraded}</header>
-      ${group('construction-summary', 'Construction Summary', summary, { force: true })}
-      ${group('chief-recommendation', 'Chief Summary', chief)}
+    const metadata = compactFacts([
+      ['Building', page.building || 'Not identified'],
+      ['Drawing set', page.drawingSet || page.drawing || 'Not identified'],
+      ['Sheet number', page.sheet],
+      ['Sheet title', page.sheetTitle],
+      ['Discipline', page.discipline],
+      ['Drawing type', page.drawingType],
+      ['PDF page', page.pdfPage ? `Page ${page.pdfPage}` : 'Not available'],
+      ['Revision / issue', page.revision || page.issue || 'Not identified']
+    ]);
+    const evidence = `${countGrid([['Identified rooms', page.objectCounts?.room || 0], ...counts.filter(([label]) => label !== 'room')])}${compactList(page.schedules, { title: 'Schedules found' })}${compactList(page.legends, { title: 'Legends found' })}${compactList(page.keyedNotes, { title: 'Keyed notes found' })}${compactList(page.references, { title: 'Explicit references found' })}`;
+    const related = `${compactList(page.relatedDrawings, { title: 'Related drawings' })}${compactList(page.relatedDetails, { title: 'Related details' })}`;
+    const warnings = `${compactList(page.warnings, { title: 'Warnings' })}${compactList(page.unresolvedEvidence, { title: 'Unresolved evidence' })}`;
+    return `<div class="mc-construction-intelligence" data-panel-mode="page" data-intelligence-status="${esc(model.status)}"><header><span>CONSTRUCTION WORKSPACE</span><h3>Sheet Inspector</h3><p>${esc(page.sheet)} · ${esc(page.sheetTitle || page.discipline)}</p>${degraded}</header>
+      ${group('sheet-metadata', 'Sheet Metadata', metadata, { force: true })}
+      ${group('sheet-evidence', 'Sheet Evidence', evidence, { force: true })}
       ${group('specifications', 'Governing Requirements', specs.length ? specificationCards(specs) : '', { force: true })}
-      ${group('field-requirements', 'Field Requirements', fieldWork(model.fieldWork))}
-      ${group('project-information', 'Project Status', relationshipGroups(model.projectInformation))}
-      ${group('related-drawings', 'Related Drawings', model.relatedDrawings.length ? recordList(model.relatedDrawings) : '')}
+      ${group('related-drawings', 'Related Drawings and Details', related)}
+      ${group('warnings', 'Warnings and Unresolved Evidence', warnings)}
       ${model.diagnostics.length ? `<details class="mc-ci-developer" data-ci-group="developer-diagnostics" hidden><summary>Developer Diagnostics</summary></details>` : ''}</div>`;
   }
   const object = model.object;
   const specs = [...model.specifications.confirmed, ...model.specifications.suggested];
-  const objectHeader = `<div class="mc-ci-object-hero"><strong class="mc-ci-object-name">${esc(object.name)}</strong>${object.selectionCount > 1 ? `<span>${fmt(object.selectionCount)} selected</span>` : object.room ? `<span>Room ${esc(object.room)}</span>` : ''}<div><span class="mc-ci-badge ${esc(object.verificationState)}">${esc(object.statusLabel)}</span><strong>${Math.round(object.confidence * 100)}%</strong></div></div><dl><div><dt>Construction Type</dt><dd>${esc(object.type)}</dd></div>${object.trade ? `<div><dt>Trade</dt><dd>${esc(object.trade)}</dd></div>` : ''}${object.system ? `<div><dt>System</dt><dd>${esc(object.system)}</dd></div>` : ''}<div><dt>Location</dt><dd>${esc(object.location)}</dd></div><div><dt>Record ID</dt><dd>${esc(object.objectId)}</dd></div></dl><div class="mc-ci-actions">${object.hasLocation ? '<button data-drawing-object-location>Show Location</button>' : ''}${object.verificationState === 'candidate' ? '<button data-project-object-confirm>Confirm</button><button data-project-object-reject>Reject</button>' : ''}<button data-project-object-edit>Edit</button><button class="subtle" data-drawing-clear-object>Clear Selection</button></div>`;
-  const history = model.history.length ? `<ul>${model.history.map(item => `<li><strong>${esc(item.label)}</strong><span>${esc(item.value)}${item.note ? ` · ${esc(item.note)}` : ''}</span></li>`).join('')}</ul>` : '';
-  const projectStatus = relationshipGroups({ ...model.pmis, schedule: model.schedule, procurement: model.procurement });
-  const relatedInformation = relationshipGroups({ relatedDrawings: model.relatedDrawings, relatedWork: model.relatedObjects, ...model.documents });
-  const chief = model.chiefRecommendation ? `<p class="mc-ci-chief-copy">${esc(model.chiefRecommendation.text)}</p>` : '';
-  return `<div class="mc-construction-intelligence" data-panel-mode="object" data-intelligence-status="${esc(model.status)}" data-project-object-id="${esc(object.objectId)}" data-project-relationship-source="${esc(model.sourceEntityId)}"><header><span>CONSTRUCTION WORKSPACE</span><h3>${esc(object.name)}</h3><p>${object.room ? `Room ${esc(object.room)} · ` : ''}${esc(object.location)}</p>${degraded}</header>
-    ${group('construction-summary', 'Construction Summary', objectHeader, { force: true })}
-    ${group('chief-recommendation', 'Chief Recommendation', `${chief}<button data-project-object-ask-chief="${esc(object.objectId)}">Ask Chief</button>`)}
+  const objectHeader = compactFacts([
+    ['Object type', object.type],
+    ['Name', object.name],
+    ['Room / location', object.room || object.location],
+    ['Source sheet', object.sourceSheet],
+    ['Verification state', object.statusLabel],
+    ['Evidence source', object.evidenceSource],
+    ['Bounding region', object.regionSummary],
+    ['Selection count', object.selectionCount > 1 ? `${fmt(object.selectionCount)} selected` : '']
+  ]);
+  const evidence = `${compactList(object.schedules, { title: 'Related schedules' })}${compactList(object.legends, { title: 'Related legends' })}${compactList(object.keyedNotes, { title: 'Related keyed notes' })}${compactList(object.references, { title: 'Related details / callouts' })}${compactList(object.relatedDetails, { title: 'Related details / callouts' })}`;
+  const related = `${compactList(model.relatedDrawings, { title: 'Related drawings' })}${compactList(model.relatedObjects, { title: 'Related objects' })}${compactList(object.unresolvedRelationships, { title: 'Unresolved relationships' })}`;
+  const warnings = `${compactList(object.warnings, { title: 'Warnings' })}${compactList(object.unresolvedRelationships, { title: 'Unresolved relationships' })}`;
+  return `<div class="mc-construction-intelligence" data-panel-mode="object" data-intelligence-status="${esc(model.status)}" data-project-object-id="${esc(object.objectId)}" data-project-relationship-source="${esc(model.sourceEntityId)}"><header><span>CONSTRUCTION WORKSPACE</span><h3>Object Inspector</h3><p>${object.room ? `Room ${esc(object.room)} · ` : ''}${esc(object.sourceSheet)}</p>${degraded}</header>
+    ${group('object-metadata', 'Object Metadata', objectHeader, { force: true })}
+    ${group('object-evidence', 'Object Evidence', evidence)}
     ${group('specifications', 'Governing Requirements', specs.length ? specificationCards(specs) : '', { force: true })}
-    ${group('field-requirements', 'Field Requirements', fieldWork(model.fieldWork))}
-    ${group('project-status', 'Project Status', projectStatus)}
-    ${group('related-information', 'Related Information', relatedInformation)}
-    ${group('history', 'History', history)}
+    ${group('object-relationships', 'Related Objects and Relationships', related)}
+    ${group('warnings', 'Warnings and Unresolved Relationships', warnings)}
     ${model.diagnostics.length ? `<details class="mc-ci-developer" data-ci-group="developer-diagnostics" hidden><summary>Developer Diagnostics</summary></details>` : ''}</div>`;
 }
 
@@ -2391,11 +2409,24 @@ function constructionIntelligencePanelSignature(model = {}) {
     ? {
       mode: model.mode,
       status: model.status,
+      drawingSet: model.page?.drawingSet || '',
       sheet: model.page?.sheet || '',
       sheetTitle: model.page?.sheetTitle || '',
+      drawingType: model.page?.drawingType || '',
+      pdfPage: model.page?.pdfPage || 0,
+      revision: model.page?.revision || '',
+      issue: model.page?.issue || '',
       pageStatus: model.page?.pageStatus || '',
       drawingNotes: model.page?.drawingNotes?.length || 0,
       objectCounts: model.page?.objectCounts || {},
+      schedules: model.page?.schedules?.length || 0,
+      legends: model.page?.legends?.length || 0,
+      keyedNotes: model.page?.keyedNotes?.length || 0,
+      references: model.page?.references?.length || 0,
+      relatedDrawings: model.page?.relatedDrawings?.length || 0,
+      relatedDetails: model.page?.relatedDetails?.length || 0,
+      warnings: model.page?.warnings?.length || 0,
+      unresolvedEvidence: model.page?.unresolvedEvidence?.length || 0,
       governedWork: model.constructionSummary?.governedWork || [],
       specCounts: [model.specifications?.confirmed?.length || 0, model.specifications?.suggested?.length || 0],
       fieldRequirements: model.fieldRequirements?.length || 0,
@@ -2413,12 +2444,22 @@ function constructionIntelligencePanelSignature(model = {}) {
       verificationState: model.object?.verificationState || '',
       statusLabel: model.object?.statusLabel || '',
       location: model.object?.location || '',
+      sourceSheet: model.object?.sourceSheet || '',
+      evidenceSource: model.object?.evidenceSource || '',
+      regionSummary: model.object?.regionSummary || '',
       confidence: model.object?.confidence || 0,
       selectionCount: model.object?.selectionCount || 1,
       hasLocation: Boolean(model.object?.hasLocation),
       hasPossibleDuplicates: Boolean(model.object?.hasPossibleDuplicates),
       hasMergedObjects: Boolean(model.object?.hasMergedObjects),
       canLinkSpecification: Boolean(model.object?.canLinkSpecification),
+      schedules: model.object?.schedules?.length || 0,
+      legends: model.object?.legends?.length || 0,
+      keyedNotes: model.object?.keyedNotes?.length || 0,
+      references: model.object?.references?.length || 0,
+      relatedDetails: model.object?.relatedDetails?.length || 0,
+      warnings: model.object?.warnings?.length || 0,
+      unresolvedRelationships: model.object?.unresolvedRelationships?.length || 0,
       specCounts: [model.specifications?.confirmed?.length || 0, model.specifications?.suggested?.length || 0],
       fieldRequirements: model.fieldRequirements?.length || 0,
       fieldWork: model.fieldWork?.map(group => `${group.phase}:${group.items.length}`) || [],
@@ -2663,6 +2704,9 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const warningGroups = drawingWarningPresentation([...(sheet?.warnings || []).map(message => ({ type: 'sheet-warning', message })), ...(analysis?.warnings || [])]);
   const selectedResult = searchResults.find(result => result.sheetId === sheet?.sheetId);
   const selectionExplanation = analysis?.viewerFallback ? (sheet?.metadataAvailable ? 'Showing the retained PDF page with available drawing metadata.' : 'Showing the retained PDF page without drawing-analysis metadata.') : selectedResult?.matchedReason || (drawingTarget?.origin === 'plan-query' ? 'Chief selected this as the highest-ranked exact plan evidence.' : drawingTarget?.observationId ? 'Opened from an exact drawing observation.' : 'Selected from this drawing set.');
+  if (sheet?.sheetId) {
+    drawingRecentSheets = [sheet.sheetId, ...drawingRecentSheets.filter(item => item !== sheet.sheetId)].slice(0, 10);
+  }
   const sheetLegends = (analysis?.legends || []).filter(item => item.sheetId === sheet?.sheetId);
   const sheetSchedules = (analysis?.schedules || []).filter(item => item.sheetId === sheet?.sheetId);
   const sheetKeyedNotes = (analysis?.keyedNoteOccurrences || []).filter(item => item.sheetId === sheet?.sheetId);
@@ -2765,7 +2809,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const buildIntelligencePanel = requirements => buildConstructionIntelligencePanelModel({
     document: selected, sheet, trade: activeTrade, selectedObject: selectedDrawingObject, pageObjects: activeDrawingObjects,
     pageStatus: analysis.viewerFallback && !analysis.metadataAvailable ? 'Manual PDF page viewing remains available.' : sheet?.identityStatus,
-    pageNotes: pageContext?.drawingNotes || [], relationshipGroups: activeRelationshipContext.groups,
+    pageNotes: pageContext?.drawingNotes || [], schedules: sheetSchedules, legends: sheetLegends, keyedNotes: sheetKeyedNotes, references: analysis?.references || [], relatedDetails: observations.filter(item => /detail|callout/i.test(item.kind)), unresolvedEvidence: sheetSpecificationLinks.filter(item => item.status !== 'confirmed'), relationshipGroups: activeRelationshipContext.groups,
     requirements: { ...requirements, confirmedSpecifications: (requirements.confirmedSpecifications || []).map(enrichSpecification), suggestedSpecifications: (requirements.suggestedSpecifications || []).map(enrichSpecification) }, specificationLinks: sheetSpecificationLinks.map(enrichSpecification),
     objectHistory: selectedDrawingObject ? containedConstructionIntelligence('object-history', [], () => projectObjectRegistry.getObjectHistory(selectedDrawingObject.objectId), { pageId: sheet?.pageId || '', objectId: selectedDrawingObject.objectId }) : [], viewportContext: activeViewportContext,
     sourceEntityId: activeRelationshipContext.sourceEntityId, hasPossibleDuplicates: selectedDrawingObject ? containedConstructionIntelligence('object-duplicates', [], () => projectObjectRegistry.possibleDuplicates(selectedDrawingObject.objectId), { pageId: sheet?.pageId || '', objectId: selectedDrawingObject.objectId }).length > 0 : false,
@@ -3457,11 +3501,11 @@ app.addEventListener('click', async event => {
     if (target) { drawingWorkspace.open(target); drawingTarget = createDrawingTarget(target); await renderDrawingWorkspace(shell); }
     return;
   }
-  if (button.dataset.drawingObjectNav) { const type={room:'room',equipment:'equipment',finish:'finish'}[button.dataset.drawingObjectNav]||''; const next=nextDrawingObject(activeDrawingObjects,selectedDrawingObject?.objectId||'',{direction:button.dataset.drawingObjectNav==='previous'?-1:1,type}); if(next){selectedDrawingObject=next;selectedDrawingObjectIds=[next.objectId];drawingObjectChoices=[];captureDrawingViewport({selectedObjectId:next.objectId,selectedObjectIds:[next.objectId],highlightedRegion:next.region,contextSource:'object-selection'});await repaintCurrentSheet({ preserveSidebarScroll: true });} return; }
+  if (button.dataset.drawingObjectNav) { const type={room:'room',equipment:'equipment',finish:'finish'}[button.dataset.drawingObjectNav]||''; const next=nextDrawingObject(activeDrawingObjects,selectedDrawingObject?.objectId||'',{direction:button.dataset.drawingObjectNav==='previous'?-1:1,type}); if(next){selectedDrawingObject=next;selectedDrawingObjectIds=[next.objectId];drawingObjectChoices=[];captureDrawingViewport({selectedObjectId:next.objectId,selectedObjectIds:[next.objectId],highlightedRegion:next.region,contextSource:'object-selection'});await renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional');} return; }
   if (button.hasAttribute('data-drawing-object-center') && validNormalizedRegion(selectedDrawingObject?.region)) { const stage=$('#mcDrawingStage'),canvas=stage?.querySelector('#mcDrawingCanvas'),region=selectedDrawingObject.region;if(stage&&canvas){stage.scrollLeft=Math.max(0,region.x*(canvas.clientWidth||canvas.width)-(stage.clientWidth/2));stage.scrollTop=Math.max(0,region.y*(canvas.clientHeight||canvas.height)-(stage.clientHeight/2));captureDrawingViewport({highlightedRegion:region,contextSource:'object-selection'});} return; }
-  if (button.dataset.overlayId) { const object=activeDrawingObjects.find(item => item.objectId === button.dataset.overlayId) || null; selectedDrawingObjectIds=object?updateDrawingObjectSelection(selectedDrawingObjectIds,object.objectId,{additive:event.shiftKey}):[];selectedDrawingObject=activeDrawingObjects.find(item=>item.objectId===selectedDrawingObjectIds.at(-1))||null; drawingObjectChoices = []; captureDrawingViewport({selectedObjectId:selectedDrawingObject?.objectId||null,selectedObjectIds:[...selectedDrawingObjectIds],highlightedRegion:selectedDrawingObject?.region||null,contextSource:selectedDrawingObject?'object-selection':'page-context'});await repaintCurrentSheet({ preserveSidebarScroll: true }); return; }
-  if (button.dataset.drawingSelectObject) { selectedDrawingObject = activeDrawingObjects.find(item => item.objectId === button.dataset.drawingSelectObject) || null; selectedDrawingObjectIds=selectedDrawingObject?[selectedDrawingObject.objectId]:[];drawingObjectChoices = []; captureDrawingViewport({selectedObjectId:selectedDrawingObject?.objectId||null,selectedObjectIds:[...selectedDrawingObjectIds],highlightedRegion:selectedDrawingObject?.region||null,contextSource:selectedDrawingObject?'object-selection':'page-context'});await repaintCurrentSheet({ preserveSidebarScroll: true }); return; }
-  if (button.hasAttribute('data-drawing-clear-object')) { selectedDrawingObject = null; selectedDrawingObjectIds=[]; drawingObjectChoices = []; const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber)); if (sheet) drawingViewportContextService.update({ projectId: drawingTarget?.projectId || activeDrawingViewerAnalysis?.projectId, documentId: drawingTarget?.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, selectedObjectId: null, selectedObjectIds:[], selectedRoomId: null, activeTradeChannel: drawingTradeContext.current().key, source: drawingTarget?.region ? 'manual-selection' : 'page-context' }, { immediate: true }); captureDrawingViewport({selectedObjectId:null,selectedObjectIds:[]});await repaintCurrentSheet({ preserveSidebarScroll: true }); return; }
+  if (button.dataset.overlayId) { const object=activeDrawingObjects.find(item => item.objectId === button.dataset.overlayId) || null; selectedDrawingObjectIds=object?updateDrawingObjectSelection(selectedDrawingObjectIds,object.objectId,{additive:event.shiftKey}):[];selectedDrawingObject=activeDrawingObjects.find(item=>item.objectId===selectedDrawingObjectIds.at(-1))||null; drawingObjectChoices = []; captureDrawingViewport({selectedObjectId:selectedDrawingObject?.objectId||null,selectedObjectIds:[...selectedDrawingObjectIds],highlightedRegion:selectedDrawingObject?.region||null,contextSource:selectedDrawingObject?'object-selection':'page-context'});await renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional'); return; }
+  if (button.dataset.drawingSelectObject) { selectedDrawingObject = activeDrawingObjects.find(item => item.objectId === button.dataset.drawingSelectObject) || null; selectedDrawingObjectIds=selectedDrawingObject?[selectedDrawingObject.objectId]:[];drawingObjectChoices = []; captureDrawingViewport({selectedObjectId:selectedDrawingObject?.objectId||null,selectedObjectIds:[...selectedDrawingObjectIds],highlightedRegion:selectedDrawingObject?.region||null,contextSource:selectedDrawingObject?'object-selection':'page-context'});await renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional'); return; }
+  if (button.hasAttribute('data-drawing-clear-object')) { selectedDrawingObject = null; selectedDrawingObjectIds=[]; drawingObjectChoices = []; const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber)); if (sheet) drawingViewportContextService.update({ projectId: drawingTarget?.projectId || activeDrawingViewerAnalysis?.projectId, documentId: drawingTarget?.documentId, pageId: sheet.pageId, pdfPageNumber: sheet.pageNumber, selectedObjectId: null, selectedObjectIds:[], selectedRoomId: null, activeTradeChannel: drawingTradeContext.current().key, source: drawingTarget?.region ? 'manual-selection' : 'page-context' }, { immediate: true }); captureDrawingViewport({selectedObjectId:null,selectedObjectIds:[]});await renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional'); return; }
   if (button.hasAttribute('data-drawing-object-location') && validNormalizedRegion(selectedDrawingObject?.region)) {
     const stage = $('#mcDrawingStage');
     const selectedSheet = activeDrawingViewerAnalysis?.sheets.find(item => item.pageNumber === drawingTarget?.pageNumber);

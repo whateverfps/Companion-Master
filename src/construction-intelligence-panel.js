@@ -89,6 +89,13 @@ function chiefRecommendation(object, specifications, insights) {
   return null;
 }
 
+function normalizedRegionSummary(region) {
+  if (!region || typeof region !== 'object') return '';
+  const values = ['x', 'y', 'width', 'height'].map(key => Number(region[key]));
+  if (!values.every(Number.isFinite)) return '';
+  return `x ${Math.round(values[0] * 100)}%, y ${Math.round(values[1] * 100)}%, w ${Math.round(values[2] * 100)}%, h ${Math.round(values[3] * 100)}%`;
+}
+
 export function buildConstructionIntelligencePanelModel(input = {}) {
   const sheet = input.sheet || {};
   const object = input.selectedObject || null;
@@ -107,18 +114,34 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
     const specifications = specificationRecords(input.requirements, input.specificationLinks, { mode: 'page' });
     const fieldRequirements = unique(Object.entries(input.requirements?.fieldRequirements || {}).flatMap(([category, items]) => list(items).map(item => ({ ...item, category }))), item => `${item.category}:${item.requirementId || item.sectionNumber}:${item.article?.id || ''}`);
     const pageInsights = relationshipRecords(input.relationshipGroups, ['chiefInsights', 'insights']);
+    const warnings = unique([...list(input.requirements?.warnings), ...list(input.requirements?.providerFailures)].map(item => ({ label: text(item?.message || item?.warning || item), detail: text(item?.code || item?.provider || '') })), item => `${item.label}:${item.detail}`);
+    const unresolvedEvidence = unique([...specifications.filter(item => item.status === 'suggested').map(item => ({ label: item.sectionNumber, detail: item.sectionTitle || item.evidenceText || '' })), ...list(input.unresolvedEvidence)], item => `${item.label}:${item.detail}`);
     return {
       mode: 'page',
       status: intelligenceStatus,
       page: {
         drawing: text(input.document?.title || input.document?.name),
+        drawingSet: text(input.document?.title || input.document?.name || input.document?.id),
         sheet: text(sheet.sheetNumber) || `Page ${Number(sheet.pageNumber) || 1}`,
-        sheetTitle: text(sheet.sheetTitle), building: text(sheet.building),
+        sheetTitle: text(sheet.sheetTitle),
+        building: text(sheet.building),
         discipline: text(sheet.discipline) || 'Unknown',
+        drawingType: text(sheet.primarySheetType || list(sheet.sheetTypes)[0] || 'Unknown'),
+        pdfPage: Number(sheet.pageNumber) || null,
+        revision: text(sheet.revision || sheet.issue || sheet.issueDate || input.document?.revision || input.document?.issueDate),
+        issue: text(sheet.issueNumber || sheet.issue || sheet.issueDate || input.document?.issueNumber || input.document?.issueDate),
         activeTrade: text(input.trade?.label) || 'All Trades',
         pageStatus: text(input.pageStatus || sheet.identityStatus || (sheet.metadataAvailable ? 'Partial metadata' : 'Fallback')),
         drawingNotes: unique(list(input.pageNotes).map(item => text(item.label || item.value || item.text)).filter(Boolean), item => item),
-        objectCounts: counts
+        objectCounts: counts,
+        schedules: unique(list(input.schedules), item => `${text(item.sheetId)}:${text(item.scheduleId || item.scheduleOccurrenceId || item.identifier || item.sectionNumber || item.label || item.value)}`),
+        legends: unique(list(input.legends), item => `${text(item.sheetId)}:${text(item.legendId || item.legendOccurrenceId || item.identifier || item.label || item.title || item.value)}`),
+        keyedNotes: unique(list(input.keyedNotes), item => `${text(item.sheetId)}:${text(item.keyedNoteOccurrenceId || item.keyedNoteId || item.identifier || item.label)}`),
+        references: unique(list(input.references), item => `${text(item.referenceId || item.sheetId)}:${text(item.label || item.title || item.referenceNumber || item.value)}`),
+        relatedDrawings: relationshipRecords(input.relationshipGroups, ['relatedDrawings']),
+        relatedDetails: unique(list(input.relatedDetails), item => `${text(item.detailId || item.observationId || item.label || item.title)}`),
+        warnings,
+        unresolvedEvidence
       },
       specifications: { confirmed: specifications.filter(item => item.status === 'confirmed'), suggested: specifications.filter(item => item.status === 'suggested') },
       fieldRequirements,
@@ -153,16 +176,27 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
   const objectInsights = relationshipRecords(groups, ['chiefInsights', 'insights', 'recommendations']);
   const relatedDrawings = relationshipRecords(groups, ['relatedDrawings']);
   const relatedObjects = relationshipRecords(groups, ['relatedObjects', 'equipment', 'rooms']);
+  const warnings = unique([...list(input.requirements?.warnings), ...list(input.requirements?.providerFailures)].map(item => ({ label: text(item?.message || item?.warning || item), detail: text(item?.code || item?.provider || '') })), item => `${item.label}:${item.detail}`);
+  const unresolvedRelationships = unique([...relatedDrawings, ...relatedObjects, ...relationshipRecords(groups, ['scheduleActivities', 'activities', 'photos', 'documents', 'issues', 'risks', 'rfis', 'submittals'])].filter(item => item.relationship?.verificationState !== 'confirmed'), item => item.relationship?.relationshipId || item.entity?.entityId || item.label);
   return {
     mode: 'object',
     status: intelligenceStatus,
     object: {
       name: text(object.label || object.tag), type: text(object.type || object.objectType), objectId: text(object.objectId),
+      sourceSheet: text(sheet.sheetNumber) || `Page ${Number(sheet.pageNumber) || 1}`,
       location: text(sheet.sheetNumber) || `Page ${Number(sheet.pageNumber) || 1}`,
-      building: text(object.buildingId || sheet.building), room: text(object.roomId), trade: text(object.trade), system: text(object.system),
+      building: text(object.buildingId || sheet.building), room: text(object.roomId || object.roomNumber), trade: text(object.trade), system: text(object.system),
       confidence: Number(object.confidence) || 0, revision: text(object.revision || object.metadata?.revision), verificationState: text(object.verificationState),
       statusLabel: object.verificationState === 'candidate' ? 'Suggested' : object.verificationState === 'confirmed' ? 'Confirmed' : object.verificationState === 'rejected' ? 'Rejected' : text(object.verificationState || 'Unverified'), selectionCount: Math.max(1, Number(input.multiSelection?.selectionCount) || 1),
-      hasLocation: Boolean(object.region || object.graphicalRegion), hasPossibleDuplicates: Boolean(input.hasPossibleDuplicates), hasMergedObjects: Boolean(object.mergedObjectIds?.length), canLinkSpecification: Boolean(input.canLinkSpecification)
+      hasLocation: Boolean(object.region || object.graphicalRegion), regionSummary: normalizedRegionSummary(object.region || object.graphicalRegion), hasPossibleDuplicates: Boolean(input.hasPossibleDuplicates), hasMergedObjects: Boolean(object.mergedObjectIds?.length), canLinkSpecification: Boolean(input.canLinkSpecification),
+      evidenceSource: text(object.evidenceText || object.sourceText || object.acceptanceReason || object.sourceObservationIds?.[0]),
+      schedules: unique(list(input.schedules), item => `${text(item.sheetId)}:${text(item.scheduleId || item.scheduleOccurrenceId || item.identifier || item.sectionNumber || item.label || item.value)}`),
+      legends: unique(list(input.legends), item => `${text(item.sheetId)}:${text(item.legendId || item.legendOccurrenceId || item.identifier || item.label || item.title || item.value)}`),
+      keyedNotes: unique(list(input.keyedNotes), item => `${text(item.sheetId)}:${text(item.keyedNoteOccurrenceId || item.keyedNoteId || item.identifier || item.label)}`),
+      references: unique(list(input.references), item => `${text(item.referenceId || item.sheetId)}:${text(item.label || item.title || item.referenceNumber || item.value)}`),
+      relatedDetails: unique(list(input.relatedDetails), item => `${text(item.detailId || item.observationId || item.label || item.title)}`),
+      warnings,
+      unresolvedRelationships
     },
     specifications: {
       confirmed: specifications.filter(item => item.status === 'confirmed'),
@@ -193,6 +227,8 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
       specifications: specifications.filter(item => item.status === 'confirmed'), pmis: groups, schedule: relationshipRecords(groups, ['scheduleActivities', 'activities']),
       inspections: relationshipRecords(groups, ['inspections']), history: historyRecords(object, input.objectHistory, input.specificationLinks)
     },
-    sourceEntityId: text(input.sourceEntityId)
+    sourceEntityId: text(input.sourceEntityId),
+    relatedDrawings,
+    relatedObjects
   };
 }

@@ -19,11 +19,19 @@ test('page context contains only drawing facts and deduplicated object counts', 
 
 test('selected object replaces page context and deduplicates specifications', () => {
   const requirement = { requirementId: 'r1', specificationDocumentId: 'spec', sectionNumber: '09 91 00', sectionTitle: 'Painting', status: 'confirmed', evidenceText: 'Finish schedule P-1.', startPdfPage: 410 };
-  const model = buildConstructionIntelligencePanelModel({ sheet, selectedObject: { objectId: 'permanent-1', label: 'Finish P-1', type: 'finish', trade: 'Interiors', confidence: .97, verificationState: 'confirmed' }, requirements: { confirmedSpecifications: [requirement], suggestedSpecifications: [], fieldRequirements: {} }, specificationLinks: [{ ...requirement, linkId: 'link-1' }], relationshipGroups: {}, objectHistory: [] });
+  const model = buildConstructionIntelligencePanelModel({ sheet, selectedObject: { objectId: 'permanent-1', label: 'Finish P-1', type: 'finish', trade: 'Interiors', confidence: .97, verificationState: 'confirmed', region: { x: .1, y: .2, width: .3, height: .4 }, evidenceText: 'Room finish tag.' }, schedules: [{ identifier: 'S-1', label: 'Door schedule' }], legends: [{ identifier: 'L-1', label: 'Legend 1' }], keyedNotes: [{ identifier: 'K-1', label: 'Keyed note 1' }], references: [{ label: 'Detail 1' }], relatedDetails: [{ label: 'Detail A' }], requirements: { confirmedSpecifications: [requirement], suggestedSpecifications: [], fieldRequirements: {} }, specificationLinks: [{ ...requirement, linkId: 'link-1' }], relationshipGroups: {}, objectHistory: [] });
   assert.equal(model.mode, 'object');
   assert.equal(model.object.objectId, 'permanent-1');
   assert.equal(model.specifications.confirmed.length, 1);
   assert.equal(model.specifications.confirmed[0].canShowSource, true);
+  assert.equal(model.object.sourceSheet, '61IN101');
+  assert.equal(model.object.evidenceSource, 'Room finish tag.');
+  assert.equal(model.object.regionSummary, 'x 10%, y 20%, w 30%, h 40%');
+  assert.equal(model.object.schedules.length, 1);
+  assert.equal(model.object.legends.length, 1);
+  assert.equal(model.object.keyedNotes.length, 1);
+  assert.equal(model.object.references.length, 1);
+  assert.equal(model.object.relatedDetails.length, 1);
   assert.equal('page' in model, false);
 });
 
@@ -53,8 +61,16 @@ test('page context exposes page-wide specifications and section-scoped articles 
 
 test('page context restores only populated sheet relationships and drawing content', () => {
   const related = { entity: { entityId: 'drawing-2', label: '61IN102', metadata: { navigationTarget: { pageNumber: 2 } } }, relationship: { relationshipId: 'rel-drawing', verificationState: 'confirmed' } };
-  const model = buildConstructionIntelligencePanelModel({ sheet: { ...sheet, sheetTitle: 'Interior Finish Plan' }, pageObjects: [{ objectId: 'finish', type: 'finish', verificationState: 'confirmed' }], relationshipGroups: { relatedDrawings: [related], photos: [], risks: [] } });
+  const model = buildConstructionIntelligencePanelModel({ document: { title: 'Building 61 - Interiors' }, sheet: { ...sheet, sheetTitle: 'Interior Finish Plan', primarySheetType: 'Plan' }, pageObjects: [{ objectId: 'finish', type: 'finish', verificationState: 'confirmed' }], schedules: [{ identifier: 'S-1', label: 'Door schedule' }], legends: [{ identifier: 'L-1', label: 'Legend 1' }], keyedNotes: [{ identifier: 'K-1', label: 'Keyed note 1' }], references: [{ label: 'Detail 1' }], relatedDetails: [{ label: 'Detail A' }], relationshipGroups: { relatedDrawings: [related], photos: [], risks: [] } });
   assert.equal(model.page.sheetTitle, 'Interior Finish Plan');
+  assert.equal(model.page.drawingSet, 'Building 61 - Interiors');
+  assert.equal(model.page.drawingType, 'Plan');
+  assert.equal(model.page.pdfPage, 12);
+  assert.equal(model.page.schedules.length, 1);
+  assert.equal(model.page.legends.length, 1);
+  assert.equal(model.page.keyedNotes.length, 1);
+  assert.equal(model.page.references.length, 1);
+  assert.equal(model.page.relatedDetails.length, 1);
   assert.deepEqual(model.drawingContent, { finish: 1 });
   assert.equal(model.relatedDrawings.length, 1);
   assert.equal(model.projectInformation.photos.length, 0);
@@ -92,7 +108,8 @@ test('production panel preserves two-mode scroll, restores blank-click page cont
   const source = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const markup = source.slice(source.indexOf('function constructionIntelligencePanelMarkup'), source.indexOf('function relationshipGroupsMarkup'));
   assert.match(markup, /data-panel-mode=\"page\"/); assert.match(markup, /data-panel-mode=\"object\"/);
-  assert.match(markup, /Open Source/); assert.doesNotMatch(markup, /Open Section|Open Source Page|Review Evidence/);
+  assert.match(markup, /Sheet Inspector/); assert.match(markup, /Object Inspector/); assert.match(markup, /View Source/);
+  assert.doesNotMatch(markup, /Open Section|Open Source Page|Review Evidence/);
   assert.match(markup, /Developer Diagnostics[^]*hidden/); assert.doesNotMatch(markup, /paintDrawingPage|renderPdfPage|PDFDocumentProxy/);
   assert.match(source, /constructionIntelligenceScroll\[priorIntelligence\.querySelector\('\[data-panel-mode\]'\)\.dataset\.panelMode\]/);
   assert.match(source, /data-drawing-clear-object[^]*selectedDrawingObject = null[^]*renderDrawingWorkspace/);

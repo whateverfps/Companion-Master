@@ -202,7 +202,7 @@ test('sheet-card click path issues one page selection and one fast paint request
   assert.equal((sheetBranch.match(/paintDrawingSelectionFast\(/g) || []).length, 1);
 });
 
-test('zoom fit rotate reset and object selection stay on the fast repaint path', () => {
+test('zoom fit rotate reset stay on the repaint path while object selection refreshes the workspace', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const clickStart = app.indexOf("app.addEventListener('click', async event =>");
   const click = app.slice(clickStart, app.indexOf("const activationTimestamp =", clickStart));
@@ -211,13 +211,14 @@ test('zoom fit rotate reset and object selection stay on the fast repaint path',
     'button.dataset.drawingFit',
     'button.hasAttribute(\'data-drawing-rotate\')',
     'button.hasAttribute(\'data-drawing-reset-view\')',
-    'button.dataset.drawingObjectNav',
-    'button.dataset.drawingSelectObject',
-    'button.hasAttribute(\'data-drawing-clear-object\')',
     'button.hasAttribute(\'data-drawing-return-location\')',
   ];
   for (const token of fastPaths) assert.match(click, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(click, /await repaintCurrentSheet\(\{ preserveSidebarScroll: true \}\)/);
+  const selectionStart = click.indexOf("if (button.dataset.drawingObjectNav)");
+  const selectionSlice = click.slice(selectionStart, click.indexOf("if (button.hasAttribute('data-drawing-object-location')", selectionStart));
+  assert.match(selectionSlice, /await renderDrawingWorkspace\(experience==='mission-control'\?'mission-control':'professional'\);/);
+  assert.doesNotMatch(selectionSlice, /await repaintCurrentSheet\(\{ preserveSidebarScroll: true \}\);/);
 });
 
 test('scroll and panel updates are deferred rather than rebuilding synchronously', () => {
