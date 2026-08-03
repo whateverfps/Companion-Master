@@ -43,7 +43,9 @@ const APP_VERSION = '2.8.1';
 const STARTUP_EXPERIENCES = new Set(['mission-control', 'professional-workspace']);
 const normalizeStartupExperience = value => STARTUP_EXPERIENCES.has(value) ? value : 'mission-control';
 const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
+const diagnosticsEnabled = globalThis.__MC_DIAGNOSTICS_ENABLED === true;
 const logSlowOperation = (name, startedAt, details = {}) => {
+  if (!diagnosticsEnabled) return Math.max(0, perfNow() - startedAt);
   const elapsed = Math.max(0, perfNow() - startedAt);
   if (elapsed > 10) console.warn(name, elapsed, { ...details, stack: new Error().stack });
   return elapsed;

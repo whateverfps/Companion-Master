@@ -5,16 +5,38 @@ const MAX_LOGS=500;
 const modules=new Map();
 let lifecycle='booting';
 let lastError=null;
+const diagnosticsEnabled=globalThis.__MC_DIAGNOSTICS_ENABLED===true;
+const diagnosticsPersistenceEnabled=diagnosticsEnabled||globalThis.__MC_DIAGNOSTICS_PERSISTENCE_ENABLED===true;
+const scheduleIdleWork=callback=>{
+  if (typeof globalThis.requestIdleCallback === 'function') return globalThis.requestIdleCallback(callback, { timeout: 1000 });
+  return setTimeout(() => callback({ didTimeout: true, timeRemaining: () => 0 }), 0);
+};
+const cancelIdleWork=handle=>{
+  if (!handle) return;
+  if (typeof globalThis.cancelIdleCallback === 'function') globalThis.cancelIdleCallback(handle);
+  else clearTimeout(handle);
+};
 
 function safeParse(value,fallback){try{return JSON.parse(value)}catch{return fallback}}
-let logs=safeParse(localStorage.getItem(LOG_KEY)||'[]',[]);
-function persist(){try{localStorage.setItem(LOG_KEY,JSON.stringify(logs.slice(-MAX_LOGS)))}catch{}}
+const storage=globalThis.localStorage;
+let logs=safeParse(storage?.getItem?.(LOG_KEY)||'[]',[]);
+let persistHandle=0;
+function persist(){
+  if (!diagnosticsPersistenceEnabled) return;
+  if (persistHandle) return;
+  persistHandle=scheduleIdleWork(() => {
+    persistHandle=0;
+    try{storage?.setItem?.(LOG_KEY,JSON.stringify(logs.slice(-MAX_LOGS)))}catch{}
+  });
+}
 function write(level,message,details={}){
   const entry={id:createIdentifier(),time:new Date().toISOString(),level,message,details};
   logs.push(entry);logs=logs.slice(-MAX_LOGS);persist();
-  const fn=level==='error'?'error':level==='warning'?'warn':'log';
-  console[fn](`[Mission Companion] ${message}`,details);
-  window.dispatchEvent(new CustomEvent('mc:diagnostics',{detail:entry}));
+  if (diagnosticsEnabled) {
+    const fn=level==='error'?'error':level==='warning'?'warn':'log';
+    console[fn](`[Mission Companion] ${message}`,details);
+    window.dispatchEvent(new CustomEvent('mc:diagnostics',{detail:entry}));
+  }
   return entry;
 }
 export const logger={
@@ -23,7 +45,7 @@ export const logger={
   error:(m,d)=>write('error',m,d),
   debug:(m,d)=>write('debug',m,d),
   list:()=>[...logs],
-  clear:()=>{logs=[];persist();window.dispatchEvent(new CustomEvent('mc:diagnostics'))}
+  clear:()=>{logs=[];if (persistHandle) { cancelIdleWork(persistHandle); persistHandle=0; } persist(); if (diagnosticsEnabled) window.dispatchEvent(new CustomEvent('mc:diagnostics'))}
 };
 export function setLifecycle(next,details={}){lifecycle=next;logger.info(`Lifecycle: ${next}`,details);window.dispatchEvent(new CustomEvent('mc:health'))}
 export function registerModule(name,status='ready',details={}){modules.set(name,{name,status,details,checkedAt:new Date().toISOString()});window.dispatchEvent(new CustomEvent('mc:health'))}

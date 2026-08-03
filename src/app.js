@@ -263,6 +263,18 @@ const drawingSpecificationLinks = createDrawingSpecificationLinkService({ index:
 const projectRelationshipEngine = createProjectRelationshipEngine();
 const projectObjectRegistry = createProjectObjectRegistry({ persistence: engine.projectObjectPersistence(), onDiagnostic: metric => logger.debug('Project object registry performance', metric) });
 const constructionGraph = createConstructionGraph({ persistence: engine.constructionGraphPersistence(), relationshipEngine: projectRelationshipEngine, objectRegistry: projectObjectRegistry, onDiagnostic: metric => logger.debug('Construction graph performance', metric) });
+const scheduleIdleWork = callback => {
+  if (typeof globalThis.requestIdleCallback === 'function') return globalThis.requestIdleCallback(callback, { timeout: 1000 });
+  return setTimeout(() => callback({ didTimeout: true, timeRemaining: () => 0 }), 0);
+};
+const cancelIdleWork = handle => {
+  if (!handle) return;
+  if (typeof globalThis.cancelIdleCallback === 'function') globalThis.cancelIdleCallback(handle);
+  else clearTimeout(handle);
+};
+let drawingRelationshipGraphSyncHandle = 0;
+let drawingRelationshipGraphSyncKey = '';
+const drawingRelationshipGraphSummaryCache = new Map();
 const chiefDrawingDock=createChiefDrawingDock({storage:globalThis.localStorage,onChange:value=>logger.debug('Chief drawing dock',value)});
 let activeChiefDrawingContext=null;
 const chiefDrawingContextSynchronizer=createChiefDrawingContextSynchronizer({onCommit:(context,diagnostics)=>{activeChiefDrawingContext=context;logger.debug('Chief drawing context',{...diagnostics,pageId:context.identity.pageId,generation:context.freshness.generation});}});
@@ -1934,6 +1946,10 @@ function releaseDrawingSource() {
   }
   drawingRenderCache.clear();
   drawingRequirementsResultCache.clear();
+  drawingRelationshipGraphSummaryCache.clear();
+  cancelIdleWork(drawingRelationshipGraphSyncHandle);
+  drawingRelationshipGraphSyncHandle = 0;
+  drawingRelationshipGraphSyncKey = '';
   clearTrackedResources(['overlay', 'requirement-model', 'relationship-model', 'inspector-model']);
   activeDrawingPdf?.cleanup?.();
   activeDrawingPdf?.destroy?.();
@@ -2714,11 +2730,26 @@ function synchronizeActiveDrawingRelationships({ projectId, document, analysis, 
     projectRelationshipEngine.registerEntity({ entityId: `specification-section:${section.documentId}:${section.normalizedSectionNumber}`, projectId, entityType: 'specification-section', sourceDocumentId: section.documentId, normalizedKey: section.normalizedSectionNumber, label: `${section.sectionNumber} — ${section.sectionTitle}`, verificationState: 'confirmed', origin: 'imported', metadata: { navigationTarget: drawingSpecificationLinks.openTarget(link), startPdfPage: section.startPdfPage, endPdfPage: section.endPdfPage } });
   }
   adaptDrawingSpecificationLinks(projectRelationshipEngine, specificationLinks, { pageEntityId, objectEntityIds });
-  constructionGraph.adaptRelationshipEngine(projectId);
-  constructionGraph.adaptObjectRegistry(projectId);
   const sourceEntityId = selectedDrawingObject ? objectEntityIds.get(selectedDrawingObject.objectId) : pageEntityId;
   const graphNodeId = selectedDrawingObject?.objectId || pageEntityId;
-  return { sourceEntityId, groups: relationshipContextGroups(projectRelationshipEngine, sourceEntityId), graphSummary: constructionGraph.getConstructionSummary(graphNodeId) };
+  const syncKey = [projectId, document.id, sheet.pageId, sourceEntityId, objects.length, specificationLinks.length].join(':');
+  if (drawingRelationshipGraphSyncKey !== syncKey) {
+    drawingRelationshipGraphSyncKey = syncKey;
+    cancelIdleWork(drawingRelationshipGraphSyncHandle);
+    drawingRelationshipGraphSyncHandle = scheduleIdleWork(() => {
+      drawingRelationshipGraphSyncHandle = 0;
+      if (drawingRelationshipGraphSyncKey !== syncKey) return;
+      try {
+        constructionGraph.adaptRelationshipEngine(projectId);
+        constructionGraph.adaptObjectRegistry(projectId);
+        const summary = constructionGraph.getConstructionSummary(graphNodeId);
+        if (summary) drawingRelationshipGraphSummaryCache.set(graphNodeId, summary);
+      } catch (error) {
+        logger.warning('Construction intelligence provider failure', { provider: 'relationships', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() });
+      }
+    });
+  }
+  return { sourceEntityId, groups: relationshipContextGroups(projectRelationshipEngine, sourceEntityId), graphSummary: drawingRelationshipGraphSummaryCache.get(graphNodeId) || null };
 }
 
 function drawingRecoveryMarkup(record = {}) {
@@ -3587,7 +3618,11 @@ app.addEventListener('click', async event => {
   if(button.dataset.chiefCardAction){let target={};try{target=JSON.parse(button.dataset.chiefCardTarget||'{}');}catch{}const result=await drawingActionRouter.execute(button.dataset.chiefCardAction,target,{executionToken:`card:${event.timeStamp}`});if(!result.ok){button.insertAdjacentHTML('afterend','<small class="mc-chief-action-error">That drawing action is no longer available.</small>');}return;}
   const navigationStartedAt = globalThis.performance?.now?.() ?? Date.now();
   const pageSelectionRequest = button.dataset.drawingSheet || button.hasAttribute('data-drawing-previous') || button.hasAttribute('data-drawing-next') ? ++drawingPageSelectionRequest : 0;
-  const persistedAnalysis = drawingTarget?.documentId ? await engine.drawingAnalysis(drawingTarget.documentId) : null;
+  const persistedAnalysis = activeDrawingViewerAnalysis?.documentId === drawingTarget?.documentId
+    ? activeDrawingViewerAnalysis
+    : drawingTarget?.documentId
+      ? await engine.drawingAnalysis(drawingTarget.documentId)
+      : null;
   if (pageSelectionRequest && pageSelectionRequest !== drawingPageSelectionRequest) return;
   const analysis = activeDrawingViewerAnalysis?.documentId === drawingTarget?.documentId ? activeDrawingViewerAnalysis : persistedAnalysis;
   const currentSheet = analysis?.sheets.find(item => item.sheetId === drawingTarget?.sheetId) || analysis?.sheets.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber)) || null;

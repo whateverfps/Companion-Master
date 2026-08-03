@@ -279,12 +279,20 @@ test('professional viewer interactions include double-click zoom, drag pan, keyb
 
 test('production hardening preserves focus and browser scroll while reporting cache and viewport diagnostics', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
+  const diagnostics = readFileSync(new URL('../src/diagnostics.js', import.meta.url), 'utf8');
+  const engine = readFileSync(new URL('../src/engine.js', import.meta.url), 'utf8');
   assert.match(app, /createDrawingRenderCache/);
   assert.match(app, /maxEntries: 2/);
   assert.match(app, /drawingRenderCache\.get/);
   assert.match(app, /drawingRenderCache\.set/);
   assert.match(app, /canvas\.width = 0; canvas\.height = 0;/);
   assert.match(app, /drawingRequirementsResultCacheMaxEntries = 8/);
+  assert.match(app, /requestIdleCallback/);
+  assert.match(app, /drawingRelationshipGraphSummaryCache/);
+  assert.match(app, /constructionGraph\.adaptRelationshipEngine\(projectId\);/);
+  assert.match(diagnostics, /const diagnosticsEnabled=globalThis\.__MC_DIAGNOSTICS_ENABLED===true;/);
+  assert.match(diagnostics, /const diagnosticsPersistenceEnabled=diagnosticsEnabled\|\|globalThis\.__MC_DIAGNOSTICS_PERSISTENCE_ENABLED===true;/);
+  assert.match(engine, /const diagnosticsEnabled = globalThis\.__MC_DIAGNOSTICS_ENABLED === true;/);
   assert.match(app, /preservedBrowserScroll/);
   assert.match(app, /preservedFocusSelector/);
   assert.match(app, /operation: 'viewport-restore'/);
