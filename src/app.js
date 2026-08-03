@@ -232,10 +232,10 @@ const drawingViewerEngine = createDrawingViewerEngine({ viewportStore: drawingVi
 const drawingRenderCache = createDrawingRenderCache({ maxEntries: 2, onMetric: metric => logger.debug('Drawing viewer performance', metric), onEvict: (canvas, cacheKey) => { if (canvas) { canvas.width = 0; canvas.height = 0; } releaseTrackedResource('canvas', canvas, { cacheKey, reason: 'render-cache-evict' }); } });
 const drawingPerfNow = () => globalThis.performance?.now?.() ?? Date.now();
 const drawingDiagnosticsEnabled = globalThis.__MC_DRAWING_DIAGNOSTICS_ENABLED === true;
-const drawingResourceSnapshot = (options = {}) => snapshotTrackedResources({ workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, activeResizeObserverCount: activeDrawingResizeObserver ? 1 : 0, ...drawingViewerEngine.renderLifecycle(), ...options });
+const drawingResourceSnapshot = (options = {}) => snapshotTrackedResources({ workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, renderQueueDepth: drawingViewerEngine.renderLifecycle().activeRenderPromiseCount, activeResizeObserverCount: activeDrawingResizeObserver ? 1 : 0, ...drawingViewerEngine.renderLifecycle(), ...options });
 const reportDrawingResourceSnapshot = (label, detail = {}, options = {}) => {
   if (!drawingDiagnosticsEnabled) return null;
-  return reportTrackedResources(label, detail, { workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, activeResizeObserverCount: activeDrawingResizeObserver ? 1 : 0, ...drawingViewerEngine.renderLifecycle(), ...options });
+  return reportTrackedResources(label, detail, { workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, renderQueueDepth: drawingViewerEngine.renderLifecycle().activeRenderPromiseCount, activeResizeObserverCount: activeDrawingResizeObserver ? 1 : 0, ...drawingViewerEngine.renderLifecycle(), ...options });
 };
 globalThis.__mcDrawingResourceSnapshot = drawingResourceSnapshot;
 globalThis.__mcDrawingResourceReport = reportDrawingResourceSnapshot;

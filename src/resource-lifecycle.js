@@ -7,6 +7,36 @@ const state = globalThis[globalKey] || (globalThis[globalKey] = {
 });
 
 const objectIds = globalThis.__mcResourceLifecycleObjectIds || (globalThis.__mcResourceLifecycleObjectIds = new WeakMap());
+const listenerState = globalThis.__mcEventListenerLifecycle || (globalThis.__mcEventListenerLifecycle = {
+  installed: false,
+  counts: Object.create(null),
+  total: 0
+});
+
+const installEventListenerTracker = () => {
+  if (listenerState.installed || !globalThis.EventTarget?.prototype) return;
+  listenerState.installed = true;
+  const { addEventListener, removeEventListener } = globalThis.EventTarget.prototype;
+  if (typeof addEventListener !== 'function' || typeof removeEventListener !== 'function') return;
+  globalThis.EventTarget.prototype.addEventListener = function(type, listener, options) {
+    const key = String(type || '');
+    if (key) {
+      listenerState.counts[key] = (listenerState.counts[key] || 0) + 1;
+      listenerState.total += 1;
+    }
+    return addEventListener.call(this, type, listener, options);
+  };
+  globalThis.EventTarget.prototype.removeEventListener = function(type, listener, options) {
+    const key = String(type || '');
+    if (key && listenerState.counts[key] > 0) {
+      listenerState.counts[key] -= 1;
+      listenerState.total = Math.max(0, listenerState.total - 1);
+    }
+    return removeEventListener.call(this, type, listener, options);
+  };
+};
+
+installEventListenerTracker();
 
 const ensureKind = kind => {
   const key = String(kind || '').trim();
@@ -83,7 +113,7 @@ const summarizeLive = entries => ({
   items: entries.map(entry => ({ id: entry.id, ...entry.detail }))
 });
 
-export function snapshotTrackedResources({ workspaceRoot = null, drawingRenderCacheSize = 0, drawingCanvas = null } = {}) {
+export function snapshotTrackedResources({ workspaceRoot = null, drawingRenderCacheSize = 0, drawingCanvas = null, renderQueueDepth = 0 } = {}) {
   const live = kind => [...(state.liveByKind.get(kind) || new Map()).values()];
   const pdfDocuments = live('pdf-document');
   const pdfPages = live('pdf-page');
@@ -111,6 +141,7 @@ export function snapshotTrackedResources({ workspaceRoot = null, drawingRenderCa
       activePdfDocuments: pdfDocuments.length,
       activePdfPages: pdfPages.length,
       cachedPdfPages: Number(drawingRenderCacheSize) || 0,
+      renderQueueDepth: Number(renderQueueDepth) || 0,
       canvasCount: canvases.length + workspaceCanvasCount,
       imageBitmapCount: imageBitmaps.length,
       offscreenCanvasCount: offscreenCanvases.length,
@@ -123,6 +154,7 @@ export function snapshotTrackedResources({ workspaceRoot = null, drawingRenderCa
       approxJsHeapBytes: heapBytes,
       drawingCanvasConnected: Boolean(drawingCanvas?.isConnected)
     },
+    eventListeners: { total: listenerState.total, byType: { ...listenerState.counts } },
     totals: structuredClone(state.totals)
   };
 }
