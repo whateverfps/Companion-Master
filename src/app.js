@@ -232,10 +232,10 @@ const drawingViewerEngine = createDrawingViewerEngine({ viewportStore: drawingVi
 const drawingRenderCache = createDrawingRenderCache({ maxEntries: 2, onMetric: metric => logger.debug('Drawing viewer performance', metric), onEvict: (canvas, cacheKey) => { if (canvas) { canvas.width = 0; canvas.height = 0; } releaseTrackedResource('canvas', canvas, { cacheKey, reason: 'render-cache-evict' }); } });
 const drawingPerfNow = () => globalThis.performance?.now?.() ?? Date.now();
 const drawingDiagnosticsEnabled = globalThis.__MC_DRAWING_DIAGNOSTICS_ENABLED === true;
-const drawingResourceSnapshot = (options = {}) => snapshotTrackedResources({ workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, ...options });
+const drawingResourceSnapshot = (options = {}) => snapshotTrackedResources({ workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, activeResizeObserverCount: activeDrawingResizeObserver ? 1 : 0, ...drawingViewerEngine.renderLifecycle(), ...options });
 const reportDrawingResourceSnapshot = (label, detail = {}, options = {}) => {
   if (!drawingDiagnosticsEnabled) return null;
-  return reportTrackedResources(label, detail, { workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, ...options });
+  return reportTrackedResources(label, detail, { workspaceRoot: $('#professionalWorkspaceShell') || null, drawingRenderCacheSize: drawingRenderCache.size(), drawingCanvas: $('#mcDrawingCanvas') || null, activeResizeObserverCount: activeDrawingResizeObserver ? 1 : 0, ...drawingViewerEngine.renderLifecycle(), ...options });
 };
 globalThis.__mcDrawingResourceSnapshot = drawingResourceSnapshot;
 globalThis.__mcDrawingResourceReport = reportDrawingResourceSnapshot;
@@ -2250,6 +2250,13 @@ async function paintDrawingPage(source, sheet, observation, overlayRecords = [],
       stage.dataset.renderLoadingKey = loadingKey;
       stage.classList.add('is-loading');
       const renderOutcome = await drawingViewerEngine.renderSelectedPage(pageNumber => renderPdfPage(activeDrawingPdf, pageNumber, renderCanvas, { scale: boundedScale, rotation: nextIdentity.rotation }));
+      if (requestToken && requestToken !== drawingPagePaintRequest) {
+        if (renderCanvasCreated) releaseTrackedResource('canvas', renderCanvas, { cacheKey, reason: 'render-superseded' });
+        renderOutcome.task?.release?.();
+        clearCurrentLoading();
+        reportDrawingResourceSnapshot('sheet-change', { pageId: sheet.pageId, pageNumber: sheet.pageNumber, phase: 'render-cancelled', renderCount: drawingPdfRenderCount, interactionId: drawingInteractionTrace.id });
+        return;
+      }
       if (!renderOutcome.committed || !canvas.isConnected || drawingTarget?.pageNumber !== sheet.pageNumber) {
         if (renderCanvasCreated) releaseTrackedResource('canvas', renderCanvas, { cacheKey, reason: 'render-superseded' });
         renderOutcome.task?.release?.();

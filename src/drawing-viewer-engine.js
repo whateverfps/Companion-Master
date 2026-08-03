@@ -49,6 +49,7 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
   let renderGeneration = 0;
   let activeRender = null;
   let activeRenderTaskCount = 0;
+  let activeRenderPromiseCount = 0;
   let staleTasksCancelled = 0;
 
   const api = {
@@ -85,24 +86,32 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
     async renderSelectedPage(startRender) {
       const startedAt = clock();
       const token = api.beginRender(selectedPage);
-      const task = await startRender(selectedPage, token);
-      if (!api.attachRender(token, task)) return { committed: false, cancelled: true, token, task };
+      activeRenderPromiseCount += 1;
       try {
-        await task.promise;
-      } catch (error) {
-        if (!api.canCommit(token)) return { committed: false, cancelled: true, token, task };
-        throw error;
+        const task = await startRender(selectedPage, token);
+        if (!api.attachRender(token, task)) {
+          task?.releasePage?.();
+          return { committed: false, cancelled: true, token, task };
+        }
+        try {
+          await task.promise;
+        } catch (error) {
+          if (!api.canCommit(token)) return { committed: false, cancelled: true, token, task };
+          throw error;
+        } finally {
+          task?.releasePage?.();
+        }
+        if (activeRender === task) {
+          activeRender = null;
+          activeRenderTaskCount = Math.max(0, activeRenderTaskCount - 1);
+          onMetric({ operation: 'render-task', activeRenderTaskCount, staleTasksCancelled, state: 'completed' });
+        }
+        const committed = api.canCommit(token);
+        onMetric({ operation: 'page-render', durationMs: Math.max(0, clock() - startedAt), pageNumber: token.pageNumber, committed });
+        return { committed, cancelled: !committed, token, task };
       } finally {
-        task?.releasePage?.();
+        activeRenderPromiseCount = Math.max(0, activeRenderPromiseCount - 1);
       }
-      if (activeRender === task) {
-        activeRender = null;
-        activeRenderTaskCount = Math.max(0, activeRenderTaskCount - 1);
-        onMetric({ operation: 'render-task', activeRenderTaskCount, staleTasksCancelled, state: 'completed' });
-      }
-      const committed = api.canCommit(token);
-      onMetric({ operation: 'page-render', durationMs: Math.max(0, clock() - startedAt), pageNumber: token.pageNumber, committed });
-      return { committed, cancelled: !committed, token, task };
     },
     canCommit(token, canvasConnected = true) {
       return Boolean(canvasConnected) && token?.generation === renderGeneration && token?.documentId === documentId && token?.pageNumber === selectedPage;
@@ -144,7 +153,8 @@ export function createDrawingViewerEngine({ viewportStore = new Map(), minZoom =
     fitWidth: (pageNumber = selectedPage) => api.restoreViewport(pageNumber, { ...api.getViewport(pageNumber), mode: 'fit-width', zoom: null, scrollLeft: 0, scrollTop: 0 }),
     rotate(pageNumber = selectedPage) { const viewport = api.getViewport(pageNumber); return api.restoreViewport(pageNumber, { ...viewport, rotation: ((Number(viewport.rotation) || 0) + 90) % 360 }); },
     resetView: (pageNumber = selectedPage) => api.restoreViewport(pageNumber, { mode: 'fit-page', zoom: null, rotation: 0, scrollLeft: 0, scrollTop: 0 }),
-    snapshot: () => ({ documentId, pageCount, selectedPage, renderGeneration })
+    snapshot: () => ({ documentId, pageCount, selectedPage, renderGeneration }),
+    renderLifecycle: () => ({ documentId, pageCount, selectedPage, renderGeneration, activeRenderTaskCount, activeRenderPromiseCount, staleTasksCancelled })
   };
   return api;
 }
