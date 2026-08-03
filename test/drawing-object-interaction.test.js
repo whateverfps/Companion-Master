@@ -49,7 +49,9 @@ test('production selection uses overlay state and preserves PDF rendering owners
   assert.match(app,/hitTestDrawingObjects\(activeDrawingObjects, point\)/);assert.match(app,/selectedObjectIds:\[\.\.\.selectedDrawingObjectIds\]/);assert.match(app,/searchDrawingObjects\(activeDrawingObjects, drawingFilter\)/);assert.match(app,/data-drawing-object-nav/);assert.match(css,/mc-drawing-object-overlay\.selected/);
   assert.equal((app.match(/app\.addEventListener\('click', async event =>/g)||[]).length,1);
   const selection = app.slice(app.indexOf("if (button.dataset.overlayId)"), app.indexOf("if (button.hasAttribute('data-drawing-object-location')", app.indexOf("if (button.dataset.overlayId)")));
-  assert.match(selection,/await renderDrawingWorkspace\(experience==='mission-control'\?'mission-control':'professional'\);/);
+  assert.match(selection,/captureDrawingViewport\(\{selectedObjectId:selectedDrawingObject\?\.objectId\|\|null/);
+  assert.match(selection,/syncDrawingOverlaySelectionState\(\)/);
+  assert.match(selection,/drawingInteractionSession\.settleSoon\(\)/);
   assert.doesNotMatch(selection,/await repaintCurrentSheet\(\{ preserveSidebarScroll: true \}\);/);
   const interaction=fs.readFileSync(new URL('../src/drawing-object-interaction.js',import.meta.url),'utf8');assert.doesNotMatch(interaction,/renderPdfPage|PDFDocumentProxy|openPdfBlob|specificationIndex|createConstructionGraph/);
 });

@@ -3,7 +3,9 @@ import { validNormalizedRegion } from './drawing-object-model.js';
 const text = value => value === null || value === undefined ? '' : String(value).trim();
 const list = value => Array.isArray(value) ? value : [];
 const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
+const diagnosticsEnabled = globalThis.__MC_DRAWING_DIAGNOSTICS_ENABLED === true;
 const logSlowOperation = (name, startedAt, details = {}) => {
+  if (!diagnosticsEnabled) return Math.max(0, perfNow() - startedAt);
   const elapsed = Math.max(0, perfNow() - startedAt);
   if (elapsed > 10) console.warn(name, elapsed, { ...details, stack: new Error().stack });
   return elapsed;
@@ -67,7 +69,7 @@ export function visibleDrawingOverlays(records = [], { projectId, documentId, pa
   const visible = accepted.slice(0, Math.max(1, Number(maxVisible) || 120));
   if (accepted.length > visible.length) suppressionReasons['page-limit'] = accepted.length - visible.length;
   const result = visible.map(record => ({ ...record, displayRegion: transformOverlayRegion(record.region, rotation) }));
-  onDiagnostic({ totalObservations: list(records).length, deduplicatedObjects: new Set(owned.map(item => item.overlayId)).size, regionsBeforeDeduplication: owned.length, regionsAfterDeduplication: accepted.length, oversizedRegionsRejected, normalViewOverlaysRendered: reviewMode ? 0 : result.length, reviewModeOverlaysRendered: reviewMode ? result.length : 0, suppressionReasons });
+  if (diagnosticsEnabled) onDiagnostic({ totalObservations: list(records).length, deduplicatedObjects: new Set(owned.map(item => item.overlayId)).size, regionsBeforeDeduplication: owned.length, regionsAfterDeduplication: accepted.length, oversizedRegionsRejected, normalViewOverlaysRendered: reviewMode ? 0 : result.length, reviewModeOverlaysRendered: reviewMode ? result.length : 0, suppressionReasons });
   logSlowOperation('overlay generation', startedAt, { iterationCount, ownedCount: owned.length, acceptedCount: accepted.length, visibleCount: result.length });
   return result;
 }

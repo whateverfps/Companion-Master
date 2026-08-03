@@ -5,7 +5,9 @@ const list=value=>Array.isArray(value)?value:[];
 const text=value=>value===null||value===undefined?'':String(value).trim();
 const key=value=>text(value).toUpperCase().replace(/[^A-Z0-9]/g,'');
 const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
+const diagnosticsEnabled = globalThis.__MC_DRAWING_DIAGNOSTICS_ENABLED === true;
 const logSlowOperation = (name, startedAt, details = {}) => {
+  if (!diagnosticsEnabled) return Math.max(0, perfNow() - startedAt);
   const elapsed = Math.max(0, perfNow() - startedAt);
   if (elapsed > 10) console.warn(name, elapsed, { ...details, stack: new Error().stack });
   return elapsed;

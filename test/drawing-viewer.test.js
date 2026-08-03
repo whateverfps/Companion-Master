@@ -55,11 +55,10 @@ test('drawing stage gesture handling reuses the existing zoom controls and viewp
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   assert.match(app, /stage\.onwheel = event =>/);
   assert.match(app, /if \(!next\.recognized\) return;\s*event\.preventDefault\(\)/);
-  assert.match(app, /drawingWheelPaintFrame = requestAnimationFrame\(/);
-  assert.match(app, /drawingWheelPaintDelay = setTimeout\(/);
-  assert.match(app, /clearTimeout\(drawingWheelPaintDelay\)/);
-  assert.match(app, /captureDrawingViewport\(\{ mode: 'custom', zoom: next\.zoom, scrollLeft: next\.scrollLeft, scrollTop: next\.scrollTop \}\)/);
-  assert.match(app, /preserveSidebarScroll: true/);
+  assert.match(app, /drawingInteractionSession\.begin\('zoom'/);
+  assert.match(app, /drawingInteractionSession\.updateViewport\(\{ zoom: next\.zoom, scrollLeft: next\.scrollLeft, scrollTop: next\.scrollTop \}\)/);
+  assert.match(app, /drawingInteractionSession\.scheduleFrame\(\(\) => applyDrawingInteractionViewport\(stage, next\.zoom, drawingRotation\)\)/);
+  assert.match(app, /drawingInteractionSession\.settleSoon\(\)/);
   assert.match(app, /viewOutput\.textContent = `\$\{Math\.round\(boundedScale \* 100\)\}% · \$\{drawingRotation\}°`/);
   assert.match(app, /button\.dataset\.drawingZoom/);
   assert.equal((app.match(/const drawingViewportBySet = new Map\(\);/g) || []).length, 1);
@@ -219,13 +218,18 @@ test('zoom fit rotate reset stay on the repaint path while object selection refr
   assert.match(click, /await repaintCurrentSheet\(\{ preserveSidebarScroll: true \}\)/);
   const selectionStart = click.indexOf("if (button.dataset.drawingObjectNav)");
   const selectionSlice = click.slice(selectionStart, click.indexOf("if (button.hasAttribute('data-drawing-object-location')", selectionStart));
-  assert.match(selectionSlice, /await renderDrawingWorkspace\(experience==='mission-control'\?'mission-control':'professional'\);/);
+  assert.match(selectionSlice, /captureDrawingViewport\(\{selectedObjectId:next\.objectId/);
+  assert.match(selectionSlice, /syncDrawingOverlaySelectionState\(\)/);
+  assert.match(selectionSlice, /drawingInteractionSession\.settleSoon\(\)/);
   assert.doesNotMatch(selectionSlice, /await repaintCurrentSheet\(\{ preserveSidebarScroll: true \}\);/);
 });
 
 test('scroll and panel updates are deferred rather than rebuilding synchronously', () => {
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
-  assert.match(app, /stage\.onscroll = \(\) => \{ if \(scrollFrame\) return; scrollFrame = requestAnimationFrame\(/);
+  assert.match(app, /stage\.onscroll = \(\) => \{/);
+  assert.match(app, /if \(scrollFrame\) return;/);
+  assert.match(app, /scrollFrame = requestAnimationFrame\(\(\) => \{/);
+  assert.match(app, /drawingInteractionSession\.settleSoon\(\);/);
   assert.match(app, /requestAnimationFrame\(\(\) => \{/);
   assert.match(app, /drawingPanelRefreshRequest/);
   assert.match(app, /operation: 'click-to-visible-bitmap'/);

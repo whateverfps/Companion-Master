@@ -7,7 +7,9 @@ const RULES = Object.freeze({ signage: '10 14 00', 'resilient-base': '09 65 13',
 export const DRAWING_SPEC_AUDIT_HISTORY_LIMIT = 25;
 export const DRAWING_SPEC_EVIDENCE_LIMIT = 20;
 const perfNow = () => globalThis.performance?.now?.() ?? Date.now();
+const diagnosticsEnabled = globalThis.__MC_DRAWING_DIAGNOSTICS_ENABLED === true;
 const logSlowOperation = (name, startedAt, details = {}) => {
+  if (!diagnosticsEnabled) return Math.max(0, perfNow() - startedAt);
   const elapsed = Math.max(0, perfNow() - startedAt);
   if (elapsed > 10) console.warn(name, elapsed, { ...details, stack: new Error().stack });
   return elapsed;

@@ -128,6 +128,7 @@ export function snapshotTrackedResources({ workspaceRoot = null, drawingRenderCa
 }
 
 export function reportTrackedResources(label, detail = {}, snapshotOptions = {}) {
+  if (globalThis.__MC_DRAWING_DIAGNOSTICS_ENABLED !== true) return null;
   const snapshot = snapshotTrackedResources(snapshotOptions);
   const payload = { label, ...detail, ...snapshot, stack: new Error().stack };
   console.warn('drawing resource snapshot', payload);
