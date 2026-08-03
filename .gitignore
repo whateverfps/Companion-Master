@@ -12,3 +12,5 @@ project-data/bedford/*
 !project-data/bedford/*/
 project-data/bedford/*/*
 !project-data/bedford/*/.gitkeep
+!project-data/bedford/drawing-catalogs/
+!project-data/bedford/drawing-catalogs/*.json
