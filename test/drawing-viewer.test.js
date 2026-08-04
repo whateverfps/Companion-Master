@@ -135,6 +135,7 @@ test('Plans inspector owns a dedicated host and immutable sheet context on every
   assert.match(app, /if \(shell === 'mission-control'\) updatePlansInspectorOwnership\(\{ \.\.\.\(plansInspectorContext \|\| \{\}\), panel: nextIntelligence \}\);/);
   assert.match(app, /missionPlansSheetInspector/);
   assert.match(app, /panel === activePlansInspectorPanel/);
+  assert.match(app, /document\.querySelector\('#missionPlansSheetInspector'\)/);
   assert.match(app, /sheetId === activePlansInspectorSheetId/);
   assert.match(app, /Number\(generationId\) === Number\(activePlansInspectorGeneration\)/);
 });
@@ -219,8 +220,9 @@ test('page clicks prefer the rendered retained-PDF page model and select the eng
   assert.match(click, /const analysis = activeDrawingViewerAnalysis\?\.documentId === drawingTarget\?\.documentId \? activeDrawingViewerAnalysis : persistedAnalysis/);
   assert.match(click, /pageSelectionRequest !== drawingPageSelectionRequest/);
   const sheetBranch = click.slice(click.indexOf("if (button.dataset.drawingSheet"), click.indexOf("if (button.hasAttribute('data-drawing-reanalyze')"));
-  assert.match(sheetBranch, /drawingViewerEngine\.selectPage\(sheet\.pageNumber\)/);
-  assert.ok(sheetBranch.indexOf('drawingViewerEngine.selectPage') < sheetBranch.indexOf('await paintDrawingSelectionFast'));
+  assert.match(sheetBranch, /await selectPlansSheet\(\{ shell, analysis, sheet, observation, navigationStartedAt, scrollActiveCard: true \}\)/);
+  assert.equal((sheetBranch.match(/selectPlansSheet\(/g) || []).length, 1);
+  assert.equal((sheetBranch.match(/paintDrawingSelectionFast\(/g) || []).length, 0);
 });
 
 test('rapid page switching paints first and defers heavy workspace reconstruction', () => {
@@ -237,8 +239,9 @@ test('sheet-card click path issues one page selection and one fast paint request
   const clickStart = app.indexOf("app.addEventListener('click', async event =>");
   const click = app.slice(clickStart, app.indexOf("if (button.hasAttribute('data-drawing-reanalyze')", clickStart));
   const sheetBranch = click.slice(click.indexOf("if (button.dataset.drawingSheet && analysis)"));
-  assert.equal((sheetBranch.match(/drawingViewerEngine\.selectPage\(sheet\.pageNumber\)/g) || []).length, 1);
-  assert.equal((sheetBranch.match(/paintDrawingSelectionFast\(/g) || []).length, 1);
+  assert.match(sheetBranch, /await selectPlansSheet\(\{ shell, analysis, sheet, observation, navigationStartedAt, scrollActiveCard: true \}\)/);
+  assert.equal((sheetBranch.match(/selectPlansSheet\(/g) || []).length, 1);
+  assert.equal((sheetBranch.match(/paintDrawingSelectionFast\(/g) || []).length, 0);
 });
 
 test('zoom fit rotate reset stay on the repaint path while object selection refreshes the workspace', () => {

@@ -478,9 +478,12 @@ function scheduleDrawingHydration({ generationId, sheetId, projectId, shell, wor
     if (generation !== drawingBackgroundPipelineGeneration) return;
     if (generationId !== drawingBackgroundPipelineGeneration) return;
     if (workspaceRenderRequest !== drawingWorkspaceRenderRequest) return;
-    if (sheet?.sheetId && sheetId && sheet.sheetId !== sheetId) return;
+    const expectedSheetId = plansContext?.sheetId || sheetId || sheet?.sheetId || '';
+    const expectedGenerationId = plansContext?.generationId || generationId || activePlansInspectorGeneration;
+    const expectedDocumentId = plansContext?.documentId || documentId || selected?.id || '';
+    if (sheet?.sheetId && expectedSheetId && sheet.sheetId !== expectedSheetId) return;
     if (projectId && analysis?.projectId && analysis.projectId !== projectId) return;
-    if (drawingTarget?.documentId !== documentId || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
+    if (plansContext && !plansInspectorOwnershipValid({ panel: plansContext.panel || activePlansInspectorPanel, sheetId: expectedSheetId, generationId: expectedGenerationId, shell })) return;
     const stage = $('#mcDrawingStage');
     if (!stage || !stage.isConnected) return;
     if (!plansSpecOnly) {
@@ -494,16 +497,21 @@ function scheduleDrawingHydration({ generationId, sheetId, projectId, shell, wor
     const finish = resolvedRequirements => {
       if (generation !== drawingBackgroundPipelineGeneration) return;
       if (workspaceRenderRequest !== drawingWorkspaceRenderRequest) return;
-      if (drawingTarget?.documentId !== documentId || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
-      const panel = shell === 'mission-control' ? plansContext?.panel || activePlansInspectorPanel : activeDrawingInspectorPanel;
+      if (expectedDocumentId && plansContext?.documentId && expectedDocumentId !== plansContext.documentId) return;
+      if (plansContext?.sheetId && expectedSheetId && plansContext.sheetId !== expectedSheetId) return;
+      const livePlansPanel = shell === 'mission-control' ? document.querySelector('#missionPlansSheetInspector') : null;
+      const panel = shell === 'mission-control'
+        ? (livePlansPanel && livePlansPanel.isConnected ? livePlansPanel : activePlansInspectorPanel)
+        : activeDrawingInspectorPanel;
       const ownershipValid = shell === 'mission-control'
-        ? plansInspectorOwnershipValid({ panel, sheetId: plansContext?.sheetId || sheetId || sheet?.sheetId || '', generationId: plansContext?.generationId || generationId || activePlansInspectorGeneration, shell })
+        ? plansInspectorOwnershipValid({ panel, sheetId: expectedSheetId, generationId: expectedGenerationId, shell })
         : Boolean(panel && panel.isConnected && activeDrawingInspectorPanelSheetId === (sheet?.sheetId || sheetId || ''));
       if (!ownershipValid) return;
       if (resolvedRequirements) {
         replaceTrackedResource('requirement-model', resolvedRequirements, { pageId: sheet?.pageId || '', status: resolvedRequirements.status });
         const panelModel = buildIntelligencePanel(resolvedRequirements);
         replaceTrackedResource('inspector-model', panelModel, { pageId: sheet?.pageId || '', mode: panelModel.mode, phase: 'updated' });
+        if (panel !== activePlansInspectorPanel) activePlansInspectorPanel = panel;
         panel.dataset.panelSignature = constructionIntelligencePanelSignature(panelModel);
         panel.innerHTML = constructionIntelligencePanelMarkup(panelModel);
       }
@@ -600,6 +608,8 @@ function normalizePlansInspectorContext(detail = {}) {
     sheetId: detail.sheetId || '',
     sheetNumber: detail.sheet?.sheetNumber || detail.sheetNumber || '',
     sheetTitle: detail.sheet?.sheetTitle || detail.sheetTitle || '',
+    discipline: detail.sheet?.discipline || detail.discipline || '',
+    drawingType: detail.sheet?.drawingType || detail.drawingType || detail.sheet?.primarySheetType || detail.primarySheetType || '',
     pageNumber: Number(detail.sheet?.pageNumber || detail.pageNumber || detail.pdfPage) || 0,
     pdfPage: Number(detail.sheet?.pageNumber || detail.pdfPage || detail.pageNumber) || 0,
     generationId: Number(detail.generationId) || 0,
@@ -625,6 +635,8 @@ function getActivePlansSheetContext(overrides = {}) {
     sheetId: overrides.sheetId || sheet?.sheetId || target.sheetId || '',
     sheetNumber: overrides.sheetNumber || sheet?.sheetNumber || '',
     sheetTitle: overrides.sheetTitle || sheet?.sheetTitle || '',
+    discipline: overrides.discipline || sheet?.discipline || '',
+    drawingType: overrides.drawingType || sheet?.drawingType || sheet?.primarySheetType || '',
     pageNumber: overrides.pageNumber || sheet?.pageNumber || target.pageNumber || 0,
     pdfPage: overrides.pdfPage || sheet?.pageNumber || target.pageNumber || 0,
     sheet,
@@ -665,6 +677,128 @@ function renderPlansInspectorModel(sheetContext = {}) {
   });
   loadingModel.specifications = { confirmed: [], suggested: [] };
   return loadingModel;
+}
+
+function plansSheetHeaderHost() {
+  return $('#mc-drawing-sheet-title') || $('#mc-drawing-selected-evidence');
+}
+
+function plansSheetHeaderMarkup(snapshot = {}, analysis = null) {
+  const sheetNumber = snapshot.sheetNumber || `Page ${snapshot.pageNumber || snapshot.pdfPage || ''}`;
+  const sheetTitle = snapshot.sheetTitle || `Page ${snapshot.pageNumber || snapshot.pdfPage || ''}`;
+  const discipline = snapshot.discipline || 'Unknown';
+  const drawingType = snapshot.drawingType || 'Unknown';
+  const pdfPage = Number(snapshot.pdfPage || snapshot.pageNumber || 0);
+  const sheetTotal = analysis?.sheets?.length || 0;
+  return `<div><span>${esc(sheetNumber)}</span><h3>${esc(sheetTitle)}</h3><p>${esc(`${discipline} · ${drawingType}`)}</p></div><dl><div><dt>Discipline</dt><dd>${esc(discipline)}</dd></div><div><dt>Type</dt><dd>${esc(drawingType)}</dd></div><div><dt>Position</dt><dd>${analysis?.viewerFallback ? 'Page' : 'Sheet'} ${pdfPage}${sheetTotal ? ` of ${sheetTotal}` : ''}</dd></div><div><dt>Identity</dt><dd>${esc(snapshot.identityStatus || snapshot.status || 'Selected')}</dd></div></dl>`;
+}
+
+function updatePlansHeader(snapshot = {}, analysis = null) {
+  const header = plansSheetHeaderHost();
+  if (!header) return;
+  header.setAttribute('aria-label', snapshot.sheetTitle || snapshot.sheetNumber || 'Selected drawing sheet');
+  header.innerHTML = plansSheetHeaderMarkup(snapshot, analysis);
+}
+
+function updatePlansSheetSelection(snapshot = {}) {
+  updateDrawingSelectionCards(snapshot.sheetId || '', { scroll: false });
+  for (const button of document.querySelectorAll('[data-drawing-sheet]')) {
+    const active = button.dataset.drawingSheet === (snapshot.sheetId || '');
+    button.classList.toggle('active', active);
+    if (active) button.setAttribute('aria-current', 'true');
+    else button.removeAttribute('aria-current');
+  }
+}
+
+function updatePlansInspectorLoading(snapshot = {}, analysis = null) {
+  const panel = activePlansInspectorPanel || plansInspectorHost();
+  if (!panel || !panel.isConnected) return panel || null;
+  const loadingContext = getActivePlansSheetContext({ ...snapshot, analysis, panel });
+  activePlansInspectorPanel = panel;
+  activePlansInspectorSheetId = loadingContext.sheetId;
+  activePlansInspectorGeneration = loadingContext.generationId;
+  activePlansInspectorContext = loadingContext;
+  panel.dataset.panelSignature = constructionIntelligencePanelSignature(renderPlansInspectorModel(loadingContext));
+  panel.innerHTML = constructionIntelligencePanelMarkup(renderPlansInspectorModel(loadingContext));
+  return panel;
+}
+
+async function selectPlansSheet({ analysis, sheet, observation = null, shell = 'mission-control', navigationStartedAt = 0, requestToken = 0, scrollActiveCard = true } = {}) {
+  if (!analysis || !sheet) return false;
+  const paintRequest = requestToken || ++drawingPagePaintRequest;
+  const plansPanel = activePlansInspectorPanel || plansInspectorHost();
+  const snapshot = getActivePlansSheetContext({
+    analysis,
+    sheet,
+    projectId: analysis.projectId,
+    drawingSetId: analysis.drawingSetId,
+    documentId: analysis.documentId,
+    drawingId: sheet.drawingId || '',
+    pageId: sheet.pageId,
+    sheetId: sheet.sheetId,
+    sheetNumber: sheet.sheetNumber,
+    sheetTitle: sheet.sheetTitle,
+    pageNumber: sheet.pageNumber,
+    pdfPage: sheet.pageNumber,
+    generationId: paintRequest,
+    shell,
+    panel: plansPanel
+  });
+  updatePlansInspectorOwnership(snapshot);
+  updatePlansHeader(snapshot, analysis);
+  updatePlansSheetSelection(snapshot);
+  updatePlansInspectorLoading(snapshot, analysis);
+  drawingViewerEngine.selectPage(sheet.pageNumber);
+  drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, pageId: sheet.pageId, drawingId: sheet.drawingId || '', sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
+  const source = activeDrawingSourceRecord?.documentId === analysis.documentId && activeDrawingSourceRecord?.projectId === state().activeProject ? activeDrawingSourceRecord : await engine.sourceFile(analysis.documentId);
+  const painted = await paintDrawingSelectionFast({ shell, analysis, sheet, observation, navigationStartedAt, requestToken: paintRequest, scrollActiveCard });
+  if (!painted || requestToken && requestToken !== drawingPagePaintRequest) return painted;
+  if (shell === 'mission-control') {
+    emitDrawingRendered({
+      generationId: snapshot.generationId,
+      sheetId: snapshot.sheetId,
+      projectId: snapshot.projectId,
+      shell,
+      workspaceRenderRequest: drawingWorkspaceRenderRequest,
+      selected: { id: snapshot.documentId, title: snapshot.sheetTitle || snapshot.sheetNumber || '' },
+      sheet,
+      analysis,
+      source,
+      documentId: snapshot.documentId,
+      requestToken: paintRequest,
+      effectiveObservation: observation || null,
+      effectiveRegion: observation?.region || null,
+      overlayRecords: [],
+      preservedBrowserScroll: 0,
+      preservedViewport: defaultDrawingViewport(),
+      preservedCanvas: null,
+      preservedStage: null,
+      preservedIntelligenceScroll: 0,
+      viewState: null,
+      sheetLegends: [],
+      sheetSchedules: [],
+      sheetKeyedNotes: [],
+      sheetOccurrences: [],
+      pageSpecificationLinks: [],
+      selectedSpecificationLinks: [],
+      requirementInput: {
+        projectId: snapshot.projectId,
+        pageEntityId: `drawing-page:${snapshot.pageId || ''}`,
+        selectedObjectEntityId: '',
+        selectedRoomEntityId: '',
+        selectedObjectId: '',
+        viewportContext: drawingViewportContextService.get(snapshot.documentId, snapshot.pageId) || null,
+        tradeChannel: drawingTradeContext.current({ discipline: snapshot.discipline, title: snapshot.sheetTitle }),
+        drawingSpecLinks: drawingSpecificationLinks.forPage(snapshot.pageId || ''),
+        projectWideRequirements: []
+      },
+      activeRequirements: { status: 'loading', requirements: [], confirmedSpecifications: [], suggestedSpecifications: [], projectWideRequirements: [], fieldRequirements: {}, warnings: [], providerFailures: [] },
+      rightPanelSignature: '',
+      inspectorContext: snapshot,
+      renderAfterPaint: true
+    });
+  }
+  return painted;
 }
 
 drawingRenderedEventTarget.addEventListener(DrawingRenderedEvent, event => {
@@ -4310,12 +4444,9 @@ app.addEventListener('click', async event => {
     const sheet = analysis.sheets.find(item => button.dataset.drawingPageId && item.pageId === button.dataset.drawingPageId) || analysis.sheets.find(item => item.sheetId === button.dataset.drawingSheet);
     if (!sheet) return;
     const observation = button.dataset.drawingSearchObservation ? analysis.observations.find(item => item.observationId === button.dataset.drawingSearchObservation) : null;
-    drawingViewerEngine.selectPage(sheet.pageNumber);
-    drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, pageId: sheet.pageId, drawingId: sheet.drawingId || '', sheetId: sheet.sheetId, pageNumber: sheet.pageNumber, observationId: observation?.observationId, region: observation?.region });
-    const paintRequest = ++drawingPagePaintRequest;
-    await paintDrawingSelectionFast({ shell, analysis, sheet, observation, navigationStartedAt, requestToken: paintRequest });
-    drawingTraceSlowOperation('sheet click handler', sheetClickStartedAt, { pageId: sheet.pageId, pageNumber: sheet.pageNumber, requestToken: paintRequest });
-    return;
+    const painted = await selectPlansSheet({ shell, analysis, sheet, observation, navigationStartedAt, scrollActiveCard: true });
+    drawingTraceSlowOperation('sheet click handler', sheetClickStartedAt, { pageId: sheet.pageId, pageNumber: sheet.pageNumber, requestToken: drawingPagePaintRequest });
+    return painted;
   }
   if (button.hasAttribute('data-drawing-reanalyze') && analysis && shell === 'professional') {
     if (!confirm('Reanalyze this drawing set from its retained positioned text? Source PDF bytes and exact page identities will be preserved.')) return;
@@ -4393,15 +4524,13 @@ app.addEventListener('click', async event => {
     const offset = button.hasAttribute('data-drawing-next') ? 1 : -1;
     const matchingTarget = drawingMatchingSheetIds.length ? drawingMatchingSetTarget(drawingMatchingSheetIds, drawingTarget?.sheetId, offset, analysis) : null;
     const next = analysis.sheets[currentIndex + offset];
-    if (matchingTarget) { drawingViewerEngine.selectPage(matchingTarget.pageNumber); drawingTarget = matchingTarget; }
-    else if (next) { drawingViewerEngine.selectPage(next.pageNumber); drawingTarget = createDrawingTarget({ projectId: analysis.projectId, documentId: analysis.documentId, drawingSetId: analysis.drawingSetId, drawingId: next.drawingId, sheetId: next.sheetId, pageNumber: next.pageNumber }); }
-    const targetSheet = analysis.sheets.find(item => item.sheetId === drawingTarget?.sheetId) || null;
+    const targetSheet = matchingTarget
+      ? analysis.sheets.find(item => item.sheetId === matchingTarget.sheetId) || null
+      : next || null;
     if (targetSheet) {
       const targetObservation = drawingTarget?.observationId ? analysis.observations.find(item => item.observationId === drawingTarget.observationId) : null;
-      const paintRequest = ++drawingPagePaintRequest;
-      await paintDrawingSelectionFast({ shell, analysis, sheet: targetSheet, observation: targetObservation, navigationStartedAt, requestToken: paintRequest });
-    }
-    else await renderDrawingWorkspace(shell);
+      await selectPlansSheet({ shell, analysis, sheet: targetSheet, observation: targetObservation, navigationStartedAt, scrollActiveCard: false });
+    } else await renderDrawingWorkspace(shell);
     return;
   }
   if (button.dataset.drawingZoom) {

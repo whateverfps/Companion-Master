@@ -263,6 +263,9 @@ test('Plans keeps exactly one shared Sheet Inspector beneath the drawing viewer'
   assert.match(app, /missionPlansSheetInspector/);
   assert.match(app, /constructionIntelligencePanelMarkup\(constructionIntelligencePanel\)/);
   assert.match(app, /buildConstructionIntelligencePanelModel\(/);
+  assert.match(app, /const livePlansPanel = shell === 'mission-control' \? document\.querySelector\('#missionPlansSheetInspector'\) : null;/);
+  assert.match(app, /const panel = shell === 'mission-control'\s*\?\s*\(livePlansPanel && livePlansPanel\.isConnected \? livePlansPanel : activePlansInspectorPanel\)\s*:\s*activeDrawingInspectorPanel;/);
+  assert.match(app, /if \(panel !== activePlansInspectorPanel\) activePlansInspectorPanel = panel;/);
   assert.match(app, /panel\.innerHTML = constructionIntelligencePanelMarkup\(panelModel\)/);
   assert.equal((app.match(/missionPlansSheetInspector/g) || []).length >= 1, true);
 });
