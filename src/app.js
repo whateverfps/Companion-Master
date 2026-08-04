@@ -137,6 +137,7 @@ import { createDrawingTradeContext, DRAWING_TRADE_CHANNELS } from './drawing-tra
 import { createDrawingRequirementsResolver } from './drawing-requirements-resolver.js';
 import { createProjectObjectRegistry } from './project-object-registry.js';
 import { buildConstructionIntelligencePanelModel, loadConstructionIntelligencePanelState, saveConstructionIntelligencePanelState } from './construction-intelligence-panel.js';
+import { createPlansController } from './plans-v2/plans-controller.js';
 import { acquireTrackedResource, clearTrackedResources, releaseTrackedResource, replaceTrackedResource, reportTrackedResources, snapshotTrackedResources } from './resource-lifecycle.js';
 import { BEDFORD_PROJECT_SPECIFICATION_VOCABULARY, createProjectSpecificationVocabulary } from './project-specification-vocabulary.js';
 import { preserveProjectObjectMerge, registerProjectObjectRelationships } from './project-object-operations.js';
@@ -150,7 +151,7 @@ import { answerChiefDrawingContextQuestion, buildChiefDrawingContext, createChie
 import { classifyChiefDrawingCommand, resolveChiefDrawingCommand } from './chief-drawing-command-router.js';
 import { buildChiefDrawingCards } from './chief-drawing-cards.js';
 import { building61DrawingCatalogFor } from './building-61-drawing-catalog.js';
-import { generatedDrawingCatalogFor } from './generated-drawing-catalogs.js';
+import { generatedDrawingCatalogFor, normalizeGeneratedDrawingCatalog } from './generated-drawing-catalogs.js';
 import { getPerformanceDiagnosticsState, markFirstPaint, markHydrated, performanceDiagnosticsEnabled } from './performance-diagnostics.js';
 
 installGlobalHandlers();
@@ -438,6 +439,7 @@ let activePlansInspectorPanel = null;
 let activePlansInspectorSheetId = '';
 let activePlansInspectorGeneration = 0;
 let activePlansInspectorContext = null;
+let plansV2Controller = null;
 const drawingOverlayNodeCache = new WeakMap();
 let drawingOverlayNodeCacheCount = 0;
 const drawingInteractionTrace = globalThis.__mcDrawingInteractionTrace || (globalThis.__mcDrawingInteractionTrace = { id: 0, kind: '', counts: Object.create(null) });
@@ -3758,8 +3760,91 @@ async function renderMissionControlDashboard() {
 }
 
 async function renderMissionControlPlans() {
-  $('#missionControlContent').innerHTML = '<section class="mc-drawing-control" aria-labelledby="missionControlTitle"><h1 id="missionControlTitle" tabindex="-1">Plans</h1><div id="missionDrawingViewer" class="mc-drawing-workspace"></div></section>';
-  await renderDrawingWorkspace('mission-control');
+  const usePlansV2 = (() => {
+    try {
+      const params = new URL(globalThis.location?.href || 'http://localhost/').searchParams;
+      return params.get('plansV2') === '1' || globalThis.localStorage?.getItem?.('plansV2') === '1';
+    } catch {
+      return false;
+    }
+  })();
+  if (!usePlansV2) {
+    plansV2Controller?.destroy?.();
+    plansV2Controller = null;
+    $('#missionControlContent').innerHTML = '<div id="missionDrawingViewer" class="mc-drawing-workspace"></div>';
+    await renderDrawingWorkspace('mission-control');
+    return;
+  }
+  const project = state().projects.find(item => item.id === state().activeProject) || null;
+  const documents = await engine.documents();
+  const allAnalyses = await currentDrawingAnalyses();
+  const analysis = activeDrawingViewerAnalysis?.documentId
+    ? (allAnalyses.find(item => item.documentId === activeDrawingViewerAnalysis.documentId) || activeDrawingViewerAnalysis)
+    : allAnalyses[0] || null;
+  const documentRecord = documents.find(item => item.id === analysis?.documentId) || null;
+  const pageCount = Math.max(0, Number(analysis?.sheets?.length) || 0);
+  const generatedCatalog = normalizeGeneratedDrawingCatalog(await generatedDrawingCatalogFor(documentRecord || {}, pageCount));
+  const authoritativeRecords = [...generatedCatalog, ...(building61DrawingCatalogFor(documentRecord || {}, pageCount) || [])];
+  const authoritativeByPage = new Map(authoritativeRecords.map(record => [Number(record.pdfPageNumber || record.pageNumber) || 0, record]));
+  const sheets = (analysis?.sheets || []).map(sheet => {
+    const authoritative = authoritativeByPage.get(Number(sheet.pageNumber) || Number(sheet.pdfPage) || 0) || {};
+    return {
+      ...sheet,
+      sheetNumber: sheet.sheetNumber || authoritative.sheetNumber || '',
+      sheetTitle: sheet.sheetTitle || authoritative.sheetTitle || '',
+      discipline: sheet.discipline || authoritative.discipline || '',
+      drawingType: sheet.drawingType || sheet.primarySheetType || authoritative.drawingType || authoritative.primarySheetType || '',
+      pageId: sheet.pageId || authoritative.pageId || '',
+      drawingId: sheet.drawingId || authoritative.drawingId || '',
+      documentId: sheet.documentId || analysis?.documentId || '',
+      drawingSetId: sheet.drawingSetId || analysis?.drawingSetId || '',
+      projectId: sheet.projectId || analysis?.projectId || state().activeProject || '',
+      pdfPage: sheet.pdfPage || sheet.pageNumber || authoritative.pdfPageNumber || authoritative.pageNumber || 0
+    };
+  });
+  const currentSheet = sheets.find(item => item.sheetId === drawingTarget?.sheetId || Number(item.pageNumber) === Number(drawingTarget?.pageNumber)) || sheets[0] || null;
+  plansV2Controller?.destroy?.();
+  $('#missionControlContent').innerHTML = '<div id="missionDrawingViewer" class="mc-drawing-workspace"></div>';
+  const stage = $('#missionDrawingViewer');
+  plansV2Controller = createPlansController({
+    root: stage,
+    requirementsResolver: drawingRequirementsResolver,
+    buildPanelModel: buildConstructionIntelligencePanelModel,
+    panelMarkup: constructionIntelligencePanelMarkup,
+    initialAnalysis: analysis ? { ...analysis, sheets } : { projectId: state().activeProject, drawingSetId: drawingTarget?.drawingSetId || '', sheets: [] },
+    initialSheetId: currentSheet?.sheetId || '',
+    sourceResolver: async sheet => {
+      const documentId = sheet?.documentId || analysis?.documentId || drawingTarget?.documentId || '';
+      if (!documentId) return null;
+      return engine.sourceFile(documentId);
+    },
+    onViewSource: async target => {
+      const documentRecord = (await engine.documents()).find(item => item.id === target.documentId);
+      if (!documentRecord) return;
+      const source = await engine.sourceFile(documentRecord.id);
+      if (!source?.sourceBlob) return;
+      await specificationSourceViewer.open({
+        document: documentRecord,
+        sourceBlob: source.sourceBlob,
+        pageNumber: target.pageNumber,
+        sectionNumber: target.sectionNumber,
+        sectionTitle: target.sectionTitle,
+        articleReference: target.articleReference,
+        returnTarget: specificationDrawingReturnTarget,
+        canvas: $('#specificationSourceCanvas') || undefined
+      });
+    }
+  });
+  const initializeResult = await plansV2Controller.initialize({
+    project,
+    analysis,
+    drawingSet: analysis,
+    sheets
+  });
+  if (!initializeResult?.committed && initializeResult?.error) {
+    const status = stage.querySelector('[data-plans-status]');
+    if (status) status.textContent = `Failed to load drawings: ${initializeResult.error.message || String(initializeResult.error)}`;
+  }
 }
 
 async function renderMissionControl(prefetchedDocuments = null, prefetchedSections = null) {
