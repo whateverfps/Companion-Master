@@ -1773,8 +1773,8 @@ function show(name) {
     else button.removeAttribute('aria-current');
   });
 
-  $('#pageTitle').textContent = titles[name][0];
-  $('#pageSub').textContent = titles[name][1];
+  $('#pageTitle').textContent = name === 'drawings' ? 'LEGACY DRAWINGS WORKSPACE' : titles[name][0];
+  $('#pageSub').textContent = name === 'drawings' ? 'Legacy src/app.js workspace running' : titles[name][1];
   void renderContextBusBanner(name);
 
   if (name === 'knowledge') {

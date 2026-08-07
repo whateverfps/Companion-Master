@@ -24,6 +24,17 @@ export function createPlansController({
   createInspector = createPlansSheetInspector,
   renderView = renderPlansView
 } = {}) {
+  // Visual marker to prove Plans V2 is running
+  if (document.title) {
+    document.title = 'PLANS V2 WORKSPACE';
+  }
+  
+  const store = createPlansStore({
+    projectId: initialAnalysis?.projectId || '',
+    drawingSetId: initialAnalysis?.drawingSetId || '',
+    sheets: []
+  });
+  
   // Load Building 61 data at initialization
   let building61Catalog = null;
   let building61SpecLinks = null;
@@ -52,11 +63,6 @@ export function createPlansController({
     }
   })();
   
-  const store = createPlansStore({
-    projectId: initialAnalysis?.projectId || '',
-    drawingSetId: initialAnalysis?.drawingSetId || '',
-    sheets: []
-  });
   const view = renderView(root, { title: 'Plans', sheets: [] });
   const statusNode = () => view.querySelector('[data-plans-status]');
   const sheetListNode = () => view.querySelector('[data-plans-sheet-list]');
@@ -77,21 +83,7 @@ export function createPlansController({
   const sheetSummaryNode = () => view.querySelector('[data-plans-sheet-summary]');
   const diagnosticsNode = () => view.querySelector('[data-plans-diagnostics]');
   const diagnosticsContentNode = () => view.querySelector('[data-plans-diagnostics-content]');
-  let pdfViewer = createPdfViewer({ 
-    root: stageNode(), 
-    sourceLoader: sourceResolver,
-    onRenderState: async ({ state, sheet }) => {
-      if (state === 'RENDER_COMPLETED' && sheet) {
-        // When PDF renders a new page, find the corresponding sheet and refresh the inspector
-        const storeState = store.getState();
-        // Match by pageNumber since PDF viewer renders by page number
-        const existingSheet = storeState.sheets.find(s => s.pageNumber === sheet.pageNumber);
-        if (existingSheet) {
-          await selectSheet(existingSheet);
-        }
-      }
-    }
-  });
+  let pdfViewer = createPdfViewer({ root: stageNode(), sourceLoader: sourceResolver });
   let inspector = createInspector({ 
     root: inspectorNode(), 
     requirementsResolver, 
