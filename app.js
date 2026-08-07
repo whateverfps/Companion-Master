@@ -339,9 +339,9 @@ const drawingWorkspace = createDrawingWorkspace({ viewerEngine: drawingViewerEng
 const drawingObjectDecisions = createDrawingObjectDecisionStore();
 const specificationIndex = createSpecificationIndex();
 const drawingSpecificationLinks = createDrawingSpecificationLinkService({ index: specificationIndex, persistence: engine.drawingSpecificationLinkPersistence(), onDiagnostic: metric => logger.debug('Drawing specification link persistence', metric) });
-const specificationReverseIndex = createSpecificationReverseIndex({ drawingSpecificationLinks, projectObjectRegistry });
 const projectRelationshipEngine = createProjectRelationshipEngine();
 const projectObjectRegistry = createProjectObjectRegistry({ persistence: engine.projectObjectPersistence(), onDiagnostic: metric => logger.debug('Project object registry performance', metric) });
+const specificationReverseIndex = createSpecificationReverseIndex({ drawingSpecificationLinks, projectObjectRegistry });
 const bedfordRelationshipGraph = createProjectRelationshipGraph({
   projectId: state().activeProject,
   specificationIndex,
