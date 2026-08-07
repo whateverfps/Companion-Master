@@ -128,6 +128,8 @@ import { hitTestDrawingObjects, nextDrawingObject, objectTypeForObservation, sea
 import { applyPageObjectEnrichment, enrichPageConstructionObjects, relatedObjectIdsForSelection } from './drawing-object-enrichment.js';
 import { applyDrawingCoverageCorrection, buildDrawingCoverageReview, drawingCoverageCategory, DRAWING_COVERAGE_CATEGORIES } from './drawing-coverage-review.js';
 import { createDrawingOverlay, overlayStyle, visibleDrawingOverlays } from './drawing-overlays.js';
+console.error("******** USING MAIN APP.JS ENTRY POINT ********");
+
 import { collectPageSpecificationEvidence } from './drawing-specification-evidence.js';
 import { createSpecificationIndex } from './specification-index.js';
 import { createDrawingSpecificationLinkService } from './drawing-spec-links.js';
@@ -3030,6 +3032,7 @@ function projectObjectPresentation(item) {
 }
 
 function constructionIntelligencePanelMarkup(model) {
+  console.error("******** USING CONSTRUCTION INTELLIGENCE PANEL MARKUP ********");
   const degraded = model.status === 'partial' ? '<p class="mc-ci-warning" role="status">Some construction intelligence is temporarily unavailable.</p>' : model.status === 'unavailable' ? '<p class="mc-ci-warning" role="status">Construction intelligence is unavailable for this page.</p>' : '';
   const loading = model.status === 'loading' ? '<p class="mc-ci-loading" role="status">Loading governing requirements…</p>' : '';
   const group = (key, title, content, { force = false } = {}) => !force && !content ? '' : `<details class="mc-ci-group" data-ci-group="${esc(key)}" ${constructionIntelligenceExpanded.has(key) ? 'open' : ''}><summary><span>${esc(title)}</span><span aria-hidden="true">⌄</span></summary><div class="mc-ci-group-body">${content || '<p>No governing specification has been confirmed.</p>'}</div></details>`;
