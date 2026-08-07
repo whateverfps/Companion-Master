@@ -40,9 +40,10 @@ export function buildDrawingPageModel({ documentId = '', documentType = '', draw
     const authoritativeIdentity = ['authoritative', 'manual'].includes(catalogState);
     const partialIdentity = Boolean(sheetNumber || sheetTitle || discipline !== 'Unknown' || drawingType !== 'Unknown');
     const identityStatus = authoritativeIdentity ? catalogState : catalogState === 'parser' || partialIdentity ? 'parser' : 'fallback';
+    const canonicalPageId = first(catalogRecord.pageId) || (text(documentId) ? `${text(documentId)}:page:${pdfPageNumber}` : '');
     return {
       documentId: text(documentId), drawingSetId: text(drawingSetId), projectId: text(projectId), pdfPageNumber, pdfPageIndex: index,
-      pageId: first(catalogRecord.pageId),
+      pageId: canonicalPageId,
       drawingId: first(catalogRecord.drawingId, authoritative.drawingId, analyzed.drawingId, retained.drawingId),
       sheetId: first(catalogRecord.sheetId, authoritative.sheetId, analyzed.sheetId, retained.sheetId),
       sheetNumber, normalizedSheetNumber, sheetTitle, discipline, drawingType, building, identityStatus,

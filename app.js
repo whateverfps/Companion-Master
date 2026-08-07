@@ -862,7 +862,7 @@ drawingRenderedEventTarget.addEventListener(DrawingRenderedEvent, event => {
   try {
     // Populate Bedford drawing spec links for the current page
     const sheet = detail.sheet || (activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(detail.sheet?.pageNumber)));
-    const pageId = detail.pageId || sheet?.pageId || (detail.documentId && detail.sheet?.pageNumber ? `${detail.documentId}:page:${detail.sheet.pageNumber}` : '');
+    const pageId = sheet?.pageId || detail.pageId || '';
     if (pageId && detail.projectId) {
       const sheetObservations = (activeDrawingViewerAnalysis?.observations || []).filter(item => item.sheetId === sheet?.sheetId);
       
@@ -4009,7 +4009,7 @@ async function renderMissionControlPlans() {
         });
         
         const sheetObservations = (analysis?.observations || []).filter(item => item.sheetId === sheet.sheetId);
-        const pageId = sheet.pageId || (documentRecord?.id && sheet.pageNumber ? `${documentRecord.id}:page:${sheet.pageNumber}` : '');
+        const pageId = sheet.pageId || '';
         if (pageId) {
           populateBedfordDrawingSpecLinks({
             drawingSpecificationLinks,
@@ -4041,15 +4041,13 @@ async function renderMissionControlPlans() {
   const buildingId = documentRecord?.buildingId || documentRecord?.metadata?.buildingId || '61';
   const sheets = (analysis?.sheets || []).map(sheet => {
     const authoritative = authoritativeByPage.get(Number(sheet.pageNumber) || Number(sheet.pdfPage) || 0) || {};
-    const basePageId = sheet.pageId || authoritative.pageId || '';
-    const generatedPageId = basePageId || (documentRecord?.id && sheet.pageNumber ? `${documentRecord.id}:page:${sheet.pageNumber}` : '');
     return {
       ...sheet,
       sheetNumber: sheet.sheetNumber || authoritative.sheetNumber || '',
       sheetTitle: sheet.sheetTitle || authoritative.sheetTitle || '',
       discipline: sheet.discipline || authoritative.discipline || '',
       drawingType: sheet.drawingType || sheet.primarySheetType || authoritative.drawingType || authoritative.primarySheetType || '',
-      pageId: generatedPageId,
+      pageId: sheet.pageId || authoritative.pageId || '',
       drawingId: sheet.drawingId || authoritative.drawingId || '',
       documentId: sheet.documentId || analysis?.documentId || '',
       drawingSetId: sheet.drawingSetId || analysis?.drawingSetId || '',
