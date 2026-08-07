@@ -42,6 +42,13 @@ class ChiefIntelligenceBridge {
     if (lower.includes('drawing details') || lower.includes('review')) return true;
     if (lower.includes('building') || lower.includes('room') || lower.includes('floor')) return true;
     
+    // Questions about specification usage
+    if (lower.includes('what objects') && lower.includes('specification')) return true;
+    if (lower.includes('which drawings') && lower.includes('specification')) return true;
+    if (lower.includes('which rooms') && lower.includes('specification')) return true;
+    if (lower.includes('used by') && lower.includes('specification')) return true;
+    if (lower.includes('governed by') && lower.includes('08') || lower.includes('07') || lower.includes('09')) return true;
+    
     return false;
   }
 
@@ -64,6 +71,7 @@ class ChiefIntelligenceBridge {
       facts: [],
       relationships: [],
       specifications: [],
+      specificationUsage: null,
       drawingContext: drawingContext
     };
 
@@ -105,7 +113,35 @@ class ChiefIntelligenceBridge {
       }
     }
 
+    // Get specification usage if question asks about specification usage
+    if (this.isSpecificationUsageQuestion(question)) {
+      try {
+        const specReverseIndex = globalThis.__specificationReverseIndex;
+        if (specReverseIndex) {
+          // Try to extract specification number from question
+          const specMatch = question.match(/\b(\d{2}\s?\d{2}\s?\d{2})\b/);
+          if (specMatch) {
+            const specNumber = specMatch[0].replace(/\s+/g, ' ');
+            context.specificationUsage = specReverseIndex.getSpecificationUsage(null, specNumber);
+          }
+        }
+      } catch (error) {
+        context.specificationUsage = null;
+      }
+    }
+
     return context;
+  }
+
+  /**
+   * Check if question is about specification usage
+   */
+  isSpecificationUsageQuestion(question) {
+    const lower = question.toLowerCase();
+    return lower.includes('what objects') && lower.includes('specification') ||
+           lower.includes('which drawings') && lower.includes('specification') ||
+           lower.includes('which rooms') && lower.includes('specification') ||
+           lower.includes('used by') && lower.includes('specification');
   }
 
   /**
@@ -175,6 +211,24 @@ class ChiefIntelligenceBridge {
         }
         parts.push('');
       }
+    }
+
+    // Add specification usage
+    if (context.specificationUsage) {
+      parts.push('SPECIFICATION USAGE:');
+      if (context.specificationUsage.objects.length > 0) {
+        parts.push(`Objects: ${context.specificationUsage.objects.join(', ')}`);
+      }
+      if (context.specificationUsage.pages.length > 0) {
+        parts.push(`Drawing Pages: ${context.specificationUsage.pages.join(', ')}`);
+      }
+      if (context.specificationUsage.buildings.length > 0) {
+        parts.push(`Buildings: ${context.specificationUsage.buildings.join(', ')}`);
+      }
+      if (context.specificationUsage.rooms.length > 0) {
+        parts.push(`Rooms: ${context.specificationUsage.rooms.join(', ')}`);
+      }
+      parts.push('');
     }
 
     // Add facts

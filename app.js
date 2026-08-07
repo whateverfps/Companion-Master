@@ -164,6 +164,7 @@ import { createChiefIntelligenceBridge } from './src/chief-intelligence-bridge.j
 import { ProjectStateService } from './src/project-state-service.js';
 import { ConstructionReasoningEngine } from './src/construction-reasoning-engine.js';
 import { ProjectFactEngine } from './src/project-fact-engine.js';
+import { createSpecificationReverseIndex } from './src/specification-reverse-index.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -338,6 +339,7 @@ const drawingWorkspace = createDrawingWorkspace({ viewerEngine: drawingViewerEng
 const drawingObjectDecisions = createDrawingObjectDecisionStore();
 const specificationIndex = createSpecificationIndex();
 const drawingSpecificationLinks = createDrawingSpecificationLinkService({ index: specificationIndex, persistence: engine.drawingSpecificationLinkPersistence(), onDiagnostic: metric => logger.debug('Drawing specification link persistence', metric) });
+const specificationReverseIndex = createSpecificationReverseIndex({ drawingSpecificationLinks, projectObjectRegistry });
 const projectRelationshipEngine = createProjectRelationshipEngine();
 const projectObjectRegistry = createProjectObjectRegistry({ persistence: engine.projectObjectPersistence(), onDiagnostic: metric => logger.debug('Project object registry performance', metric) });
 const bedfordRelationshipGraph = createProjectRelationshipGraph({
@@ -373,6 +375,7 @@ globalThis.__projectStateService = projectStateService;
 globalThis.__factEngine = factEngine;
 globalThis.__reasoningEngine = reasoningEngine;
 globalThis.__chiefIntelligenceBridge = chiefIntelligenceBridge;
+globalThis.__specificationReverseIndex = specificationReverseIndex;
 
 const scheduleIdleWork = callback => {
   if (typeof globalThis.requestIdleCallback === 'function') return globalThis.requestIdleCallback(callback, { timeout: 1000 });
@@ -885,6 +888,9 @@ drawingRenderedEventTarget.addEventListener(DrawingRenderedEvent, event => {
         references: [], // Would need to extract from analysis
         projectSpecificationVocabulary
       });
+      
+      // Rebuild reverse index after populating links
+      specificationReverseIndex.buildIndex();
     }
     scheduleDrawingHydration(detail);
   } finally {
@@ -4018,6 +4024,9 @@ async function renderMissionControlPlans() {
         });
       }
     }
+    
+    // Rebuild reverse index after populating links
+    specificationReverseIndex.buildIndex();
   }
   const pageCount = Math.max(0, Number(analysis?.sheets?.length) || 0);
   const generatedCatalog = normalizeGeneratedDrawingCatalog(await generatedDrawingCatalogFor(documentRecord || {}, pageCount));

@@ -98,6 +98,8 @@ export function createDrawingSpecificationLinkService({ index, persistence = nul
     remove(linkIdValue) { const current = records.get(text(linkIdValue)); if (!current) return false; records.delete(current.linkId); void enqueue(() => persistence.deleteLink(current.linkId)); return true; },
     forProject(projectId = '') { return [...records.values()].filter(item => !projectId || item.projectId === text(projectId)).map(clone); },
     forPage(pageId, objectId = undefined) { return [...records.values()].filter(item => item.drawingPageId === text(pageId) && (objectId === undefined || item.objectId === (text(objectId) || null))).map(clone); },
+    forSpecification(specificationDocumentId, sectionNumber) { return [...records.values()].filter(item => item.specificationDocumentId === text(specificationDocumentId) && item.sectionNumber === normalizeSpecificationNumber(sectionNumber)).map(clone); },
+    forObject(objectId) { return [...records.values()].filter(item => item.objectId === text(objectId)).map(clone); },
     history(linkIdValue) { return clone(records.get(text(linkIdValue))?.history || []); },
     openTarget(link) { const section = index?.get?.(link?.specificationDocumentId, link?.sectionNumber); return section ? { kind: 'source', destination: 'knowledge', projectId: link.projectId, documentId: section.documentId, sectionId: section.specificationSectionId, pageNumber: link.articleReference?.pageNumber || section.startPdfPage, sectionNumber: section.sectionNumber } : null; },
     flush: () => persistenceQueue,
