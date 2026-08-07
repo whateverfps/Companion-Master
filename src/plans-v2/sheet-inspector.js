@@ -43,17 +43,16 @@ export function createPlansSheetInspector({ root, requirementsResolver, specific
   const renderHydrated = snapshot => {
     const requirements = normalizeRequirements(snapshot.requirements || { confirmedSpecifications: [], suggestedSpecifications: [] });
     const sheet = snapshot.sheet || snapshot;
-    // Update diagnostics for page 14
-    if (sheet.pageNumber === 14) {
-      onDiagnosticsUpdate({
-        pageId: sheet.pageId,
-        sheetNumber: sheet.sheetNumber,
-        building: sheet.building,
-        confirmedCount: requirements.confirmedSpecifications?.length || 0,
-        suggestedCount: requirements.suggestedSpecifications?.length || 0,
-        specLinksCount: snapshot.specificationLinks?.length || 0
-      });
-    }
+    // Update diagnostics for all sheets
+    onDiagnosticsUpdate({
+      pageNumber: sheet.pageNumber,
+      pageId: sheet.pageId,
+      sheetNumber: sheet.sheetNumber,
+      building: sheet.building,
+      confirmedCount: requirements.confirmedSpecifications?.length || 0,
+      suggestedCount: requirements.suggestedSpecifications?.length || 0,
+      specLinksCount: snapshot.specificationLinks?.length || 0
+    });
     const model = buildPanelModel({
       sheet,
       requirements,

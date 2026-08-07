@@ -58,6 +58,7 @@ export function createPlansController({
     onViewSource,
     onDiagnosticsUpdate: (diagData) => {
       diagnostics.sheetInspector = {
+        pageNumber: diagData.pageNumber,
         pageId: diagData.pageId,
         sheetNumber: diagData.sheetNumber,
         building: diagData.building,
@@ -75,12 +76,13 @@ export function createPlansController({
   let initialized = false;
   let destroyed = false;
   
-  // Diagnostics state for page 14
+  // Diagnostics state for debugging
   const diagnostics = {
-    normalizeSheet: { pageId: null, sheetNumber: null, building: null },
-    updateHeader: { pageId: null, sheetNumber: null, sheetTitle: null, building: null, discipline: null, drawingType: null },
-    selectSheet: { pageId: null, sheetId: null, sheetNumber: null },
-    sheetInspector: { pageId: null, sheetNumber: null, building: null, confirmedCount: 0, suggestedCount: 0, specLinksCount: 0 }
+    currentAnalysis: { documentId: null, selectedPage: null, sheetsCount: 0 },
+    normalizeSheet: { pageNumber: null, pageId: null, sheetId: null, sheetNumber: null, building: null },
+    updateHeader: { pageNumber: null, pageId: null, sheetNumber: null, sheetTitle: null, building: null, discipline: null, drawingType: null },
+    selectSheet: { pageNumber: null, pageId: null, sheetId: null, sheetNumber: null },
+    sheetInspector: { pageNumber: null, pageId: null, sheetNumber: null, building: null, confirmedCount: 0, suggestedCount: 0, specLinksCount: 0 }
   };
   
   const updateDiagnosticsPanel = () => {
@@ -89,31 +91,37 @@ export function createPlansController({
     if (!diagNode || !contentNode) return;
     
     const output = {
+      'currentAnalysis.documentId': diagnostics.currentAnalysis.documentId,
+      'currentAnalysis.selectedPage': diagnostics.currentAnalysis.selectedPage,
+      'currentAnalysis.sheetsCount': diagnostics.currentAnalysis.sheetsCount,
+      'normalizeSheet.pageNumber': diagnostics.normalizeSheet.pageNumber,
       'normalizeSheet.pageId': diagnostics.normalizeSheet.pageId,
+      'normalizeSheet.sheetId': diagnostics.normalizeSheet.sheetId,
       'normalizeSheet.sheetNumber': diagnostics.normalizeSheet.sheetNumber,
-      'normalizeSheet.building': diagnostics.normalizeSheet.building,
+      'updateHeader.pageNumber': diagnostics.updateHeader.pageNumber,
       'updateHeader.pageId': diagnostics.updateHeader.pageId,
       'updateHeader.sheetNumber': diagnostics.updateHeader.sheetNumber,
       'updateHeader.sheetTitle': diagnostics.updateHeader.sheetTitle,
       'updateHeader.building': diagnostics.updateHeader.building,
       'updateHeader.discipline': diagnostics.updateHeader.discipline,
       'updateHeader.drawingType': diagnostics.updateHeader.drawingType,
+      'selectSheet.pageNumber': diagnostics.selectSheet.pageNumber,
       'selectSheet.pageId': diagnostics.selectSheet.pageId,
       'selectSheet.sheetId': diagnostics.selectSheet.sheetId,
       'selectSheet.sheetNumber': diagnostics.selectSheet.sheetNumber,
+      'sheet-inspector.pageNumber': diagnostics.sheetInspector.pageNumber,
       'sheet-inspector.pageId': diagnostics.sheetInspector.pageId,
       'sheet-inspector.sheetNumber': diagnostics.sheetInspector.sheetNumber,
       'sheet-inspector.building': diagnostics.sheetInspector.building,
-      'sheet-inspector.confirmed': diagnostics.sheetInspector.confirmedCount,
-      'sheet-inspector.suggested': diagnostics.sheetInspector.suggestedCount,
-      'sheet-inspector.specLinks': diagnostics.sheetInspector.specLinksCount
+      'specificationLinks.count': diagnostics.sheetInspector.specLinksCount,
+      'confirmed.requirements': diagnostics.sheetInspector.confirmedCount,
+      'suggested.requirements': diagnostics.sheetInspector.suggestedCount
     };
     
-    // Show panel only for page 14
-    const isPage14 = diagnostics.selectSheet.pageNumber === 14;
-    diagNode.style.display = isPage14 ? 'block' : 'none';
+    // Always show panel for debugging
+    diagNode.style.display = 'block';
     contentNode.textContent = Object.entries(output)
-      .map(([key, value]) => `${key}: ${value ?? 'null'}`)
+      .map(([key, value]) => `${key}: ${value ?? 'NULL'}`)
       .join('\n');
   };
 
@@ -148,15 +156,15 @@ export function createPlansController({
       unresolvedEvidence: Array.isArray(sheet.unresolvedEvidence) ? clone(sheet.unresolvedEvidence) : [],
       rotation: Number(sheet.rotation) || 0
     };
-    // Update diagnostics for page 14
-    if (normalized.pageNumber === 14) {
-      diagnostics.normalizeSheet = {
-        pageId: normalized.pageId,
-        sheetNumber: normalized.sheetNumber,
-        building: normalized.building
-      };
-      updateDiagnosticsPanel();
-    }
+    // Update diagnostics for all sheets
+    diagnostics.normalizeSheet = {
+      pageNumber: normalized.pageNumber,
+      pageId: normalized.pageId,
+      sheetId: normalized.sheetId,
+      sheetNumber: normalized.sheetNumber,
+      building: normalized.building
+    };
+    updateDiagnosticsPanel();
     return normalized;
   };
 
@@ -185,18 +193,17 @@ export function createPlansController({
     if (drawingSetNode()) drawingSetNode().textContent = snapshot.drawingSetId || currentAnalysis?.drawingSetId || '';
     if (sheetSummaryNode()) sheetSummaryNode().textContent = `${snapshot.sheetNumber || ''}${snapshot.sheetTitle ? ` · ${snapshot.sheetTitle}` : ''}`;
     if (toolbarStatusNode()) toolbarStatusNode().textContent = snapshot.sheetNumber ? `Sheet ${snapshot.sheetNumber} · ${snapshot.pdfPage || snapshot.pageNumber || ''}` : `PDF page ${snapshot.pdfPage || snapshot.pageNumber || ''}`;
-    // Update diagnostics for page 14
-    if (snapshot.pageNumber === 14) {
-      diagnostics.updateHeader = {
-        pageId: snapshot.pageId,
-        sheetNumber: snapshot.sheetNumber,
-        sheetTitle: snapshot.sheetTitle,
-        building: snapshot.building,
-        discipline: snapshot.discipline,
-        drawingType: snapshot.drawingType
-      };
-      updateDiagnosticsPanel();
-    }
+    // Update diagnostics for all sheets
+    diagnostics.updateHeader = {
+      pageNumber: snapshot.pageNumber,
+      pageId: snapshot.pageId,
+      sheetNumber: snapshot.sheetNumber,
+      sheetTitle: snapshot.sheetTitle,
+      building: snapshot.building,
+      discipline: snapshot.discipline,
+      drawingType: snapshot.drawingType
+    };
+    updateDiagnosticsPanel();
   };
 
   const updateSelection = snapshot => {
@@ -220,16 +227,14 @@ export function createPlansController({
     if (!renderOutcome?.committed || generation !== activeGeneration) return renderOutcome || { committed: false, cancelled: true };
     currentSource = renderOutcome.source || currentSource;
     currentZoom = 1;
-    // Update diagnostics for page 14
-    if (snapshot.pageNumber === 14) {
-      diagnostics.selectSheet = {
-        pageId: snapshot.pageId,
-        sheetId: snapshot.sheetId,
-        sheetNumber: snapshot.sheetNumber,
-        pageNumber: snapshot.pageNumber
-      };
-      updateDiagnosticsPanel();
-    }
+    // Update diagnostics for all sheets
+    diagnostics.selectSheet = {
+      pageNumber: snapshot.pageNumber,
+      pageId: snapshot.pageId,
+      sheetId: snapshot.sheetId,
+      sheetNumber: snapshot.sheetNumber
+    };
+    updateDiagnosticsPanel();
     const requirementInput = {
       projectId: snapshot.projectId || currentAnalysis?.projectId || '',
       pageEntityId: `drawing-page:${snapshot.pageId || ''}`,
@@ -307,6 +312,13 @@ export function createPlansController({
     try {
       setStatus('Loading drawing set…', 'loading');
       currentAnalysis = analysis || currentAnalysis || null;
+      // Update diagnostics for currentAnalysis
+      diagnostics.currentAnalysis = {
+        documentId: currentAnalysis?.documentId || null,
+        selectedPage: drawingSet?.currentSheetId || null,
+        sheetsCount: currentAnalysis?.sheets?.length || 0
+      };
+      updateDiagnosticsPanel();
       const normalizedSheets = Array.isArray(sheets) ? sheets.map(normalizeSheet).filter(sheet => sheet?.sheetId && sheet.documentId && Number(sheet.pageNumber) > 0) : [];
       if (project?.id || analysis?.projectId || drawingSet?.drawingSetId) {
         store.setState({
