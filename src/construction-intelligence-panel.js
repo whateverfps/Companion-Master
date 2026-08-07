@@ -38,14 +38,20 @@ function relationshipRecords(groups, names) {
 }
 
 function specificationRecords(requirements, links, { mode = 'page', objectId = '' } = {}) {
-  const records = [
-    ...list(requirements?.confirmedSpecifications),
-    ...list(requirements?.suggestedSpecifications),
-    ...list(links).filter(item => item.status !== 'rejected')
-  ].filter(item => mode === 'object'
+  // Prioritize drawing-spec-links over requirements resolver data
+  const linkRecords = list(links).filter(item => item.status !== 'rejected');
+  const records = linkRecords.length > 0
+    ? linkRecords
+    : [
+        ...list(requirements?.confirmedSpecifications),
+        ...list(requirements?.suggestedSpecifications)
+      ].filter(item => item.status !== 'rejected');
+  
+  const filteredRecords = records.filter(item => mode === 'object'
     ? text(item.objectId || item.sourceObjectId) === text(objectId) || text(item.applicabilityScope) === 'object-specific' || (!text(item.objectId || item.sourceObjectId) && !text(item.applicabilityScope))
     : text(item.applicabilityScope || 'page-wide') === 'page-wide' || text(item.objectId || item.sourceObjectId) || text(item.applicabilityScope) === 'object-specific' || !text(item.applicabilityScope));
-  return unique(records, item => `${text(item.specificationDocumentId)}:${text(item.sectionNumber).replace(/\D/g, '')}:${text(item.article?.id || item.articleReference)}`)
+  
+  return unique(filteredRecords, item => `${text(item.specificationDocumentId)}:${text(item.sectionNumber).replace(/\D/g, '')}:${text(item.article?.id || item.articleReference)}`)
     .map(item => ({
       ...item,
       label: `${text(item.sectionNumber)}${text(item.sectionTitle) ? ` — ${text(item.sectionTitle)}` : ''}`,
@@ -56,7 +62,8 @@ function specificationRecords(requirements, links, { mode = 'page', objectId = '
       canOpen: Boolean(text(item.specificationDocumentId) && text(item.sectionNumber)),
       canShowSource: Boolean(item.startPdfPage || item.sourcePageNumber),
       sourcePageNumber: Number(item.startPdfPage || item.sourcePageNumber) || null,
-      evidenceCount: Math.max(1, list(item.evidence).length, list(item.evidenceObservations).length)
+      evidenceCount: Math.max(1, list(item.evidence).length, list(item.evidenceObservations).length),
+      drawingSpecLinkId: item.linkId || item.drawingSpecLinkId || null
     }));
 }
 
