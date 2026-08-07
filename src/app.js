@@ -511,6 +511,18 @@ function scheduleDrawingHydration({ generationId, sheetId, projectId, shell, wor
       if (!ownershipValid) return;
       if (resolvedRequirements) {
         replaceTrackedResource('requirement-model', resolvedRequirements, { pageId: sheet?.pageId || '', status: resolvedRequirements.status });
+        console.info('[sheet-trace]', 'scheduleDrawingHydration finish BEFORE buildIntelligencePanel', {
+          file: 'src/app.js',
+          function: 'scheduleDrawingHydration finish',
+          line: 514,
+          sheetSource: 'closure-captured-sheet',
+          sheetNumber: sheet?.sheetNumber,
+          pageNumber: sheet?.pageNumber,
+          pageId: sheet?.pageId,
+          documentId: sheet?.documentId,
+          building: sheet?.building,
+          discipline: sheet?.discipline
+        });
         const panelModel = buildIntelligencePanel(resolvedRequirements);
         replaceTrackedResource('inspector-model', panelModel, { pageId: sheet?.pageId || '', mode: panelModel.mode, phase: 'updated' });
         if (panel !== activePlansInspectorPanel) activePlansInspectorPanel = panel;
@@ -3542,6 +3554,18 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     let section = null; try { section = specificationIndex.get(item.specificationDocumentId, item.sectionNumber); } catch { section = null; }
     return { ...item, startPdfPage: section?.startPdfPage || null };
   };
+  console.info('[sheet-trace]', 'renderDrawingWorkspaceWithProviders BEFORE buildIntelligencePanel', {
+    file: 'src/app.js',
+    function: 'renderDrawingWorkspaceWithProviders',
+    line: 3545,
+    sheetSource: 'renderDrawingWorkspaceWithProviders-sheet',
+    sheetNumber: sheet?.sheetNumber,
+    pageNumber: sheet?.pageNumber,
+    pageId: sheet?.pageId,
+    documentId: sheet?.documentId,
+    building: sheet?.building,
+    discipline: sheet?.discipline
+  });
   const buildIntelligencePanel = requirements => buildConstructionIntelligencePanelModel({
     document: selected, sheet, trade: activeTrade, selectedObject: selectedDrawingObject, pageObjects: activeDrawingObjects,
     pageStatus: analysis.viewerFallback && !analysis.metadataAvailable ? 'Manual PDF page viewing remains available.' : sheet?.identityStatus,
@@ -3675,6 +3699,18 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       const panelRequest = ++drawingPanelRefreshRequest;
       requestAnimationFrame(() => {
         if (panelRequest !== drawingPanelRefreshRequest || !panel.isConnected || workspaceRenderRequest !== drawingWorkspaceRenderRequest || drawingTarget?.documentId !== selected.id || Number(drawingTarget?.pageNumber) !== Number(sheet?.pageNumber)) return;
+        console.info('[sheet-trace]', 'renderDrawingWorkspaceWithProviders async panel refresh BEFORE buildIntelligencePanel', {
+          file: 'src/app.js',
+          function: 'renderDrawingWorkspaceWithProviders async panel refresh',
+          line: 3702,
+          sheetSource: 'renderDrawingWorkspaceWithProviders-sheet',
+          sheetNumber: sheet?.sheetNumber,
+          pageNumber: sheet?.pageNumber,
+          pageId: sheet?.pageId,
+          documentId: sheet?.documentId,
+          building: sheet?.building,
+          discipline: sheet?.discipline
+        });
         const panelStartedAt = globalThis.performance?.now?.() ?? Date.now(); const scrollTop = panel.scrollTop; const panelModel = buildIntelligencePanel(activeRequirements); const panelSignature = constructionIntelligencePanelSignature(panelModel); const panelNodeCountBefore = panel.querySelectorAll('*').length; const rightPanelCardCountBefore = panel.querySelectorAll('.mc-ci-group, .mc-ci-specifications li, .mc-ci-record-list li, .mc-ci-work-phase li').length;
         const panelUpdated = panel.dataset.panelSignature !== panelSignature;
         replaceTrackedResource('inspector-model', panelModel, { pageId: sheet?.pageId || '', mode: panelModel.mode, phase: panelUpdated ? 'updated' : 'cached' });
