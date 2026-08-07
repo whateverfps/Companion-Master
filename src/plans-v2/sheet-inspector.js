@@ -15,7 +15,7 @@ const normalizeRequirements = requirements => {
   };
 };
 
-export function createPlansSheetInspector({ root, requirementsResolver, specificationIndex, buildPanelModel = buildConstructionIntelligencePanelModel, panelMarkup = model => `<pre>${JSON.stringify(model)}</pre>`, onViewSource = () => {} } = {}) {
+export function createPlansSheetInspector({ root, requirementsResolver, specificationIndex, buildPanelModel = buildConstructionIntelligencePanelModel, panelMarkup = model => `<pre>${JSON.stringify(model)}</pre>`, onViewSource = () => {}, onDiagnosticsUpdate = () => {} } = {}) {
   const panel = root?.querySelector('[data-plans-inspector]') || root;
   const rebindHandlers = () => {
     panel.querySelectorAll('[data-object-spec-source]').forEach(button => {
@@ -43,16 +43,14 @@ export function createPlansSheetInspector({ root, requirementsResolver, specific
   const renderHydrated = snapshot => {
     const requirements = normalizeRequirements(snapshot.requirements || { confirmedSpecifications: [], suggestedSpecifications: [] });
     const sheet = snapshot.sheet || snapshot;
-    // Diagnostic logging for page 14
+    // Update diagnostics for page 14
     if (sheet.pageNumber === 14) {
-      console.log('[Plans V2 sheet-inspector renderHydrated]', {
-        pageNumber: sheet.pageNumber,
+      onDiagnosticsUpdate({
         pageId: sheet.pageId,
-        sheetId: sheet.sheetId,
         sheetNumber: sheet.sheetNumber,
         building: sheet.building,
-        confirmedSpecsCount: requirements.confirmedSpecifications?.length || 0,
-        suggestedSpecsCount: requirements.suggestedSpecifications?.length || 0,
+        confirmedCount: requirements.confirmedSpecifications?.length || 0,
+        suggestedCount: requirements.suggestedSpecifications?.length || 0,
         specLinksCount: snapshot.specificationLinks?.length || 0
       });
     }

@@ -61,6 +61,10 @@ export function renderPlansView(root, { title = 'Plans', sheets = [] } = {}) {
         </main>
         <aside id="missionPlansSheetInspector" class="mc-drawing-evidence" data-plans-inspector aria-label="Construction Intelligence"></aside>
       </div>
+      <div data-plans-diagnostics class="mc-plans-v2-diagnostics" style="position: fixed; bottom: 0; left: 0; right: 0; background: #f0f0f0; border-top: 2px solid #333; padding: 10px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 12px; z-index: 10000; display: none;">
+        <h4 style="margin: 0 0 10px 0;">Plans V2 Diagnostics (Page 14)</h4>
+        <pre data-plans-diagnostics-content style="margin: 0; white-space: pre-wrap;"></pre>
+      </div>
     </section>
   `;
   return root;

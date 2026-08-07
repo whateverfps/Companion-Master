@@ -46,14 +46,76 @@ export function createPlansController({
   const toolbarStatusNode = () => view.querySelector('[data-plans-toolbar-status]');
   const drawingSetNode = () => view.querySelector('[data-plans-drawing-set]');
   const sheetSummaryNode = () => view.querySelector('[data-plans-sheet-summary]');
+  const diagnosticsNode = () => view.querySelector('[data-plans-diagnostics]');
+  const diagnosticsContentNode = () => view.querySelector('[data-plans-diagnostics-content]');
   let pdfViewer = createPdfViewer({ root: stageNode(), sourceLoader: sourceResolver });
-  let inspector = createInspector({ root: inspectorNode(), requirementsResolver, specificationIndex, buildPanelModel, panelMarkup, onViewSource });
+  let inspector = createInspector({ 
+    root: inspectorNode(), 
+    requirementsResolver, 
+    specificationIndex, 
+    buildPanelModel, 
+    panelMarkup, 
+    onViewSource,
+    onDiagnosticsUpdate: (diagData) => {
+      diagnostics.sheetInspector = {
+        pageId: diagData.pageId,
+        sheetNumber: diagData.sheetNumber,
+        building: diagData.building,
+        confirmedCount: diagData.confirmedCount,
+        suggestedCount: diagData.suggestedCount,
+        specLinksCount: diagData.specLinksCount
+      };
+      updateDiagnosticsPanel();
+    }
+  });
   let activeGeneration = 0;
   let currentAnalysis = initialAnalysis || null;
   let currentSource = null;
   let currentZoom = 1;
   let initialized = false;
   let destroyed = false;
+  
+  // Diagnostics state for page 14
+  const diagnostics = {
+    normalizeSheet: { pageId: null, sheetNumber: null, building: null },
+    updateHeader: { pageId: null, sheetNumber: null, sheetTitle: null, building: null, discipline: null, drawingType: null },
+    selectSheet: { pageId: null, sheetId: null, sheetNumber: null },
+    sheetInspector: { pageId: null, sheetNumber: null, building: null, confirmedCount: 0, suggestedCount: 0, specLinksCount: 0 }
+  };
+  
+  const updateDiagnosticsPanel = () => {
+    const diagNode = diagnosticsNode();
+    const contentNode = diagnosticsContentNode();
+    if (!diagNode || !contentNode) return;
+    
+    const output = {
+      'normalizeSheet.pageId': diagnostics.normalizeSheet.pageId,
+      'normalizeSheet.sheetNumber': diagnostics.normalizeSheet.sheetNumber,
+      'normalizeSheet.building': diagnostics.normalizeSheet.building,
+      'updateHeader.pageId': diagnostics.updateHeader.pageId,
+      'updateHeader.sheetNumber': diagnostics.updateHeader.sheetNumber,
+      'updateHeader.sheetTitle': diagnostics.updateHeader.sheetTitle,
+      'updateHeader.building': diagnostics.updateHeader.building,
+      'updateHeader.discipline': diagnostics.updateHeader.discipline,
+      'updateHeader.drawingType': diagnostics.updateHeader.drawingType,
+      'selectSheet.pageId': diagnostics.selectSheet.pageId,
+      'selectSheet.sheetId': diagnostics.selectSheet.sheetId,
+      'selectSheet.sheetNumber': diagnostics.selectSheet.sheetNumber,
+      'sheet-inspector.pageId': diagnostics.sheetInspector.pageId,
+      'sheet-inspector.sheetNumber': diagnostics.sheetInspector.sheetNumber,
+      'sheet-inspector.building': diagnostics.sheetInspector.building,
+      'sheet-inspector.confirmed': diagnostics.sheetInspector.confirmedCount,
+      'sheet-inspector.suggested': diagnostics.sheetInspector.suggestedCount,
+      'sheet-inspector.specLinks': diagnostics.sheetInspector.specLinksCount
+    };
+    
+    // Show panel only for page 14
+    const isPage14 = diagnostics.selectSheet.pageNumber === 14;
+    diagNode.style.display = isPage14 ? 'block' : 'none';
+    contentNode.textContent = Object.entries(output)
+      .map(([key, value]) => `${key}: ${value ?? 'null'}`)
+      .join('\n');
+  };
 
   const setStatus = (text, state = 'loading') => {
     const node = statusNode();
@@ -86,17 +148,14 @@ export function createPlansController({
       unresolvedEvidence: Array.isArray(sheet.unresolvedEvidence) ? clone(sheet.unresolvedEvidence) : [],
       rotation: Number(sheet.rotation) || 0
     };
-    // Diagnostic logging for page 14
+    // Update diagnostics for page 14
     if (normalized.pageNumber === 14) {
-      console.log('[Plans V2 normalizeSheet]', {
-        pageNumber: normalized.pageNumber,
+      diagnostics.normalizeSheet = {
         pageId: normalized.pageId,
-        sheetId: normalized.sheetId,
         sheetNumber: normalized.sheetNumber,
-        building: normalized.building,
-        analysisSheetPageId: analysisSheet?.pageId,
-        sheetPageId: sheet.pageId
-      });
+        building: normalized.building
+      };
+      updateDiagnosticsPanel();
     }
     return normalized;
   };
@@ -126,17 +185,17 @@ export function createPlansController({
     if (drawingSetNode()) drawingSetNode().textContent = snapshot.drawingSetId || currentAnalysis?.drawingSetId || '';
     if (sheetSummaryNode()) sheetSummaryNode().textContent = `${snapshot.sheetNumber || ''}${snapshot.sheetTitle ? ` · ${snapshot.sheetTitle}` : ''}`;
     if (toolbarStatusNode()) toolbarStatusNode().textContent = snapshot.sheetNumber ? `Sheet ${snapshot.sheetNumber} · ${snapshot.pdfPage || snapshot.pageNumber || ''}` : `PDF page ${snapshot.pdfPage || snapshot.pageNumber || ''}`;
-    // Diagnostic logging for page 14
+    // Update diagnostics for page 14
     if (snapshot.pageNumber === 14) {
-      console.log('[Plans V2 updateHeader]', {
-        pageNumber: snapshot.pageNumber,
+      diagnostics.updateHeader = {
         pageId: snapshot.pageId,
         sheetNumber: snapshot.sheetNumber,
         sheetTitle: snapshot.sheetTitle,
+        building: snapshot.building,
         discipline: snapshot.discipline,
-        drawingType: snapshot.drawingType,
-        building: snapshot.building
-      });
+        drawingType: snapshot.drawingType
+      };
+      updateDiagnosticsPanel();
     }
   };
 
@@ -161,14 +220,15 @@ export function createPlansController({
     if (!renderOutcome?.committed || generation !== activeGeneration) return renderOutcome || { committed: false, cancelled: true };
     currentSource = renderOutcome.source || currentSource;
     currentZoom = 1;
-    // Diagnostic logging for page 14
+    // Update diagnostics for page 14
     if (snapshot.pageNumber === 14) {
-      console.log('[Plans V2 selectSheet]', {
-        pageNumber: snapshot.pageNumber,
+      diagnostics.selectSheet = {
         pageId: snapshot.pageId,
         sheetId: snapshot.sheetId,
-        sheetNumber: snapshot.sheetNumber
-      });
+        sheetNumber: snapshot.sheetNumber,
+        pageNumber: snapshot.pageNumber
+      };
+      updateDiagnosticsPanel();
     }
     const requirementInput = {
       projectId: snapshot.projectId || currentAnalysis?.projectId || '',
