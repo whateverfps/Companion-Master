@@ -51,6 +51,23 @@ function specificationRecords(requirements, links, { mode = 'page', objectId = '
     ? text(item.objectId || item.sourceObjectId) === text(objectId) || text(item.applicabilityScope) === 'object-specific' || (!text(item.objectId || item.sourceObjectId) && !text(item.applicabilityScope))
     : text(item.applicabilityScope || 'page-wide') === 'page-wide' || text(item.objectId || item.sourceObjectId) || text(item.applicabilityScope) === 'object-specific' || !text(item.applicabilityScope));
   
+  // Log for diagnostic trace - only log once per unique pageId
+  const firstPageId = filteredRecords[0]?.drawingPageId || filteredRecords[0]?.pageId;
+  if (firstPageId && !globalThis.__specRecordsLogged?.has(firstPageId)) {
+    globalThis.__specRecordsLogged = globalThis.__specRecordsLogged || new Set();
+    globalThis.__specRecordsLogged.add(firstPageId);
+    console.log('[construction-intelligence-panel specificationRecords]', {
+      activePageId: firstPageId,
+      linkRecordsCount: linkRecords.length,
+      filteredRecordsCount: filteredRecords.length,
+      mode,
+      objectId,
+      confirmedLinks: filteredRecords.filter(r => r.status === 'confirmed').map(r => ({ sectionNumber: r.sectionNumber, origin: r.origin, confidence: r.confidence })),
+      suggestedLinks: filteredRecords.filter(r => r.status === 'suggested').map(r => ({ sectionNumber: r.sectionNumber, origin: r.origin, confidence: r.confidence })),
+      rejectedLinks: linkRecords.filter(r => r.status === 'rejected').map(r => ({ sectionNumber: r.sectionNumber, origin: r.origin, confidence: r.confidence }))
+    });
+  }
+  
   return unique(filteredRecords, item => `${text(item.specificationDocumentId)}:${text(item.sectionNumber).replace(/\D/g, '')}:${text(item.article?.id || item.articleReference)}`)
     .map(item => ({
       ...item,

@@ -41,6 +41,16 @@ export function buildDrawingPageModel({ documentId = '', documentType = '', draw
     const partialIdentity = Boolean(sheetNumber || sheetTitle || discipline !== 'Unknown' || drawingType !== 'Unknown');
     const identityStatus = authoritativeIdentity ? catalogState : catalogState === 'parser' || partialIdentity ? 'parser' : 'fallback';
     const canonicalPageId = first(catalogRecord.pageId) || (text(documentId) ? `${text(documentId)}:page:${pdfPageNumber}` : '');
+    if (pdfPageNumber === 14) {
+      console.log('[Drawing Page Model]', {
+        pdfPageNumber,
+        pageId: canonicalPageId,
+        documentId: text(documentId),
+        sheetId: first(catalogRecord.sheetId, authoritative.sheetId, analyzed.sheetId, retained.sheetId),
+        sheetNumber,
+        catalogPageId: first(catalogRecord.pageId)
+      });
+    }
     return {
       documentId: text(documentId), drawingSetId: text(drawingSetId), projectId: text(projectId), pdfPageNumber, pdfPageIndex: index,
       pageId: canonicalPageId,
