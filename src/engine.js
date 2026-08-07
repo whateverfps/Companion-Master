@@ -1760,7 +1760,7 @@ export const engine = {
         }
       }
 
-      const evidenceContext = buildContext(hits);
+      const evidenceContext = buildContext(hits, cleanedPrompt, options.drawingContext);
       const context = [
         evidenceContext,
         structuredAnalysis,

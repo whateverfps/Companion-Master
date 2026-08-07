@@ -4,6 +4,7 @@ import {
   normalizedText,
   sectionNumberKey
 } from './data-model.js';
+import { getChiefIntelligenceBridge } from './chief-intelligence-bridge.js';
 
 const STOP = new Set(
   [
@@ -4796,10 +4797,28 @@ export function retrieve(
   );
 }
 
-export function buildContext(hits) {
+export function buildContext(hits, question = '', drawingContext = null) {
   const safeHits = Array.isArray(hits)
     ? hits
     : [];
+
+  // Add Mission Companion intelligence context if available
+  let projectContext = '';
+  try {
+    const bridge = getChiefIntelligenceBridge();
+    if (bridge && bridge.initialized) {
+      const context = bridge.buildProjectContext(question, drawingContext);
+      if (context.hasContext && bridge.hasSufficientEvidence(context)) {
+        projectContext = bridge.buildContextString(context);
+        if (projectContext) {
+          projectContext = `MISSION COMPANION PROJECT INTELLIGENCE:\n${projectContext}\n\n`;
+        }
+      }
+    }
+  } catch (error) {
+    // If bridge fails, continue without project context
+    projectContext = '';
+  }
 
   const conflictNote =
     hits?.meta?.conflicts?.length
@@ -4849,7 +4868,7 @@ ${hit.text || ''}`;
     })
     .join('\n\n---\n\n');
 
-  return `${sourceContext}${conflictNote}`;
+  return `${projectContext}${sourceContext}${conflictNote}`;
 }
 
 function splitMaterialClaims(answer) {

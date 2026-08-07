@@ -160,6 +160,10 @@ import { buildChiefDrawingCards } from './chief-drawing-cards.js';
 import { building61DrawingCatalogFor } from './building-61-drawing-catalog.js';
 import { generatedDrawingCatalogFor, normalizeGeneratedDrawingCatalog } from './generated-drawing-catalogs.js';
 import { getPerformanceDiagnosticsState, markFirstPaint, markHydrated, performanceDiagnosticsEnabled } from './performance-diagnostics.js';
+import { createChiefIntelligenceBridge } from './src/chief-intelligence-bridge.js';
+import { ProjectStateService } from './src/project-state-service.js';
+import { ConstructionReasoningEngine } from './src/construction-reasoning-engine.js';
+import { ProjectFactEngine } from './src/project-fact-engine.js';
 
 installGlobalHandlers();
 setLifecycle('loading-ui');
@@ -351,6 +355,25 @@ const specificationExplorer = createSpecificationExplorer({
 });
 globalThis.__specificationExplorer = specificationExplorer;
 const constructionGraph = createConstructionGraph({ persistence: engine.constructionGraphPersistence(), relationshipEngine: projectRelationshipEngine, objectRegistry: projectObjectRegistry, onDiagnostic: metric => logger.debug('Construction graph performance', metric) });
+
+// Initialize Mission Companion intelligence engines
+const projectStateService = new ProjectStateService();
+projectStateService.initializeDefaultStates();
+
+const factEngine = new ProjectFactEngine();
+factEngine.initialize(constructionGraph, projectRelationshipEngine);
+
+const reasoningEngine = new ConstructionReasoningEngine();
+reasoningEngine.initialize(constructionGraph, factEngine, projectRelationshipEngine, null);
+
+const chiefIntelligenceBridge = createChiefIntelligenceBridge();
+chiefIntelligenceBridge.initialize(constructionGraph, factEngine, projectRelationshipEngine, reasoningEngine, projectStateService);
+
+globalThis.__projectStateService = projectStateService;
+globalThis.__factEngine = factEngine;
+globalThis.__reasoningEngine = reasoningEngine;
+globalThis.__chiefIntelligenceBridge = chiefIntelligenceBridge;
+
 const scheduleIdleWork = callback => {
   if (typeof globalThis.requestIdleCallback === 'function') return globalThis.requestIdleCallback(callback, { timeout: 1000 });
   return setTimeout(() => callback({ didTimeout: true, timeRemaining: () => 0 }), 0);
