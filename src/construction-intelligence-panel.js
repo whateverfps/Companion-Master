@@ -150,6 +150,7 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
     const pageInsights = relationshipRecords(input.relationshipGroups, ['chiefInsights', 'insights']);
     const warnings = unique([...list(input.requirements?.warnings), ...list(input.requirements?.providerFailures)].map(item => ({ label: text(item?.message || item?.warning || item), detail: text(item?.code || item?.provider || '') })), item => `${item.label}:${item.detail}`);
     const unresolvedEvidence = unique([...specifications.filter(item => item.status === 'suggested').map(item => ({ label: item.sectionNumber, detail: item.sectionTitle || item.evidenceText || '' })), ...list(input.unresolvedEvidence)], item => `${item.label}:${item.detail}`);
+    const rejectedSpecifications = specifications.filter(item => item.status === 'rejected');
     return {
       mode: 'page',
       status: intelligenceStatus,
@@ -177,7 +178,7 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
         warnings,
         unresolvedEvidence
       },
-      specifications: { confirmed: specifications.filter(item => item.status === 'confirmed'), suggested: specifications.filter(item => item.status === 'suggested') },
+      specifications: { confirmed: specifications.filter(item => item.status === 'confirmed'), suggested: specifications.filter(item => item.status === 'suggested'), rejected: rejectedSpecifications },
       fieldRequirements,
       fieldWork: fieldWork(input.requirements),
       drawingContent: counts,

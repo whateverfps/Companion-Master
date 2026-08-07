@@ -19,6 +19,7 @@ export function createPlansController({
   initialSheetId = '',
   sourceResolver = async () => null,
   onViewSource = () => {},
+  drawingSpecificationLinks = null,
   createPdfViewer = createPlansPdfViewer,
   createInspector = createPlansSheetInspector,
   renderView = renderPlansView
@@ -235,15 +236,20 @@ export function createPlansController({
       sheetNumber: snapshot.sheetNumber
     };
     updateDiagnosticsPanel();
+    
+    // Query drawingSpecificationLinks for the canonical pageId
+    const canonicalPageId = snapshot.pageId || '';
+    const specificationLinksFromDb = drawingSpecificationLinks && canonicalPageId ? drawingSpecificationLinks.forPage(canonicalPageId) : [];
+    
     const requirementInput = {
       projectId: snapshot.projectId || currentAnalysis?.projectId || '',
-      pageEntityId: `drawing-page:${snapshot.pageId || ''}`,
+      pageEntityId: `drawing-page:${canonicalPageId}`,
       selectedObjectId: '',
       selectedObjectEntityId: '',
       selectedRoomEntityId: '',
       viewportContext: null,
       tradeChannel: null,
-      drawingSpecLinks: snapshot.specificationLinks || [],
+      drawingSpecLinks: specificationLinksFromDb || [],
       projectWideRequirements: []
     };
     const requirements = await requirementsResolver.resolveLatest(requirementInput);
@@ -251,7 +257,7 @@ export function createPlansController({
     const panelModel = inspector.renderHydrated({
       sheet: snapshot,
       requirements: requirements.result || {},
-      specificationLinks: snapshot.specificationLinks || [],
+      specificationLinks: specificationLinksFromDb || [],
       unresolvedEvidence: snapshot.unresolvedEvidence || []
     });
     store.setRequirements('complete', requirements.result || {});

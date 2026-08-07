@@ -3197,7 +3197,7 @@ function constructionIntelligencePanelMarkup(model) {
   const group = (key, title, content, { force = false } = {}) => !force && !content ? '' : `<details class="mc-ci-group" data-ci-group="${esc(key)}" ${constructionIntelligenceExpanded.has(key) ? 'open' : ''}><summary><span>${esc(title)}</span><span aria-hidden="true">⌄</span></summary><div class="mc-ci-group-body">${content || ''}</div></details>`;
   const recordList = items => `<ul class="mc-ci-record-list">${items.map(item => `<li><strong>${esc(item.label)}</strong>${item.relationship ? `<span class="mc-ci-badge">${esc(item.relationship.verificationState)}</span>` : ''}${item.target ? `<button data-project-relationship-open="${esc(item.relationship.relationshipId)}">Open</button>` : ''}</li>`).join('')}</ul>`;
   const relationshipGroups = groups => Object.entries(groups || {}).filter(([, items]) => items?.length).map(([title, items]) => `<div class="mc-ci-subgroup"><h5>${esc(title.replace(/([A-Z])/g, ' $1'))}</h5>${recordList(items)}</div>`).join('');
-  const specificationCards = items => `<ol class="mc-ci-specifications">${items.map(item => `<li><div><strong>${esc(item.sectionNumber)}</strong><span>${esc(item.sectionTitle)}</span></div><div class="mc-ci-spec-meta"><span class="mc-ci-badge ${esc(item.displayStatus)}">${esc(item.displayStatus)}</span><span>${Math.round((Number(item.confidence) || 0) * 100)}% confidence</span><span>${fmt(item.evidenceCount)} evidence</span>${item.applicabilityScopes?.length ? `<span>${esc(item.applicabilityScopes.join(' · '))}</span>` : ''}</div>${item.reason ? `<p class="mc-ci-spec-reason">${esc(item.reason)}</p>` : ''}${item.evidence?.length ? `<details class="mc-ci-evidence"><summary>Supporting evidence (${fmt(item.evidence.length)})</summary><ul>${item.evidence.map(evidence => `<li><strong>${esc(evidence.evidenceType || evidence.source || 'Drawing evidence')}</strong><span>${esc(evidence.evidenceText || evidence.text || '')}</span></li>`).join('')}</ul></details>` : item.evidenceText ? `<div class="mc-ci-evidence"><strong>${esc(item.evidenceSource || 'Drawing evidence')}</strong><p>${esc(item.evidenceText)}</p></div>` : ''}<div class="mc-ci-actions">${item.canShowSource ? `<button data-object-spec-source="${esc(item.specificationDocumentId)}" data-object-spec-page="${item.sourcePageNumber}" data-object-spec-section="${esc(item.sectionNumber)}">View Source</button>` : ''}${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject</button>` : ''}</div></li>`).join('')}</ol>`;
+  const specificationCards = items => `<ol class="mc-ci-specifications">${items.map(item => `<li><div><strong>${esc(item.sectionNumber)}</strong><span>${esc(item.sectionTitle)}</span></div><div class="mc-ci-spec-meta"><span class="mc-ci-badge ${esc(item.displayStatus)}">${esc(item.displayStatus)}</span><span>${Math.round((Number(item.confidence) || 0) * 100)}% confidence</span><span>Origin: ${esc(item.evidenceSource || item.origin || 'Unknown')}</span></div>${item.reason ? `<p class="mc-ci-spec-reason">Reason: ${esc(item.reason)}</p>` : ''}${item.evidence?.length ? `<details class="mc-ci-evidence"><summary>Supporting evidence (${fmt(item.evidence.length)})</summary><ul>${item.evidence.map(evidence => `<li><strong>${esc(evidence.evidenceType || evidence.source || 'Drawing evidence')}</strong><span>${esc(evidence.evidenceText || evidence.text || '')}</span></li>`).join('')}</ul></details>` : item.evidenceText ? `<div class="mc-ci-evidence"><strong>${esc(item.evidenceSource || 'Drawing evidence')}</strong><p>${esc(item.evidenceText)}</p></div>` : ''}<div class="mc-ci-actions">${item.canShowSource ? `<button data-object-spec-source="${esc(item.specificationDocumentId)}" data-object-spec-page="${item.sourcePageNumber}" data-object-spec-section="${esc(item.sectionNumber)}">View Source</button>` : ''}${item.status === 'suggested' && item.relationshipId ? `<button data-project-relationship-confirm="${esc(item.relationshipId)}">Confirm</button><button data-project-relationship-reject="${esc(item.relationshipId)}">Reject</button>` : item.status === 'suggested' && item.drawingSpecLinkId ? `<button data-drawing-confirm-spec="${esc(item.drawingSpecLinkId)}">Confirm</button><button data-drawing-reject-spec="${esc(item.drawingSpecLinkId)}">Reject</button>` : ''}</div></li>`).join('')}</ol>`;
   const fieldWork = groups => groups.map(group => `<div class="mc-ci-work-phase"><h5>${esc(group.phase)}</h5><ul>${group.items.map(item => `<li><span aria-hidden="true">□</span><div><strong>${esc(item.label)}</strong><small>${esc(item.sectionNumber)} · ${esc(item.sectionTitle)}</small></div></li>`).join('')}</ul></div>`).join('');
   const compactFacts = items => `<dl class="mc-ci-facts">${items.filter(([, value]) => value !== null && value !== undefined && value !== '').map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>`;
   const compactList = (items, { empty = '', title = '', detail = item => item.detail || item.reason || item.evidenceText || item.verificationState || '', label = item => item.label || item.title || item.sectionNumber || item.value || item.name || item.identifier || item.referenceNumber || item.reference || 'Item' } = {}) => items?.length ? `${title ? `<h5>${esc(title)}</h5>` : ''}<ul class="mc-ci-record-list">${items.map(item => `<li><strong>${esc(label(item))}</strong>${detail(item) ? `<span>${esc(detail(item))}</span>` : ''}${item.relationship ? `<span class="mc-ci-badge">${esc(item.relationship.verificationState)}</span>` : ''}${item.target ? `<button data-project-relationship-open="${esc(item.relationship.relationshipId)}">Open</button>` : ''}</li>`).join('')}</ul>` : empty;
@@ -3214,10 +3214,11 @@ function constructionIntelligencePanelMarkup(model) {
     const counts = Object.entries(page.objectCounts || {});
     const confirmed = Array.isArray(model?.specifications?.confirmed) ? model.specifications.confirmed : [];
     const suggested = Array.isArray(model?.specifications?.suggested) ? model.specifications.suggested : [];
+    const rejected = Array.isArray(model?.specifications?.rejected) ? model.specifications.rejected : [];
     const specs = [...confirmed, ...suggested];
     const governedRequirements = confirmed.length || suggested.length
       ? `${confirmed.length ? `<section class="mc-ci-specification-set"><h4>Confirmed Specifications</h4>${specificationCards(confirmed)}</section>` : ''}${suggested.length ? `<section class="mc-ci-specification-set"><h4>Suggested Specifications</h4>${specificationCards(suggested)}</section>` : ''}`
-      : '<p>No governing specifications were identified for this sheet.</p>';
+      : '<p>No governing specifications were found for this sheet.</p>';
     const metadata = compactFacts([
       ['Building', page.building || 'Not identified'],
       ['Drawing set', page.drawingSet || page.drawing || 'Not identified'],
@@ -3231,30 +3232,20 @@ function constructionIntelligencePanelMarkup(model) {
     const evidence = `${countGrid([['Identified rooms', page.objectCounts?.room || 0], ...counts.filter(([label]) => label !== 'room')])}${compactList(page.schedules, { title: 'Schedules found' })}${compactList(page.legends, { title: 'Legends found' })}${compactList(page.keyedNotes, { title: 'Keyed notes found' })}${compactList(page.references, { title: 'Explicit references found' })}`;
     const related = `${compactList(page.relatedDrawings, { title: 'Related drawings' })}${compactList(page.relatedDetails, { title: 'Related details' })}`;
     const warnings = `${compactList(page.warnings, { title: 'Warnings' })}${compactList(page.unresolvedEvidence, { title: 'Unresolved evidence' })}`;
+    const specCounts = `<div class="mc-ci-spec-counts"><small>Confirmed Specifications: ${confirmed.length} · Suggested Specifications: ${suggested.length} · Rejected Specifications: ${rejected.length}</small></div>`;
+    const sourceFooter = `<div class="mc-ci-source-footer"><small>Source: Drawing Specification Relationship Engine</small></div>`;
     return `<div class="mc-construction-intelligence" data-panel-mode="page" data-intelligence-status="${esc(model.status)}"><header><span>CONSTRUCTION WORKSPACE</span><h3>Sheet Inspector</h3><p>${esc(page.sheet)} · ${esc(page.sheetTitle || page.discipline)}</p>${degraded}</header>
       ${group('sheet-metadata', 'Sheet Metadata', metadata, { force: true })}
       ${group('sheet-evidence', 'Sheet Evidence', evidence, { force: true })}
-      ${group('specifications', 'Governing Requirements', governedRequirements, { force: true })}
+      ${group('specifications', 'Governing Requirements', governedRequirements + specCounts, { force: true })}
       ${group('related-drawings', 'Related Drawings and Details', related)}
       ${group('warnings', 'Warnings and Unresolved Evidence', warnings)}
+      ${sourceFooter}
       ${model.diagnostics.length ? `<details class="mc-ci-developer" data-ci-group="developer-diagnostics" hidden><summary>Developer Diagnostics</summary></details>` : ''}</div>`;
   }
   const object = model.object;
   const confirmed = Array.isArray(model?.specifications?.confirmed) ? model.specifications.confirmed : [];
   const suggested = Array.isArray(model?.specifications?.suggested) ? model.specifications.suggested : [];
-  if ((model?.sheet?.sheetNumber || model?.page?.sheet || '') === '61IN101') {
-    console.group('[61IN101] markup normalized arrays');
-    console.log({
-      model,
-      modelKeys: Object.keys(model || {}),
-      specificationKeys: Object.keys(model?.specifications || {}),
-      confirmedCount: confirmed.length,
-      suggestedCount: suggested.length,
-      confirmedSections: confirmed.map(item => item.sectionNumber),
-      suggestedSections: suggested.map(item => item.sectionNumber)
-    });
-    console.groupEnd();
-  }
   const specs = [...confirmed, ...suggested];
   const governedRequirements = confirmed.length || suggested.length
     ? `${confirmed.length ? `<section class="mc-ci-specification-set"><h4>Confirmed Specifications</h4>${specificationCards(confirmed)}</section>` : ''}${suggested.length ? `<section class="mc-ci-specification-set"><h4>Suggested Specifications</h4>${specificationCards(suggested)}</section>` : ''}`
@@ -4065,6 +4056,7 @@ async function renderMissionControlPlans() {
     initialAnalysis: analysis ? { ...analysis, sheets } : { projectId: state().activeProject, drawingSetId: drawingTarget?.drawingSetId || '', sheets: [] },
     initialSheetId: currentSheet?.sheetId || '',
     relationshipGraph: bedfordRelationshipGraph,
+    drawingSpecificationLinks,
     sourceResolver: async sheet => {
       const documentId = sheet?.documentId || analysis?.documentId || drawingTarget?.documentId || '';
       if (!documentId) return null;
