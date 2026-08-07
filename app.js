@@ -858,17 +858,32 @@ drawingRenderedEventTarget.addEventListener(DrawingRenderedEvent, event => {
   try {
     // Populate Bedford drawing spec links for the current page
     if (detail.pageId && detail.projectId) {
+      const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => item.pageId === detail.pageId);
+      const sheetObservations = (activeDrawingViewerAnalysis?.observations || []).filter(item => item.sheetId === sheet?.sheetId);
+      
+      // Clear existing auto-generated links for this page
       const existingLinks = drawingSpecificationLinks.forPage(detail.pageId);
-      if (existingLinks.length === 0) {
-        const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => item.pageId === detail.pageId);
-        populateBedfordDrawingSpecLinks({
-          drawingSpecificationLinks,
-          specificationIndex,
-          projectId: detail.projectId,
-          drawingPageId: detail.pageId,
-          sheetDiscipline: sheet?.discipline || ''
-        });
-      }
+      existingLinks.forEach(link => {
+        if (link.origin === 'bedford-import' || link.origin === 'explicit-reference') {
+          drawingSpecificationLinks.remove(link.linkId);
+        }
+      });
+      
+      populateBedfordDrawingSpecLinks({
+        drawingSpecificationLinks,
+        specificationIndex,
+        projectId: detail.projectId,
+        drawingPageId: detail.pageId,
+        sheetDiscipline: sheet?.discipline || '',
+        sheet,
+        observations: sheetObservations,
+        schedules: [], // Would need to extract from analysis
+        legends: [], // Would need to extract from analysis
+        occurrences: [], // Would need to extract from analysis
+        keyedNotes: [], // Would need to extract from analysis
+        activeDrawingObjects,
+        references: [] // Would need to extract from analysis
+      });
     }
     scheduleDrawingHydration(detail);
   } finally {
@@ -3975,12 +3990,29 @@ async function renderMissionControlPlans() {
     // Populate drawing-spec-links for the current drawing
     if (analysis?.documentId && analysis?.sheets?.length) {
       for (const sheet of analysis.sheets) {
+        // Clear existing auto-generated links for this page first
+        const existingLinks = drawingSpecificationLinks.forPage(sheet.pageId);
+        existingLinks.forEach(link => {
+          if (link.origin === 'bedford-import' || link.origin === 'explicit-reference') {
+            drawingSpecificationLinks.remove(link.linkId);
+          }
+        });
+        
+        const sheetObservations = (analysis?.observations || []).filter(item => item.sheetId === sheet.sheetId);
         populateBedfordDrawingSpecLinks({
           drawingSpecificationLinks,
           specificationIndex,
           projectId: project?.id || analysis?.projectId || state().activeProject || '',
           drawingPageId: sheet.pageId,
-          sheetDiscipline: sheet.discipline || ''
+          sheetDiscipline: sheet.discipline || '',
+          sheet,
+          observations: sheetObservations,
+          schedules: [], // Would need to extract from analysis
+          legends: [], // Would need to extract from analysis
+          occurrences: [], // Would need to extract from analysis
+          keyedNotes: [], // Would need to extract from analysis
+          activeDrawingObjects: [], // Will be populated when drawing is rendered
+          references: [] // Would need to extract from analysis
         });
       }
     }
