@@ -1,5 +1,3 @@
-console.error("******** USING PLANS CONTROLLER ********");
-
 import { createPlansStore } from './plans-store.js';
 import { createPlansPdfViewer } from './pdf-viewer.js';
 import { createPlansSheetInspector } from './sheet-inspector.js';
@@ -264,7 +262,9 @@ export function createPlansController({
 
   async function selectSheet(sheet) {
     if (!sheet || destroyed) return { committed: false };
-    const snapshot = clone(sheet);
+    // Normalize sheet to get authoritative Building 61 data instead of stale incoming data
+    const normalizedSheet = normalizeSheet(sheet);
+    const snapshot = clone(normalizedSheet);
     const generation = ++activeGeneration;
     store.setCurrentSheet(snapshot);
     updateHeader(snapshot);
