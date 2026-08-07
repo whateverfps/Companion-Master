@@ -809,6 +809,7 @@ async function selectPlansSheet({ analysis, sheet, observation = null, shell = '
     emitDrawingRendered({
       generationId: snapshot.generationId,
       sheetId: snapshot.sheetId,
+      pageId: sheet.pageId || '',
       projectId: snapshot.projectId,
       shell,
       workspaceRenderRequest: drawingWorkspaceRenderRequest,
@@ -860,12 +861,13 @@ drawingRenderedEventTarget.addEventListener(DrawingRenderedEvent, event => {
   drawingBackgroundSubscriberDepth += 1;
   try {
     // Populate Bedford drawing spec links for the current page
-    if (detail.pageId && detail.projectId) {
-      const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => item.pageId === detail.pageId);
+    const sheet = detail.sheet || (activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(detail.sheet?.pageNumber)));
+    const pageId = detail.pageId || sheet?.pageId || (detail.documentId && detail.sheet?.pageNumber ? `${detail.documentId}:page:${detail.sheet.pageNumber}` : '');
+    if (pageId && detail.projectId) {
       const sheetObservations = (activeDrawingViewerAnalysis?.observations || []).filter(item => item.sheetId === sheet?.sheetId);
       
       // Clear existing auto-generated links for this page
-      const existingLinks = drawingSpecificationLinks.forPage(detail.pageId);
+      const existingLinks = drawingSpecificationLinks.forPage(pageId);
       existingLinks.forEach(link => {
         if (link.origin === 'bedford-import' || link.origin === 'explicit-reference' || link.origin === 'object-recognition' || link.origin === 'drawing-metadata') {
           drawingSpecificationLinks.remove(link.linkId);
@@ -876,7 +878,7 @@ drawingRenderedEventTarget.addEventListener(DrawingRenderedEvent, event => {
         drawingSpecificationLinks,
         specificationIndex,
         projectId: detail.projectId,
-        drawingPageId: detail.pageId,
+        drawingPageId: pageId,
         sheetDiscipline: sheet?.discipline || '',
         sheet,
         observations: sheetObservations,
@@ -3809,6 +3811,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   emitDrawingRendered({
     generationId: drawingWorkspaceRenderRequest,
     sheetId: sheet?.sheetId || '',
+    pageId: sheet?.pageId || '',
     projectId: analysis?.projectId || state().activeProject,
     shell,
     workspaceRenderRequest,
@@ -4006,22 +4009,25 @@ async function renderMissionControlPlans() {
         });
         
         const sheetObservations = (analysis?.observations || []).filter(item => item.sheetId === sheet.sheetId);
-        populateBedfordDrawingSpecLinks({
-          drawingSpecificationLinks,
-          specificationIndex,
-          projectId: project?.id || analysis?.projectId || state().activeProject || '',
-          drawingPageId: sheet.pageId,
-          sheetDiscipline: sheet.discipline || '',
-          sheet,
-          observations: sheetObservations,
-          schedules: [], // Would need to extract from analysis
-          legends: [], // Would need to extract from analysis
-          occurrences: [], // Would need to extract from analysis
-          keyedNotes: [], // Would need to extract from analysis
-          activeDrawingObjects: [], // Will be populated when drawing is rendered
-          references: [], // Would need to extract from analysis
-          projectSpecificationVocabulary
-        });
+        const pageId = sheet.pageId || (documentRecord?.id && sheet.pageNumber ? `${documentRecord.id}:page:${sheet.pageNumber}` : '');
+        if (pageId) {
+          populateBedfordDrawingSpecLinks({
+            drawingSpecificationLinks,
+            specificationIndex,
+            projectId: project?.id || analysis?.projectId || state().activeProject || '',
+            drawingPageId: pageId,
+            sheetDiscipline: sheet.discipline || '',
+            sheet,
+            observations: sheetObservations,
+            schedules: [], // Would need to extract from analysis
+            legends: [], // Would need to extract from analysis
+            occurrences: [], // Would need to extract from analysis
+            keyedNotes: [], // Would need to extract from analysis
+            activeDrawingObjects: [], // Will be populated when drawing is rendered
+            references: [], // Would need to extract from analysis
+            projectSpecificationVocabulary
+          });
+        }
       }
     }
     
@@ -4032,19 +4038,23 @@ async function renderMissionControlPlans() {
   const generatedCatalog = normalizeGeneratedDrawingCatalog(await generatedDrawingCatalogFor(documentRecord || {}, pageCount));
   const authoritativeRecords = [...generatedCatalog, ...(building61DrawingCatalogFor(documentRecord || {}, pageCount) || [])];
   const authoritativeByPage = new Map(authoritativeRecords.map(record => [Number(record.pdfPageNumber || record.pageNumber) || 0, record]));
+  const buildingId = documentRecord?.buildingId || documentRecord?.metadata?.buildingId || '61';
   const sheets = (analysis?.sheets || []).map(sheet => {
     const authoritative = authoritativeByPage.get(Number(sheet.pageNumber) || Number(sheet.pdfPage) || 0) || {};
+    const basePageId = sheet.pageId || authoritative.pageId || '';
+    const generatedPageId = basePageId || (documentRecord?.id && sheet.pageNumber ? `${documentRecord.id}:page:${sheet.pageNumber}` : '');
     return {
       ...sheet,
       sheetNumber: sheet.sheetNumber || authoritative.sheetNumber || '',
       sheetTitle: sheet.sheetTitle || authoritative.sheetTitle || '',
       discipline: sheet.discipline || authoritative.discipline || '',
       drawingType: sheet.drawingType || sheet.primarySheetType || authoritative.drawingType || authoritative.primarySheetType || '',
-      pageId: sheet.pageId || authoritative.pageId || '',
+      pageId: generatedPageId,
       drawingId: sheet.drawingId || authoritative.drawingId || '',
       documentId: sheet.documentId || analysis?.documentId || '',
       drawingSetId: sheet.drawingSetId || analysis?.drawingSetId || '',
       projectId: sheet.projectId || analysis?.projectId || state().activeProject || '',
+      building: sheet.building || authoritative.building || buildingId || '',
       pdfPage: sheet.pdfPage || sheet.pageNumber || authoritative.pdfPageNumber || authoritative.pageNumber || 0
     };
   });
