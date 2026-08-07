@@ -1,7 +1,7 @@
 import { ProjectStateService } from './project-state-service.js';
 import { ConstructionReasoningEngine } from './construction-reasoning-engine.js';
 import { ProjectFactEngine } from './project-fact-engine.js';
-import { ProjectRelationshipEngine } from './project-relationship-engine.js';
+import { createProjectRelationshipEngine } from './project-relationship-engine.js';
 import { createConstructionGraph } from './construction-graph.js';
 
 class ChiefIntelligenceBridge {
