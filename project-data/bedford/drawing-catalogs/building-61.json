@@ -3,6 +3,7 @@
   "sourceFileName": "518-22-700.Bedford.EHRM.IFC.B61.20260316.pdf",
   "sourceFingerprint": "",
   "pageCount": 70,
+  "building": "61",
   "sheets": [
     {"pdfPageNumber": 1, "pageId": "518-22-700.Bedford.EHRM.IFC.B61.20260316.pdf:page:1", "sheetNumber": "61G-000", "sheetTitle": "COVER SHEET", "discipline": "General", "drawingType": "Cover Sheet", "identityState": "authoritative"},
     {"pdfPageNumber": 2, "pageId": "518-22-700.Bedford.EHRM.IFC.B61.20260316.pdf:page:2", "sheetNumber": "61G-001", "sheetTitle": "DRAWING INDEX", "discipline": "General", "drawingType": "Drawing Index", "identityState": "authoritative"},
