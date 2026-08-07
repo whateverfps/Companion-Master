@@ -882,7 +882,8 @@ drawingRenderedEventTarget.addEventListener(DrawingRenderedEvent, event => {
         occurrences: [], // Would need to extract from analysis
         keyedNotes: [], // Would need to extract from analysis
         activeDrawingObjects,
-        references: [] // Would need to extract from analysis
+        references: [], // Would need to extract from analysis
+        projectSpecificationVocabulary
       });
     }
     scheduleDrawingHydration(detail);
@@ -4012,7 +4013,8 @@ async function renderMissionControlPlans() {
           occurrences: [], // Would need to extract from analysis
           keyedNotes: [], // Would need to extract from analysis
           activeDrawingObjects: [], // Will be populated when drawing is rendered
-          references: [] // Would need to extract from analysis
+          references: [], // Would need to extract from analysis
+          projectSpecificationVocabulary
         });
       }
     }

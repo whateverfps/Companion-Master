@@ -6,6 +6,32 @@ const list = value => Array.isArray(value) ? value : [];
 const BEDFORD_SPECIFICATION_MANUAL_FILE_NAME = 'bedford-specification-index.json';
 const BEDFORD_SPECIFICATION_MANUAL_PATH = './project-data/bedford/bedford-specification-index.json';
 
+// Small fallback object-to-specification map for common objects not in vocabulary
+const FALLBACK_OBJECT_SPECIFICATIONS = Object.freeze({
+  'fire damper': '23 33 00',
+  'firestopping': '07 84 13',
+  'hollow metal door': '08 11 13',
+  'hollow metal frame': '08 11 13',
+  'gypsum board': '09 29 00',
+  'drywall': '09 29 00',
+  'acoustical ceiling': '09 51 00',
+  'acoustic ceiling': '09 51 00',
+  'suspended ceiling': '09 51 00',
+  'lighting fixture': '26 51 00',
+  'light fixture': '26 51 00',
+  'luminaire': '26 51 00',
+  'panelboard': '26 24 16',
+  'panel board': '26 24 16',
+  'cable tray': '26 05 36',
+  'medical gas outlet': '22 63 00',
+  'diffuser': '23 37 13',
+  'ductwork': '23 31 00',
+  'air duct': '23 31 00',
+  'valve': '22 05 23',
+  'pipe insulation': '22 07 19',
+  'insulation': '22 07 19'
+});
+
 let bedfordSpecificationIndex = null;
 let bedfordSpecificationLoadPromise = null;
 
@@ -110,6 +136,74 @@ export function extractExplicitSpecificationReferences(evidence = []) {
 }
 
 /**
+ * Extract specifications from recognized construction objects
+ */
+export function extractObjectBasedSpecifications({ 
+  activeDrawingObjects = [], 
+  projectSpecificationVocabulary = null,
+  specificationIndex = null,
+  projectId = ''
+} = {}) {
+  const objectSpecs = new Map(); // sectionNumber -> { objects: [], evidence: [] }
+  
+  for (const object of list(activeDrawingObjects)) {
+    const objectText = text(object.label || object.type || object.subtype || object.evidenceText);
+    if (!objectText) continue;
+    
+    let sectionNumber = null;
+    let source = '';
+    
+    // Try project specification vocabulary first
+    if (projectSpecificationVocabulary && typeof projectSpecificationVocabulary.matchObject === 'function') {
+      const matches = projectSpecificationVocabulary.matchObject({
+        projectId,
+        objectId: object.objectId,
+        evidence: [{ text: objectText, source: 'drawing-object', region: object.region, observationId: object.sourceObservationIds?.[0] }]
+      });
+      
+      if (matches.length > 0) {
+        sectionNumber = matches[0].sectionNumber;
+        source = 'vocabulary-match';
+      }
+    }
+    
+    // Fallback to object map
+    if (!sectionNumber) {
+      const normalized = objectText.toLowerCase();
+      for (const [objectName, specNumber] of Object.entries(FALLBACK_OBJECT_SPECIFICATIONS)) {
+        if (normalized.includes(objectName)) {
+          sectionNumber = specNumber;
+          source = 'fallback-map';
+          break;
+        }
+      }
+    }
+    
+    if (sectionNumber) {
+      if (!objectSpecs.has(sectionNumber)) {
+        objectSpecs.set(sectionNumber, { objects: [], evidence: [] });
+      }
+      const entry = objectSpecs.get(sectionNumber);
+      entry.objects.push(objectText);
+      entry.evidence.push({
+        text: objectText,
+        source: 'drawing-object',
+        region: object.region,
+        observationId: object.sourceObservationIds?.[0]
+      });
+    }
+  }
+  
+  // Convert to array with metadata
+  return [...objectSpecs.entries()].map(([sectionNumber, data]) => ({
+    sectionNumber,
+    objects: data.objects,
+    evidence: data.evidence,
+    source: 'object-recognition'
+  }));
+}
+
+/**
  * Create specification explorer
  */
 export function createSpecificationExplorer({ specificationIndex, relationshipGraph } = {}) {
@@ -134,7 +228,7 @@ export function createSpecificationExplorer({ specificationIndex, relationshipGr
 
 /**
  * Populate drawing-spec-links from Bedford specification index
- * Priority: Explicit references > Drawing metadata > Discipline suggestions
+ * Priority: Explicit references > Object recognition > Drawing metadata > Discipline suggestions
  */
 export function populateBedfordDrawingSpecLinks({ 
   drawingSpecificationLinks, 
@@ -149,7 +243,8 @@ export function populateBedfordDrawingSpecLinks({
   occurrences = [],
   keyedNotes = [],
   activeDrawingObjects = [],
-  references = []
+  references = [],
+  projectSpecificationVocabulary = null
 } = {}) {
   if (!bedfordSpecificationIndex || !bedfordSpecificationIndex.sections) {
     return { populated: 0, reason: 'Bedford specification index not loaded' };
@@ -170,10 +265,9 @@ export function populateBedfordDrawingSpecLinks({
     references
   });
   
-  // Step 2: Extract explicit specification references
+  // Step 2: Extract explicit specification references (Priority 1: 95% confidence)
   const explicitReferences = extractExplicitSpecificationReferences(evidence);
   
-  // Step 3: If explicit references exist, use only those
   if (explicitReferences.length > 0) {
     source = 'explicit-references';
     for (const sectionNumber of explicitReferences) {
@@ -210,7 +304,106 @@ export function populateBedfordDrawingSpecLinks({
     };
   }
   
-  // Step 4: No explicit references, use discipline suggestions as fallback
+  // Step 3: Extract object-based specifications (Priority 2: 85% confidence)
+  const objectSpecs = extractObjectBasedSpecifications({
+    activeDrawingObjects,
+    projectSpecificationVocabulary,
+    specificationIndex,
+    projectId
+  });
+  
+  if (objectSpecs.length > 0) {
+    source = 'object-recognition';
+    for (const { sectionNumber, objects, evidence } of objectSpecs) {
+      const section = bedfordSpecificationIndex.sections.find(s => 
+        s.projectId === projectId && 
+        s.sectionNumber === sectionNumber
+      );
+      
+      if (section) {
+        const link = drawingSpecificationLinks.link({
+          projectId,
+          drawingDocumentId: section.documentId,
+          drawingPageId,
+          specificationDocumentId: section.documentId,
+          sectionNumber: section.sectionNumber,
+          origin: 'object-recognition',
+          status: 'suggested',
+          confidence: 0.85,
+          evidenceSource: 'drawing-object-recognition',
+          evidenceText: `Detected object: ${objects[0]}${objects.length > 1 ? ` (+${objects.length - 1} more)` : ''}`,
+          reason: `Detected object implies governing specification`
+        });
+        
+        if (link) {
+          populated++;
+        }
+      }
+    }
+    
+    return { 
+      populated, 
+      reason: `Populated ${populated} specifications from recognized construction objects`,
+      source: 'object'
+    };
+  }
+  
+  // Step 4: Drawing metadata (Priority 3: 70% confidence)
+  // Use sheet title, discipline, and type to suggest specifications
+  if (sheet.sheetTitle || sheet.discipline) {
+    source = 'drawing-metadata';
+    const metadataEvidence = [
+      { text: sheet.sheetTitle, source: 'sheet-title' },
+      { text: sheet.discipline, source: 'sheet-discipline' },
+      { text: sheet.primarySheetType || sheet.drawingType, source: 'sheet-type' }
+    ].filter(item => item.text);
+    
+    // Use project specification vocabulary for page-level matching
+    if (projectSpecificationVocabulary && typeof projectSpecificationVocabulary.matchPage === 'function') {
+      const pageMatches = projectSpecificationVocabulary.matchPage({
+        projectId,
+        pageId: drawingPageId,
+        evidence: metadataEvidence
+      });
+      
+      if (pageMatches.length > 0) {
+        for (const match of pageMatches) {
+          const section = bedfordSpecificationIndex.sections.find(s => 
+            s.projectId === projectId && 
+            s.sectionNumber === match.sectionNumber
+          );
+          
+          if (section) {
+            const link = drawingSpecificationLinks.link({
+              projectId,
+              drawingDocumentId: section.documentId,
+              drawingPageId,
+              specificationDocumentId: section.documentId,
+              sectionNumber: section.sectionNumber,
+              origin: 'drawing-metadata',
+              status: 'suggested',
+              confidence: 0.70,
+              evidenceSource: 'drawing-metadata-vocabulary',
+              evidenceText: match.evidenceText || `Drawing metadata: ${sheet.sheetTitle}`,
+              reason: 'Drawing metadata suggests governing specification'
+            });
+            
+            if (link) {
+              populated++;
+            }
+          }
+        }
+        
+        return { 
+          populated, 
+          reason: `Populated ${populated} specifications from drawing metadata`,
+          source: 'metadata'
+        };
+      }
+    }
+  }
+  
+  // Step 5: Discipline suggestions as fallback (Priority 4: 50% confidence)
   source = 'discipline-suggestions';
   
   // Filter specifications by discipline to reduce noise
@@ -247,7 +440,7 @@ export function populateBedfordDrawingSpecLinks({
       confidence: 0.5, // Lower confidence for discipline suggestions
       evidenceSource: 'Bedford specification index',
       evidenceText: `Bedford specification ${section.sectionNumber} — ${section.sectionTitle}`,
-      reason: sheetDiscipline ? `Discipline-based suggestion (${sheetDiscipline}) - no explicit references found on drawing` : 'Bedford specification suggestion - no explicit references found on drawing'
+      reason: sheetDiscipline ? `Discipline-based suggestion (${sheetDiscipline}) - no explicit references or objects found on drawing` : 'Bedford specification suggestion - no explicit references or objects found on drawing'
     });
     
     if (link) {
@@ -257,7 +450,7 @@ export function populateBedfordDrawingSpecLinks({
   
   return { 
     populated, 
-    reason: sheetDiscipline ? `Populated ${populated} discipline-based suggestions (no explicit references found)` : `Populated ${populated} Bedford suggestions (no explicit references found)`,
+    reason: sheetDiscipline ? `Populated ${populated} discipline-based suggestions (no explicit references or objects found)` : `Populated ${populated} Bedford suggestions (no explicit references or objects found)`,
     source: 'discipline'
   };
 }
