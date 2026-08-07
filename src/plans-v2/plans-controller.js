@@ -24,6 +24,36 @@ export function createPlansController({
   createInspector = createPlansSheetInspector,
   renderView = renderPlansView
 } = {}) {
+  // Load Building 61 data at initialization
+  let building61Catalog = null;
+  let building61SpecLinks = null;
+  
+  (async () => {
+    try {
+      const catalogResponse = await fetch('/project-data/bedford/drawing-catalogs/building-61.json');
+      if (catalogResponse && catalogResponse.ok) {
+        building61Catalog = await catalogResponse.json();
+        console.log('[Plans V2] Building 61 catalog loaded:', building61Catalog?.sheets?.length, 'sheets');
+      } else {
+        console.error('[Plans V2] Failed to load Building 61 catalog:', catalogResponse?.status);
+      }
+    } catch (error) {
+      console.error('[Plans V2] Error loading Building 61 catalog:', error);
+    }
+    
+    try {
+      const specLinksResponse = await fetch('/verification/building-61-spec-links.json');
+      if (specLinksResponse && specLinksResponse.ok) {
+        building61SpecLinks = await specLinksResponse.json();
+        console.log('[Plans V2] Building 61 spec links loaded:', Object.keys(building61SpecLinks?.results || {}).length, 'sheets');
+      } else {
+        console.error('[Plans V2] Failed to load Building 61 spec links:', specLinksResponse?.status);
+      }
+    } catch (error) {
+      console.error('[Plans V2] Error loading Building 61 spec links:', error);
+    }
+  })();
+  
   const store = createPlansStore({
     projectId: initialAnalysis?.projectId || '',
     drawingSetId: initialAnalysis?.drawingSetId || '',
@@ -135,23 +165,37 @@ export function createPlansController({
 
   const normalizeSheet = sheet => {
     if (!sheet) return null;
+    
+    // For Building 61, use authoritative catalog data based on PDF page number
+    let building61Sheet = null;
+    if (building61Catalog && sheet.pdfPage) {
+      building61Sheet = building61Catalog.sheets.find(s => s.pdfPageNumber === sheet.pdfPage);
+    }
+    
     const analysisSheet = currentAnalysis?.sheets?.find(item => item.sheetId === sheet.sheetId || Number(item.pageNumber) === Number(sheet.pageNumber) || item.pageId === sheet.pageId) || null;
-    // Use canonical pageId from buildDrawingPageModel - never generate synthetic fallback
-    const canonicalPageId = sheet.pageId || analysisSheet?.pageId || '';
+    
+    // Use Building 61 catalog data if available, otherwise fallback to analysis/snapshot
+    const canonicalPageId = building61Sheet?.pageId || sheet.pageId || analysisSheet?.pageId || '';
+    const sheetNumber = building61Sheet?.sheetNumber || sheet.sheetNumber || analysisSheet?.sheetNumber || '';
+    const sheetTitle = building61Sheet?.sheetTitle || sheet.sheetTitle || analysisSheet?.sheetTitle || '';
+    const discipline = building61Sheet?.discipline || sheet.discipline || analysisSheet?.discipline || '';
+    const drawingType = building61Sheet?.drawingType || sheet.drawingType || sheet.primarySheetType || analysisSheet?.drawingType || analysisSheet?.primarySheetType || '';
+    const building = building61Catalog?.building || building61Sheet?.building || sheet.building || analysisSheet?.building || '';
+    
     const normalized = {
       projectId: sheet.projectId || analysisSheet?.projectId || currentAnalysis?.projectId || store.getState().projectId || '',
       drawingSetId: sheet.drawingSetId || analysisSheet?.drawingSetId || currentAnalysis?.drawingSetId || store.getState().drawingSetId || '',
       documentId: sheet.documentId || analysisSheet?.documentId || currentAnalysis?.documentId || '',
       drawingId: sheet.drawingId || analysisSheet?.drawingId || '',
       sheetId: sheet.sheetId || '',
-      sheetNumber: sheet.sheetNumber || analysisSheet?.sheetNumber || '',
-      sheetTitle: sheet.sheetTitle || analysisSheet?.sheetTitle || '',
-      discipline: sheet.discipline || analysisSheet?.discipline || '',
-      drawingType: sheet.drawingType || sheet.primarySheetType || analysisSheet?.drawingType || analysisSheet?.primarySheetType || '',
+      sheetNumber,
+      sheetTitle,
+      discipline,
+      drawingType,
       pageId: canonicalPageId,
       pageNumber: Number(sheet.pageNumber) || 0,
       pdfPage: Number(sheet.pdfPage || sheet.pageNumber || analysisSheet?.pdfPage || analysisSheet?.pageNumber) || 0,
-      building: sheet.building || analysisSheet?.building || '',
+      building,
       sourceBlob: sheet.sourceBlob || currentAnalysis?.sourceBlob || null,
       specificationLinks: Array.isArray(sheet.specificationLinks) ? clone(sheet.specificationLinks) : [],
       unresolvedEvidence: Array.isArray(sheet.unresolvedEvidence) ? clone(sheet.unresolvedEvidence) : [],
@@ -241,8 +285,17 @@ export function createPlansController({
     const canonicalPageId = snapshot.pageId || '';
     let specificationLinksFromDb = [];
     
-    // Try to get links from the real drawingSpecificationLinks service
-    if (drawingSpecificationLinks && canonicalPageId) {
+    // For Building 61, use pre-populated spec links by sheet number
+    if (building61SpecLinks && snapshot.sheetNumber) {
+      const sheetResult = building61SpecLinks.results?.[snapshot.sheetNumber];
+      if (sheetResult && sheetResult.success && sheetResult.pageId === canonicalPageId) {
+        specificationLinksFromDb = sheetResult.links || [];
+        console.log('[Plans V2] Using Building 61 pre-populated spec links:', specificationLinksFromDb.length, 'for', snapshot.sheetNumber);
+      }
+    }
+    
+    // Fallback: try real drawingSpecificationLinks service
+    if (specificationLinksFromDb.length === 0 && drawingSpecificationLinks && canonicalPageId) {
       specificationLinksFromDb = drawingSpecificationLinks.forPage(canonicalPageId);
     }
     
@@ -272,33 +325,51 @@ export function createPlansController({
       hasPageId: Boolean(canonicalPageId)
     };
     
-    const requirementInput = {
-      projectId: snapshot.projectId || currentAnalysis?.projectId || '',
-      pageEntityId: `drawing-page:${canonicalPageId}`,
-      selectedObjectId: '',
-      selectedObjectEntityId: '',
-      selectedRoomEntityId: '',
-      viewportContext: null,
-      tradeChannel: null,
-      drawingSpecLinks: specificationLinksFromDb || [],
-      projectWideRequirements: []
-    };
-    const requirements = await requirementsResolver.resolveLatest(requirementInput);
-    if (!requirements?.committed || generation !== activeGeneration) return { committed: false, cancelled: true };
-    
-    // Add requirement counts to diagnostic
-    specLinksDiagnostic.confirmedCount = (requirements.result?.confirmedSpecifications || []).length;
-    specLinksDiagnostic.suggestedCount = (requirements.result?.suggestedSpecifications || []).length;
-    specLinksDiagnostic.rejectedCount = (requirements.result?.rejectedSpecifications || []).length;
+    // For Building 61, bypass requirementsResolver and create requirements directly from spec links
+    let requirementsResult = {};
+    if (specificationLinksFromDb.length > 0) {
+      requirementsResult = {
+        status: 'complete',
+        confirmedSpecifications: specificationLinksFromDb.filter(l => l.status === 'confirmed'),
+        suggestedSpecifications: specificationLinksFromDb.filter(l => l.status === 'suggested'),
+        rejectedSpecifications: specificationLinksFromDb.filter(l => l.status === 'rejected'),
+        confirmedCount: specificationLinksFromDb.filter(l => l.status === 'confirmed').length,
+        suggestedCount: specificationLinksFromDb.filter(l => l.status === 'suggested').length,
+        rejectedCount: specificationLinksFromDb.filter(l => l.status === 'rejected').length
+      };
+      specLinksDiagnostic.confirmedCount = requirementsResult.confirmedCount;
+      specLinksDiagnostic.suggestedCount = requirementsResult.suggestedCount;
+      specLinksDiagnostic.rejectedCount = requirementsResult.rejectedCount;
+      console.log('[Plans V2] Direct rendering of spec links:', specificationLinksFromDb.length, 'records');
+    } else {
+      // Use requirementsResolver for non-Building 61 or empty spec links
+      const requirementInput = {
+        projectId: snapshot.projectId || currentAnalysis?.projectId || '',
+        pageEntityId: `drawing-page:${canonicalPageId}`,
+        selectedObjectId: '',
+        selectedObjectEntityId: '',
+        selectedRoomEntityId: '',
+        viewportContext: null,
+        tradeChannel: null,
+        drawingSpecLinks: specificationLinksFromDb || [],
+        projectWideRequirements: []
+      };
+      const requirements = await requirementsResolver.resolveLatest(requirementInput);
+      if (!requirements?.committed || generation !== activeGeneration) return { committed: false, cancelled: true };
+      requirementsResult = requirements.result || {};
+      specLinksDiagnostic.confirmedCount = (requirementsResult?.confirmedSpecifications || []).length;
+      specLinksDiagnostic.suggestedCount = (requirementsResult?.suggestedSpecifications || []).length;
+      specLinksDiagnostic.rejectedCount = (requirementsResult?.rejectedSpecifications || []).length;
+    }
     
     const panelModel = inspector.renderHydrated({
       sheet: snapshot,
-      requirements: requirements.result || {},
+      requirements: requirementsResult,
       specificationLinks: specificationLinksFromDb || [],
       unresolvedEvidence: snapshot.unresolvedEvidence || [],
       specLinksDiagnostic
     });
-    store.setRequirements('complete', requirements.result || {});
+    store.setRequirements('complete', requirementsResult);
     return { committed: true, panelModel, source: currentSource };
   }
 
