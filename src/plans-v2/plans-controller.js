@@ -33,7 +33,6 @@ export function createPlansController({
       const catalogResponse = await fetch('/project-data/bedford/drawing-catalogs/building-61.json');
       if (catalogResponse && catalogResponse.ok) {
         building61Catalog = await catalogResponse.json();
-        console.log('[Plans V2] Building 61 catalog loaded:', building61Catalog?.sheets?.length, 'sheets');
       } else {
         console.error('[Plans V2] Failed to load Building 61 catalog:', catalogResponse?.status);
       }
@@ -45,7 +44,6 @@ export function createPlansController({
       const specLinksResponse = await fetch('/verification/building-61-spec-links.json');
       if (specLinksResponse && specLinksResponse.ok) {
         building61SpecLinks = await specLinksResponse.json();
-        console.log('[Plans V2] Building 61 spec links loaded:', Object.keys(building61SpecLinks?.results || {}).length, 'sheets');
       } else {
         console.error('[Plans V2] Failed to load Building 61 spec links:', specLinksResponse?.status);
       }
@@ -79,7 +77,21 @@ export function createPlansController({
   const sheetSummaryNode = () => view.querySelector('[data-plans-sheet-summary]');
   const diagnosticsNode = () => view.querySelector('[data-plans-diagnostics]');
   const diagnosticsContentNode = () => view.querySelector('[data-plans-diagnostics-content]');
-  let pdfViewer = createPdfViewer({ root: stageNode(), sourceLoader: sourceResolver });
+  let pdfViewer = createPdfViewer({ 
+    root: stageNode(), 
+    sourceLoader: sourceResolver,
+    onRenderState: async ({ state, sheet }) => {
+      if (state === 'RENDER_COMPLETED' && sheet) {
+        // When PDF renders a new page, find the corresponding sheet and refresh the inspector
+        const storeState = store.getState();
+        // Match by pageNumber since PDF viewer renders by page number
+        const existingSheet = storeState.sheets.find(s => s.pageNumber === sheet.pageNumber);
+        if (existingSheet) {
+          await selectSheet(existingSheet);
+        }
+      }
+    }
+  });
   let inspector = createInspector({ 
     root: inspectorNode(), 
     requirementsResolver, 
