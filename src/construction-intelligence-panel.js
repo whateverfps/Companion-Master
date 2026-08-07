@@ -133,6 +133,7 @@ function normalizedRegionSummary(region) {
 export function buildConstructionIntelligencePanelModel(input = {}) {
   const sheet = input.sheet || {};
   const object = input.selectedObject || null;
+  const specLinksDiagnostic = input.specLinksDiagnostic || null;
   const graphRequirements = {
     confirmedSpecifications: list(input.graphSummary?.requirements?.confirmed).map(item => ({ sectionNumber: text(item.node?.metadata?.sectionNumber || item.node?.normalizedKey), sectionTitle: text(item.node?.title || item.node?.label).replace(/^\S+\s+[—-]\s+/, ''), specificationDocumentId: text(item.node?.sourceDocumentId), status: 'confirmed', applicabilityScope: item.edge?.scope === 'object' ? 'object-specific' : 'page-wide', evidence: item.edge?.evidence, reason: text(item.edge?.evidence?.[0]?.sourceText), objectId: text(item.edge?.sourceObjectId) })),
     suggestedSpecifications: list(input.graphSummary?.requirements?.suggested).map(item => ({ sectionNumber: text(item.node?.metadata?.sectionNumber || item.node?.normalizedKey), sectionTitle: text(item.node?.title || item.node?.label).replace(/^\S+\s+[—-]\s+/, ''), specificationDocumentId: text(item.node?.sourceDocumentId), status: 'suggested', applicabilityScope: item.edge?.scope === 'object' ? 'object-specific' : 'page-wide', evidence: item.edge?.evidence, reason: text(item.edge?.evidence?.[0]?.sourceText), objectId: text(item.edge?.sourceObjectId) }))
@@ -154,6 +155,7 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
     return {
       mode: 'page',
       status: intelligenceStatus,
+      specLinksDiagnostic,
       page: {
         drawing: text(input.document?.title || input.document?.name),
         drawingSet: text(input.document?.title || input.document?.name || input.document?.id),
@@ -197,7 +199,8 @@ export function buildConstructionIntelligencePanelModel(input = {}) {
       chiefInsights: pageInsights,
       chiefRecommendation: chiefRecommendation(null, specifications, pageInsights),
       projectWideRequirements: list(input.requirements?.projectWideRequirements),
-      diagnostics: list(input.developerDiagnostics)
+      diagnostics: list(input.developerDiagnostics),
+      specLinksDiagnostic
     };
   }
 

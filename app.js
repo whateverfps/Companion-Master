@@ -3216,6 +3216,31 @@ function constructionIntelligencePanelMarkup(model) {
     const suggested = Array.isArray(model?.specifications?.suggested) ? model.specifications.suggested : [];
     const rejected = Array.isArray(model?.specifications?.rejected) ? model.specifications.rejected : [];
     const specs = [...confirmed, ...suggested];
+    
+    // Diagnostic display for specification links lookup
+    const specLinksDiagnostic = model.specLinksDiagnostic;
+    let diagnosticContent = '';
+    if (specLinksDiagnostic) {
+      if (specLinksDiagnostic.linksFound === 0) {
+        diagnosticContent = `<div class="mc-ci-spec-diagnostic"><h5>Specification Links Lookup Diagnostic</h5><dl class="mc-ci-facts">
+          <dt>Page ID</dt><dd>${esc(specLinksDiagnostic.pageId || 'NULL')}</dd>
+          <dt>Specification Links Found</dt><dd>${specLinksDiagnostic.linksFound}</dd>
+        </dl><h6>Lookup Result</h6><ul class="mc-ci-record-list">
+          <li><span aria-hidden="true">${!specLinksDiagnostic.drawingSpecLinksAvailable ? '✓' : '□'}</span>No links exist for this page (drawingSpecificationLinks not available)</li>
+          <li><span aria-hidden="true">${!specLinksDiagnostic.hasPageId ? '✓' : '□'}</span>PageId mismatch (pageId is NULL or empty)</li>
+          <li><span aria-hidden="true">${specLinksDiagnostic.drawingSpecLinksAvailable && specLinksDiagnostic.hasPageId && specLinksDiagnostic.linksFound === 0 ? '✓' : '□'}</span>No links exist for this pageId in database</li>
+          <li><span aria-hidden="true">${specLinksDiagnostic.confirmedCount === 0 && specLinksDiagnostic.suggestedCount === 0 ? '✓' : '□'}</span>Requirements resolver returned empty</li>
+        </ul></div>`;
+      } else {
+        diagnosticContent = `<div class="mc-ci-spec-diagnostic"><h5>Specification Links Lookup Diagnostic</h5><dl class="mc-ci-facts">
+          <dt>Page ID</dt><dd>${esc(specLinksDiagnostic.pageId)}</dd>
+          <dt>Number of links</dt><dd>${specLinksDiagnostic.linksFound}</dd>
+          <dt>Number of confirmed requirements</dt><dd>${specLinksDiagnostic.confirmedCount}</dd>
+          <dt>Number of suggested requirements</dt><dd>${specLinksDiagnostic.suggestedCount}</dd>
+        </dl></div>`;
+      }
+    }
+    
     const governedRequirements = confirmed.length || suggested.length
       ? `${confirmed.length ? `<section class="mc-ci-specification-set"><h4>Confirmed Specifications</h4>${specificationCards(confirmed)}</section>` : ''}${suggested.length ? `<section class="mc-ci-specification-set"><h4>Suggested Specifications</h4>${specificationCards(suggested)}</section>` : ''}`
       : '<p>No governing specifications were found for this sheet.</p>';
@@ -3237,7 +3262,7 @@ function constructionIntelligencePanelMarkup(model) {
     return `<div class="mc-construction-intelligence" data-panel-mode="page" data-intelligence-status="${esc(model.status)}"><header><span>CONSTRUCTION WORKSPACE</span><h3>Sheet Inspector</h3><p>${esc(page.sheet)} · ${esc(page.sheetTitle || page.discipline)}</p>${degraded}</header>
       ${group('sheet-metadata', 'Sheet Metadata', metadata, { force: true })}
       ${group('sheet-evidence', 'Sheet Evidence', evidence, { force: true })}
-      ${group('specifications', 'Governing Requirements', governedRequirements + specCounts, { force: true })}
+      ${group('specifications', 'Governing Requirements', governedRequirements + diagnosticContent + specCounts, { force: true })}
       ${group('related-drawings', 'Related Drawings and Details', related)}
       ${group('warnings', 'Warnings and Unresolved Evidence', warnings)}
       ${sourceFooter}

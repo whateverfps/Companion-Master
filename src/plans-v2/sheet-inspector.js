@@ -57,7 +57,8 @@ export function createPlansSheetInspector({ root, requirementsResolver, specific
       sheet,
       requirements,
       specificationLinks: snapshot.specificationLinks || requirements.specificationLinks || [],
-      unresolvedEvidence: snapshot.unresolvedEvidence || []
+      unresolvedEvidence: snapshot.unresolvedEvidence || [],
+      specLinksDiagnostic: snapshot.specLinksDiagnostic || null
     });
     panel.innerHTML = panelMarkup(model);
     rebindHandlers();

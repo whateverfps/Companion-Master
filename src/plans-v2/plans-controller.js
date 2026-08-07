@@ -241,6 +241,14 @@ export function createPlansController({
     const canonicalPageId = snapshot.pageId || '';
     const specificationLinksFromDb = drawingSpecificationLinks && canonicalPageId ? drawingSpecificationLinks.forPage(canonicalPageId) : [];
     
+    // Capture diagnostic information for specification links lookup
+    const specLinksDiagnostic = {
+      pageId: canonicalPageId,
+      linksFound: specificationLinksFromDb.length,
+      drawingSpecLinksAvailable: Boolean(drawingSpecificationLinks),
+      hasPageId: Boolean(canonicalPageId)
+    };
+    
     const requirementInput = {
       projectId: snapshot.projectId || currentAnalysis?.projectId || '',
       pageEntityId: `drawing-page:${canonicalPageId}`,
@@ -254,11 +262,18 @@ export function createPlansController({
     };
     const requirements = await requirementsResolver.resolveLatest(requirementInput);
     if (!requirements?.committed || generation !== activeGeneration) return { committed: false, cancelled: true };
+    
+    // Add requirement counts to diagnostic
+    specLinksDiagnostic.confirmedCount = (requirements.result?.confirmedSpecifications || []).length;
+    specLinksDiagnostic.suggestedCount = (requirements.result?.suggestedSpecifications || []).length;
+    specLinksDiagnostic.rejectedCount = (requirements.result?.rejectedSpecifications || []).length;
+    
     const panelModel = inspector.renderHydrated({
       sheet: snapshot,
       requirements: requirements.result || {},
       specificationLinks: specificationLinksFromDb || [],
-      unresolvedEvidence: snapshot.unresolvedEvidence || []
+      unresolvedEvidence: snapshot.unresolvedEvidence || [],
+      specLinksDiagnostic
     });
     store.setRequirements('complete', requirements.result || {});
     return { committed: true, panelModel, source: currentSource };
