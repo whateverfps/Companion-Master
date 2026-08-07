@@ -245,14 +245,6 @@ async function verifyGoverningRequirements() {
     process.exit(1);
   }
   
-  // Load Bedford specification index (to verify specification data exists)
-  const specIndexPath = join(PROJECT_ROOT, 'bedford-specification-index.json');
-  const specIndex = loadJSON(specIndexPath);
-  
-  if (!specIndex) {
-    console.warn(`${colors.yellow}WARN: Bedford specification index not found${colors.reset}`);
-  }
-  
   // Target sheets
   const targetSheets = ['61IN101', '61M-101', '61E-101'];
   
@@ -282,37 +274,62 @@ async function verifyGoverningRequirements() {
       continue;
     }
     
-    // Step 2: Verify specification links (simulate)
-    // Since we can't run the actual drawingSpecificationLinks service without the full app,
-    // we'll check if the specification index has relevant sections
-    const step2 = { pass: true, links: [], stage: 'Specification Lookup' };
-    if (specIndex && specIndex.sections) {
-      // Simulate what drawingSpecificationLinks would return based on discipline
-      const discipline = catalogSheet.discipline?.toLowerCase() || '';
-      const relevantSections = specIndex.sections.filter(s => {
-        const sectionNum = s.sectionNumber || '';
-        // Simple heuristic: check if section matches discipline
-        if (discipline.includes('interior') && sectionNum.startsWith('06')) return true;
-        if (discipline.includes('mechanical') && sectionNum.startsWith('09')) return true;
-        if (discipline.includes('electrical') && sectionNum.startsWith('08')) return true;
-        return false;
-      });
-      
-      step2.links = relevantSections.map(s => ({
-        sectionNumber: s.sectionNumber,
-        sectionTitle: s.sectionTitle,
-        origin: 'bedford-import',
-        confidence: 0.8,
-        relationshipType: 'page-wide'
-      }));
-      
-      console.log(`Simulated drawingSpecificationLinks.forPage(): ${step2.links.length} links`);
+    // Step 2: Verify specification links (load from real data)
+    const specLinksPath = join(PROJECT_ROOT, 'verification/building-61-spec-links.json');
+    const specLinksData = loadJSON(specLinksPath);
+    
+    const step2 = { pass: false, links: [], stage: 'Specification Lookup' };
+    
+    if (!specLinksData) {
+      console.log(`${colors.red}FAIL: Step 2 - Specification links data not found${colors.reset}`);
+      step2.failures = ['Specification links data not found'];
+    } else {
+      const sheetResult = specLinksData.results?.[targetSheetNumber];
+      if (!sheetResult || !sheetResult.success) {
+        console.log(`${colors.red}FAIL: Step 2 - No specification links found for ${targetSheetNumber}${colors.reset}`);
+        step2.failures = [`No specification links found for ${targetSheetNumber}`];
+      } else {
+        step2.pass = true;
+        step2.links = sheetResult.links || [];
+        console.log(`drawingSpecificationLinks.forPage(): ${step2.links.length} links`);
+        
+        if (step2.links.length > 0) {
+          console.log(`\nLinks (${step2.links.length}):`);
+          step2.links.forEach((link, i) => {
+            console.log(`  ${i + 1}. Section: ${link.sectionNumber || 'NULL'}`);
+            console.log(`     Title: ${link.sectionTitle || 'NULL'}`);
+            console.log(`     Origin: ${link.origin || 'NULL'}`);
+            console.log(`     Confidence: ${link.confidence || 'NULL'}`);
+            console.log(`     Status: ${link.status || 'NULL'}`);
+          });
+        } else {
+          console.log(`${colors.red}FAIL: Step 2 - Zero links found for ${targetSheetNumber}${colors.reset}`);
+          step2.pass = false;
+          step2.failures = ['Zero links found'];
+        }
+      }
     }
     
-    // Step 3: Verify requirements resolver (simulate)
+    if (!step2.pass) {
+      results.sheets[targetSheetNumber] = { step1, step2, pass: false };
+      results.overall = 'FAIL';
+      continue;
+    }
+    
+    // Step 3: Verify requirements resolver (use real links)
     const step3 = { pass: true, confirmed: [], suggested: [], rejected: [], stage: 'Requirements Resolver' };
-    step3.confirmed = step2.links.filter(l => l.confidence > 0.7);
-    step3.suggested = step2.links.filter(l => l.confidence <= 0.7);
+    step3.confirmed = step2.links.filter(l => l.status === 'confirmed');
+    step3.suggested = step2.links.filter(l => l.status === 'suggested');
+    step3.rejected = step2.links.filter(l => l.status === 'rejected');
+    
+    if (step2.links.length === 0) {
+      console.log(`${colors.red}FAIL: Step 3 - No links to resolve${colors.reset}`);
+      step3.pass = false;
+      step3.failures = ['No links to resolve'];
+      results.sheets[targetSheetNumber] = { step1, step2, step3, pass: false };
+      results.overall = 'FAIL';
+      continue;
+    }
     
     // Step 4: Verify UI model (simulate)
     const step4 = verifyUIModel({

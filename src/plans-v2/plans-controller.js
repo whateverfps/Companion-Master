@@ -239,7 +239,30 @@ export function createPlansController({
     
     // Query drawingSpecificationLinks for the canonical pageId
     const canonicalPageId = snapshot.pageId || '';
-    const specificationLinksFromDb = drawingSpecificationLinks && canonicalPageId ? drawingSpecificationLinks.forPage(canonicalPageId) : [];
+    let specificationLinksFromDb = [];
+    
+    // Try to get links from the real drawingSpecificationLinks service
+    if (drawingSpecificationLinks && canonicalPageId) {
+      specificationLinksFromDb = drawingSpecificationLinks.forPage(canonicalPageId);
+    }
+    
+    // Fallback: load from pre-populated JSON file if database is empty
+    if (specificationLinksFromDb.length === 0) {
+      try {
+        const specLinksPath = './verification/building-61-spec-links.json';
+        const response = await fetch(specLinksPath);
+        if (response && response.ok) {
+          const specLinksData = await response.json();
+          const sheetKey = snapshot.sheetNumber;
+          const sheetResult = specLinksData.results?.[sheetKey];
+          if (sheetResult && sheetResult.success && sheetResult.pageId === canonicalPageId) {
+            specificationLinksFromDb = sheetResult.links || [];
+          }
+        }
+      } catch (error) {
+        // Silently fail - database will be used if available
+      }
+    }
     
     // Capture diagnostic information for specification links lookup
     const specLinksDiagnostic = {
