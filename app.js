@@ -143,7 +143,7 @@ import { createDrawingRequirementsResolver } from './drawing-requirements-resolv
 import { createProjectObjectRegistry } from './project-object-registry.js';
 import { buildConstructionIntelligencePanelModel, loadConstructionIntelligencePanelState, saveConstructionIntelligencePanelState } from './construction-intelligence-panel.js';
 import { createPlansController } from './plans-v2/plans-controller.js';
-import { BEDFORD_SPECIFICATION_MANUAL_FILE_NAME, BEDFORD_SPECIFICATION_MANUAL_PATH, createSpecificationExplorer, ensureSpecificationKnowledge, indexSpecificationDocuments } from './specification-knowledge.js';
+import { BEDFORD_SPECIFICATION_MANUAL_FILE_NAME, BEDFORD_SPECIFICATION_MANUAL_PATH, createSpecificationExplorer, ensureSpecificationKnowledge, indexSpecificationDocuments, populateBedfordDrawingSpecLinks } from './specification-knowledge.js';
 import { acquireTrackedResource, clearTrackedResources, releaseTrackedResource, replaceTrackedResource, reportTrackedResources, snapshotTrackedResources } from './resource-lifecycle.js';
 import { BEDFORD_PROJECT_SPECIFICATION_VOCABULARY, createProjectSpecificationVocabulary } from './project-specification-vocabulary.js';
 import { createProjectRelationshipGraph } from './project-relationship-graph.js';
@@ -856,6 +856,20 @@ drawingRenderedEventTarget.addEventListener(DrawingRenderedEvent, event => {
   if (drawingSafeMode && detail.shell !== 'mission-control') return;
   drawingBackgroundSubscriberDepth += 1;
   try {
+    // Populate Bedford drawing spec links for the current page
+    if (detail.pageId && detail.projectId) {
+      const existingLinks = drawingSpecificationLinks.forPage(detail.pageId);
+      if (existingLinks.length === 0) {
+        const sheet = activeDrawingViewerAnalysis?.sheets?.find(item => item.pageId === detail.pageId);
+        populateBedfordDrawingSpecLinks({
+          drawingSpecificationLinks,
+          specificationIndex,
+          projectId: detail.projectId,
+          drawingPageId: detail.pageId,
+          sheetDiscipline: sheet?.discipline || ''
+        });
+      }
+    }
     scheduleDrawingHydration(detail);
   } finally {
     drawingBackgroundSubscriberDepth = Math.max(0, drawingBackgroundSubscriberDepth - 1);
@@ -3958,6 +3972,18 @@ async function renderMissionControlPlans() {
       sections: await engine.sections(),
       projectId: project?.id || analysis?.projectId || state().activeProject || ''
     });
+    // Populate drawing-spec-links for the current drawing
+    if (analysis?.documentId && analysis?.sheets?.length) {
+      for (const sheet of analysis.sheets) {
+        populateBedfordDrawingSpecLinks({
+          drawingSpecificationLinks,
+          specificationIndex,
+          projectId: project?.id || analysis?.projectId || state().activeProject || '',
+          drawingPageId: sheet.pageId,
+          sheetDiscipline: sheet.discipline || ''
+        });
+      }
+    }
   }
   const pageCount = Math.max(0, Number(analysis?.sheets?.length) || 0);
   const generatedCatalog = normalizeGeneratedDrawingCatalog(await generatedDrawingCatalogFor(documentRecord || {}, pageCount));
