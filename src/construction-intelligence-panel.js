@@ -132,17 +132,6 @@ function normalizedRegionSummary(region) {
 
 export function buildConstructionIntelligencePanelModel(input = {}) {
   const sheet = input.sheet || {};
-  console.info('[sheet-trace]', 'buildConstructionIntelligencePanelModel ENTRY', {
-    file: 'src/construction-intelligence-panel.js',
-    function: 'buildConstructionIntelligencePanelModel',
-    line: 133,
-    sheetNumber: sheet.sheetNumber,
-    pageNumber: sheet.pageNumber,
-    pageId: sheet.pageId,
-    documentId: sheet.documentId,
-    building: sheet.building,
-    discipline: sheet.discipline
-  });
   const object = input.selectedObject || null;
   const specLinksDiagnostic = input.specLinksDiagnostic || null;
   const graphRequirements = {
