@@ -1,3 +1,5 @@
+console.error("******** USING PLANS CONTROLLER ********");
+
 import { createPlansStore } from './plans-store.js';
 import { createPlansPdfViewer } from './pdf-viewer.js';
 import { createPlansSheetInspector } from './sheet-inspector.js';
