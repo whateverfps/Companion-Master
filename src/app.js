@@ -2555,8 +2555,11 @@ async function createRetainedPdfViewerAnalysis(documentRecord, source, requested
   drawingTraceSlowOperation('PDF page load', pageLoadStartedAt, { documentId: documentRecord.id, pageNumber, pageCount });
   const viewport = page.getViewport({ scale: 1, rotation: 0 });
   const generatedCatalog = await generatedDrawingCatalogFor(documentRecord,pageCount);
+  console.info('[sheet-dump]', 'generatedCatalog[13]', generatedCatalog[13]);
   const catalogRecords = drawingCatalog.reconcile({ documentId: documentRecord.id, documentType: documentRecord.documentType, projectId: documentRecord.projectId || state().activeProject, drawingSetId: metadataAnalysis?.drawingSetId || '', pageCount, parserRecords: [...(metadataAnalysis?.sheets || []), ...(metadataAnalysis?.drawingRegistry || [])], storedMetadata: metadataAnalysis?.pageMetadata || [], authoritativeRecords:generatedCatalog.length?generatedCatalog:building61DrawingCatalogFor(documentRecord,pageCount) });
+  console.info('[sheet-dump]', 'catalogRecords[13]', catalogRecords[13]);
   const analysis = createPdfPageViewerAnalysis({ documentId: documentRecord.id, documentType: documentRecord.documentType, projectId: documentRecord.projectId || state().activeProject, pageCount, selectedPage: pageNumber, pageWidth: viewport.width, pageHeight: viewport.height, rotation: page.rotate || viewport.rotation || 0, metadataAnalysis, catalogRecords });
+  console.info('[sheet-dump]', 'analysis.sheets[13]', analysis.sheets[13]);
   page.cleanup?.();
   return analysis;
 }
