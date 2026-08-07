@@ -42,8 +42,22 @@ export function createPlansSheetInspector({ root, requirementsResolver, specific
   };
   const renderHydrated = snapshot => {
     const requirements = normalizeRequirements(snapshot.requirements || { confirmedSpecifications: [], suggestedSpecifications: [] });
+    const sheet = snapshot.sheet || snapshot;
+    // Diagnostic logging for page 14
+    if (sheet.pageNumber === 14) {
+      console.log('[Plans V2 sheet-inspector renderHydrated]', {
+        pageNumber: sheet.pageNumber,
+        pageId: sheet.pageId,
+        sheetId: sheet.sheetId,
+        sheetNumber: sheet.sheetNumber,
+        building: sheet.building,
+        confirmedSpecsCount: requirements.confirmedSpecifications?.length || 0,
+        suggestedSpecsCount: requirements.suggestedSpecifications?.length || 0,
+        specLinksCount: snapshot.specificationLinks?.length || 0
+      });
+    }
     const model = buildPanelModel({
-      sheet: snapshot.sheet || snapshot,
+      sheet,
       requirements,
       specificationLinks: snapshot.specificationLinks || requirements.specificationLinks || [],
       unresolvedEvidence: snapshot.unresolvedEvidence || []

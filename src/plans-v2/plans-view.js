@@ -29,6 +29,7 @@ export function renderPlansView(root, { title = 'Plans', sheets = [] } = {}) {
               <p data-plans-sheet-subtitle>Waiting for the selected sheet to render.</p>
             </div>
             <dl>
+              <div><dt>Building</dt><dd data-plans-sheet-building></dd></div>
               <div><dt>Discipline</dt><dd data-plans-sheet-discipline></dd></div>
               <div><dt>Type</dt><dd data-plans-sheet-type></dd></div>
               <div><dt>Position</dt><dd data-plans-sheet-position></dd></div>

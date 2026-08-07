@@ -452,13 +452,6 @@ export function populateBedfordDrawingSpecLinks({
     }
   }
   
-  // Log for diagnostic trace
-  console.log('[populateBedfordDrawingSpecLinks]', {
-    drawingPageId,
-    populated,
-    projectId
-  });
-  
   return { 
     populated, 
     reason: sheetDiscipline ? `Populated ${populated} discipline-based suggestions (no explicit references or objects found)` : `Populated ${populated} Bedford suggestions (no explicit references or objects found)`,

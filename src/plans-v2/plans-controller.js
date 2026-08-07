@@ -38,6 +38,7 @@ export function createPlansController({
   const sheetNumberNode = () => view.querySelector('[data-plans-sheet-number]');
   const sheetTitleNode = () => view.querySelector('[data-plans-sheet-title]');
   const sheetSubtitleNode = () => view.querySelector('[data-plans-sheet-subtitle]');
+  const sheetBuildingNode = () => view.querySelector('[data-plans-sheet-building]');
   const sheetDisciplineNode = () => view.querySelector('[data-plans-sheet-discipline]');
   const sheetTypeNode = () => view.querySelector('[data-plans-sheet-type]');
   const sheetPositionNode = () => view.querySelector('[data-plans-sheet-position]');
@@ -64,7 +65,9 @@ export function createPlansController({
   const normalizeSheet = sheet => {
     if (!sheet) return null;
     const analysisSheet = currentAnalysis?.sheets?.find(item => item.sheetId === sheet.sheetId || Number(item.pageNumber) === Number(sheet.pageNumber) || item.pageId === sheet.pageId) || null;
-    return {
+    // Use canonical pageId from buildDrawingPageModel - never generate synthetic fallback
+    const canonicalPageId = sheet.pageId || analysisSheet?.pageId || '';
+    const normalized = {
       projectId: sheet.projectId || analysisSheet?.projectId || currentAnalysis?.projectId || store.getState().projectId || '',
       drawingSetId: sheet.drawingSetId || analysisSheet?.drawingSetId || currentAnalysis?.drawingSetId || store.getState().drawingSetId || '',
       documentId: sheet.documentId || analysisSheet?.documentId || currentAnalysis?.documentId || '',
@@ -74,14 +77,28 @@ export function createPlansController({
       sheetTitle: sheet.sheetTitle || analysisSheet?.sheetTitle || '',
       discipline: sheet.discipline || analysisSheet?.discipline || '',
       drawingType: sheet.drawingType || sheet.primarySheetType || analysisSheet?.drawingType || analysisSheet?.primarySheetType || '',
-      pageId: sheet.pageId || analysisSheet?.pageId || `page-${sheet.pageNumber || ''}`,
+      pageId: canonicalPageId,
       pageNumber: Number(sheet.pageNumber) || 0,
       pdfPage: Number(sheet.pdfPage || sheet.pageNumber || analysisSheet?.pdfPage || analysisSheet?.pageNumber) || 0,
+      building: sheet.building || analysisSheet?.building || '',
       sourceBlob: sheet.sourceBlob || currentAnalysis?.sourceBlob || null,
       specificationLinks: Array.isArray(sheet.specificationLinks) ? clone(sheet.specificationLinks) : [],
       unresolvedEvidence: Array.isArray(sheet.unresolvedEvidence) ? clone(sheet.unresolvedEvidence) : [],
       rotation: Number(sheet.rotation) || 0
     };
+    // Diagnostic logging for page 14
+    if (normalized.pageNumber === 14) {
+      console.log('[Plans V2 normalizeSheet]', {
+        pageNumber: normalized.pageNumber,
+        pageId: normalized.pageId,
+        sheetId: normalized.sheetId,
+        sheetNumber: normalized.sheetNumber,
+        building: normalized.building,
+        analysisSheetPageId: analysisSheet?.pageId,
+        sheetPageId: sheet.pageId
+      });
+    }
+    return normalized;
   };
 
   const renderSheetList = sheets => {
@@ -101,6 +118,7 @@ export function createPlansController({
     if (sheetNumberNode()) sheetNumberNode().textContent = sheetNumber;
     if (sheetTitleNode()) sheetTitleNode().textContent = snapshot.sheetTitle || '';
     if (sheetSubtitleNode()) sheetSubtitleNode().textContent = snapshot.sheetTitle ? `Sheet ${sheetNumber}` : 'Waiting for metadata';
+    if (sheetBuildingNode()) sheetBuildingNode().textContent = snapshot.building ? `Building ${snapshot.building}` : '';
     if (sheetDisciplineNode()) sheetDisciplineNode().textContent = snapshot.discipline || '';
     if (sheetTypeNode()) sheetTypeNode().textContent = snapshot.drawingType || snapshot.primarySheetType || '';
     if (sheetPositionNode()) sheetPositionNode().textContent = snapshot.pdfPage || snapshot.pageNumber ? `PDF page ${snapshot.pdfPage || snapshot.pageNumber || ''}` : '';
@@ -108,6 +126,18 @@ export function createPlansController({
     if (drawingSetNode()) drawingSetNode().textContent = snapshot.drawingSetId || currentAnalysis?.drawingSetId || '';
     if (sheetSummaryNode()) sheetSummaryNode().textContent = `${snapshot.sheetNumber || ''}${snapshot.sheetTitle ? ` · ${snapshot.sheetTitle}` : ''}`;
     if (toolbarStatusNode()) toolbarStatusNode().textContent = snapshot.sheetNumber ? `Sheet ${snapshot.sheetNumber} · ${snapshot.pdfPage || snapshot.pageNumber || ''}` : `PDF page ${snapshot.pdfPage || snapshot.pageNumber || ''}`;
+    // Diagnostic logging for page 14
+    if (snapshot.pageNumber === 14) {
+      console.log('[Plans V2 updateHeader]', {
+        pageNumber: snapshot.pageNumber,
+        pageId: snapshot.pageId,
+        sheetNumber: snapshot.sheetNumber,
+        sheetTitle: snapshot.sheetTitle,
+        discipline: snapshot.discipline,
+        drawingType: snapshot.drawingType,
+        building: snapshot.building
+      });
+    }
   };
 
   const updateSelection = snapshot => {
@@ -131,6 +161,15 @@ export function createPlansController({
     if (!renderOutcome?.committed || generation !== activeGeneration) return renderOutcome || { committed: false, cancelled: true };
     currentSource = renderOutcome.source || currentSource;
     currentZoom = 1;
+    // Diagnostic logging for page 14
+    if (snapshot.pageNumber === 14) {
+      console.log('[Plans V2 selectSheet]', {
+        pageNumber: snapshot.pageNumber,
+        pageId: snapshot.pageId,
+        sheetId: snapshot.sheetId,
+        sheetNumber: snapshot.sheetNumber
+      });
+    }
     const requirementInput = {
       projectId: snapshot.projectId || currentAnalysis?.projectId || '',
       pageEntityId: `drawing-page:${snapshot.pageId || ''}`,

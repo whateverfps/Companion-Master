@@ -860,16 +860,6 @@ drawingRenderedEventTarget.addEventListener(DrawingRenderedEvent, event => {
   if (drawingSafeMode && detail.shell !== 'mission-control') return;
   drawingBackgroundSubscriberDepth += 1;
   try {
-    // Log DrawingRenderedEvent pageId for page 14
-    if (detail.sheet?.pageNumber === 14) {
-      console.log('[DrawingRenderedEvent]', {
-        pageId: detail.pageId,
-        sheetId: detail.sheetId,
-        documentId: detail.documentId,
-        projectId: detail.projectId,
-        sheetPageNumber: detail.sheet?.pageNumber
-      });
-    }
     // Populate Bedford drawing spec links for the current page
     const sheet = detail.sheet || (activeDrawingViewerAnalysis?.sheets?.find(item => Number(item.pageNumber) === Number(detail.sheet?.pageNumber)));
     const pageId = sheet?.pageId || detail.pageId || '';
@@ -3224,30 +3214,6 @@ function constructionIntelligencePanelMarkup(model) {
     const counts = Object.entries(page.objectCounts || {});
     const confirmed = Array.isArray(model?.specifications?.confirmed) ? model.specifications.confirmed : [];
     const suggested = Array.isArray(model?.specifications?.suggested) ? model.specifications.suggested : [];
-    if ((page?.sheet || model?.sheet?.sheetNumber || '') === '61IN101') {
-      console.group('[61IN101] markup normalized arrays');
-      console.log({
-        model,
-        modelKeys: Object.keys(model || {}),
-        specificationKeys: Object.keys(model?.specifications || {}),
-        confirmedCount: confirmed.length,
-        suggestedCount: suggested.length,
-        confirmedSections: confirmed.map(item => item.sectionNumber),
-        suggestedSections: suggested.map(item => item.sectionNumber)
-      });
-      console.groupEnd();
-    }
-    // Log for diagnostic trace - for page 14
-    if (page?.pageNumber === 14) {
-      console.log('[Sheet Inspector constructionIntelligencePanelMarkup]', {
-        pageId: page.pageId,
-        sheetNumber: page.sheet,
-        confirmedCount: confirmed.length,
-        suggestedCount: suggested.length,
-        confirmedSections: confirmed.map(item => item.sectionNumber),
-        suggestedSections: suggested.map(item => item.sectionNumber)
-      });
-    }
     const specs = [...confirmed, ...suggested];
     const governedRequirements = confirmed.length || suggested.length
       ? `${confirmed.length ? `<section class="mc-ci-specification-set"><h4>Confirmed Specifications</h4>${specificationCards(confirmed)}</section>` : ''}${suggested.length ? `<section class="mc-ci-specification-set"><h4>Suggested Specifications</h4>${specificationCards(suggested)}</section>` : ''}`
@@ -3587,17 +3553,6 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     const page = Math.max(1, Math.min(analysis.sheets.length, Number(drawingTarget.pageNumber) || 1));
     drawingTarget = createDrawingTarget({ ...drawingTarget, projectId: analysis.projectId, documentId: selected.id, drawingSetId: analysis.drawingSetId, sheetId: analysis.sheets[page - 1]?.sheetId, pageNumber: page });
   }
-  if (analysis?.sheets) {
-    const sheet14 = analysis.sheets.find(s => s.pageNumber === 14);
-    if (sheet14) {
-      console.log('[activeDrawingViewerAnalysis.sheets]', {
-        pageId: sheet14.pageId,
-        sheetId: sheet14.sheetId,
-        sheetNumber: sheet14.sheetNumber,
-        pdfPageNumber: sheet14.pageNumber
-      });
-    }
-  }
   if (drawingTarget) {
     const reduced = reduceStaleDrawingTarget(drawingTarget, { document: selected, analysis });
     if (reduced.target) drawingTarget = reduced.target;
@@ -3729,17 +3684,6 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     }
   } } catch (error) { logger.warning('Construction intelligence provider failure', { provider: 'specification-vocabulary', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }); }
   const sheetSpecificationLinks = sheet ? drawingSpecificationLinks.forPage(sheet.pageId) : [];
-  // Log for diagnostic trace - for page 14
-  if (sheet?.pageNumber === 14) {
-    console.log('[drawingSpecificationLinks.forPage]', {
-      pageId: sheet.pageId,
-      sheetSpecificationLinksCount: sheetSpecificationLinks.length,
-      confirmedCount: sheetSpecificationLinks.filter(l => l.status === 'confirmed').length,
-      suggestedCount: sheetSpecificationLinks.filter(l => l.status === 'suggested').length,
-      rejectedCount: sheetSpecificationLinks.filter(l => l.status === 'rejected').length,
-      sections: sheetSpecificationLinks.map(l => l.sectionNumber)
-    });
-  }
   const pageSpecificationLinks = sheetSpecificationLinks.filter(item => !item.objectId);
   const selectedSpecificationLinks = sheet && selectedDrawingObjectIds.length > 1 ? selectedDrawingObjectIds.flatMap(objectId=>sheetSpecificationLinks.filter(item => item.objectId === objectId || !item.objectId)) : selectedDrawingObject ? sheetSpecificationLinks.filter(item => item.objectId === selectedDrawingObject.objectId || !item.objectId) : pageSpecificationLinks;
   if (sheet) logger.debug('Drawing requirement evidence resolution', { pageId: sheet.pageId, selectedObjectId: selectedDrawingObject?.objectId || null, vocabularyMatches: vocabularyCandidateCount, relationshipWrites: relationshipWriteCount, rejectedOrSuppressedCandidates: sheetSpecificationLinks.filter(item => item.status === 'rejected').length });
