@@ -2650,6 +2650,18 @@ function updateDrawingOverlays(stage, sheet, observation, overlayRecords = []) {
 
 async function paintDrawingPage(source, sheet, observation, overlayRecords = [], { preserveSidebarScroll = false, shell = 'professional', requestToken = 0 } = {}) {
   assertDrawingRendererOwnership('invoke first paint');
+  console.info('[sheet-trace]', 'paintDrawingPage ENTRY', {
+    file: 'src/app.js',
+    function: 'paintDrawingPage',
+    line: 2651,
+    sheetIdentity: sheet === activeDrawingViewerAnalysis?.sheets?.find(s => s.pageId === sheet.pageId) ? 'SAME_AS_ANALYSIS' : 'DIFFERENT_FROM_ANALYSIS',
+    sheetNumber: sheet.sheetNumber,
+    pageNumber: sheet.pageNumber,
+    pageId: sheet.pageId,
+    documentId: sheet.documentId,
+    building: sheet.building,
+    discipline: sheet.discipline
+  });
   const deferEnhancements = Boolean(arguments[4]?.deferEnhancements);
   const paintStartedAt = drawingPerfNow();
   reportDrawingMemorySnapshot('alloc-stage', { phase: 'paintDrawingPage:start', pageNumber: sheet?.pageNumber || 0, overlayCount: overlayRecords.length });
@@ -3375,7 +3387,29 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   }
   const viewerAnalyses = analysis && !analyses.includes(analysis) ? [analysis, ...analyses] : analyses;
   const resolvedAfterReduction = drawingTarget && analysis ? resolveDrawingTarget(drawingTarget, { documents, analyses: viewerAnalyses }) : null;
+  console.info('[sheet-trace]', 'renderDrawingWorkspaceWithProviders BEFORE sheet resolution', {
+    file: 'src/app.js',
+    function: 'renderDrawingWorkspaceWithProviders',
+    line: 3389,
+    drawingTarget: drawingTarget,
+    resolvedAfterReduction: resolvedAfterReduction,
+    resolvedAfterReduction_sheetId: resolvedAfterReduction?.sheet?.sheetId,
+    resolvedAfterReduction_pageNumber: resolvedAfterReduction?.sheet?.pageNumber,
+    resolvedAfterReduction_pageId: resolvedAfterReduction?.sheet?.pageId
+  });
   const sheet = resolvedAfterReduction?.sheet || analysis?.sheets?.find(item => item.sheetId === drawingTarget?.sheetId) || analysis?.sheets?.[0] || null;
+  console.info('[sheet-trace]', 'renderDrawingWorkspaceWithProviders AFTER sheet resolution', {
+    file: 'src/app.js',
+    function: 'renderDrawingWorkspaceWithProviders',
+    line: 3390,
+    sheetIdentity: sheet === (resolvedAfterReduction?.sheet) ? 'FROM_RESOLVED_TARGET' : sheet === (analysis?.sheets?.find(item => item.sheetId === drawingTarget?.sheetId)) ? 'FROM_FIND_BY_SHEETID' : sheet === (analysis?.sheets?.[0]) ? 'FROM_FIRST_SHEET' : 'FROM_FALLBACK',
+    sheetNumber: sheet?.sheetNumber,
+    pageNumber: sheet?.pageNumber,
+    pageId: sheet?.pageId,
+    documentId: sheet?.documentId,
+    building: sheet?.building,
+    discipline: sheet?.discipline
+  });
   const observation = resolvedAfterReduction?.observation || null;
   const planObject = resolvedAfterReduction?.planObject || null;
   const highlightedRegion = resolvedAfterReduction?.region || observation?.region || drawingTarget?.region || null;
@@ -3550,6 +3584,17 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     multiSelection: sharedDrawingObjectContext(activeDrawingObjects.filter(item=>selectedDrawingObjectIds.includes(item.objectId)), { specificationLinks:selectedSpecificationLinks })
   });
   const inspectorModelStartedAt = drawingPerfNow();
+  console.info('[sheet-trace]', 'buildIntelligencePanel BEFORE', {
+    file: 'src/app.js',
+    function: 'renderDrawingWorkspaceWithProviders',
+    line: 3565,
+    sheetNumber: sheet?.sheetNumber,
+    pageNumber: sheet?.pageNumber,
+    pageId: sheet?.pageId,
+    documentId: sheet?.documentId,
+    building: sheet?.building,
+    discipline: sheet?.discipline
+  });
   const constructionIntelligencePanel = buildIntelligencePanel(pendingRequirements);
   replaceTrackedResource('inspector-model', constructionIntelligencePanel, { pageId: sheet?.pageId || '', mode: constructionIntelligencePanel.mode, phase: 'initial' });
   drawingTraceSlowOperation('inspector model creation', inspectorModelStartedAt, { pageId: sheet?.pageId || '', mode: constructionIntelligencePanel.mode });
