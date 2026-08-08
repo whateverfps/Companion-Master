@@ -3542,6 +3542,14 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     return { ...item, startPdfPage: section?.startPdfPage || null };
   };
   const currentSheet = drawingTarget?.sheetId ? (analysis?.sheets?.find(item => item.sheetId === drawingTarget.sheetId) || analysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget.pageNumber))) : sheet;
+  console.log('[DEBUG]', 'currentSheet at render start', {
+    sheetNumber: currentSheet?.sheetNumber,
+    pageNumber: currentSheet?.pageNumber,
+    sheetTitle: currentSheet?.sheetTitle,
+    discipline: currentSheet?.discipline,
+    pageId: currentSheet?.pageId,
+    documentId: currentSheet?.documentId
+  });
   const buildIntelligencePanel = requirements => buildConstructionIntelligencePanelModel({
     document: selected, sheet: currentSheet, trade: activeTrade, selectedObject: selectedDrawingObject, pageObjects: activeDrawingObjects,
     pageStatus: analysis.viewerFallback && !analysis.metadataAvailable ? 'Manual PDF page viewing remains available.' : currentSheet?.identityStatus,
