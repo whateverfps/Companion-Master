@@ -3567,7 +3567,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const inspectorModelStartedAt = drawingPerfNow();
   const constructionIntelligencePanel = buildIntelligencePanel(pendingRequirements);
   replaceTrackedResource('inspector-model', constructionIntelligencePanel, { pageId: currentSheet?.pageId || '', mode: constructionIntelligencePanel.mode, phase: 'initial' });
-  drawingTraceSlowOperation('inspector model creation', inspectorModelStartedAt, { pageId: getCurrentSheet()?.pageId || '', mode: constructionIntelligencePanel.mode });
+  drawingTraceSlowOperation('inspector model creation', inspectorModelStartedAt, { pageId: currentSheet?.pageId || '', mode: constructionIntelligencePanel.mode });
   const plansInspectorContext = shell === 'mission-control'
     ? getActivePlansSheetContext({
       analysis,
@@ -3593,7 +3593,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       <aside id="${shell === 'mission-control' ? 'missionPlansSheetInspector' : 'drawingSheetInspector'}" class="mc-drawing-evidence" aria-label="Construction Intelligence">${constructionIntelligencePanelMarkup(constructionIntelligencePanel)}</aside>${chiefDrawingDockMarkup(chiefCards)}
     </div>${drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list" aria-label="Unavailable drawing lifecycle records"><h2>Drawing records requiring attention</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : ''}`;
   drawingWorkspaceRenderCount += 1;
-  drawingTraceSlowOperation('workspace render', workspaceRenderStartedAt, { renderCount: drawingWorkspaceRenderCount, pageId: getCurrentSheet()?.pageId || '', documentId: selected.id, leftPanel: Boolean(host.querySelector('.mc-drawing-index')) });
+  drawingTraceSlowOperation('workspace render', workspaceRenderStartedAt, { renderCount: drawingWorkspaceRenderCount, pageId: currentSheet?.pageId || '', documentId: selected.id, leftPanel: Boolean(host.querySelector('.mc-drawing-index')) });
   const placeholderCanvas = host.querySelector('#mcDrawingCanvas');
   const drawingStageForObjectTools = host.querySelector('#mcDrawingStage');
   if (drawingStageForObjectTools && activeDrawingObjects.length) {
