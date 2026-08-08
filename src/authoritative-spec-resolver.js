@@ -1,17 +1,14 @@
 // Authoritative specification section resolver
 // ONE INDEX. ONE VIEWER. ONE SOURCE-OPENING PATH.
 
-import { readFileSync } from 'fs';
-import { join } from 'path';
-
 // Load authoritative specification index
 let authoritativeIndex = null;
 
-function loadAuthoritativeIndex() {
+async function loadAuthoritativeIndex() {
   if (!authoritativeIndex) {
     try {
-      const indexPath = join(process.cwd(), 'project-data/bedford/specifications/authoritative-spec-index.json');
-      authoritativeIndex = JSON.parse(readFileSync(indexPath, 'utf-8'));
+      const response = await fetch('project-data/bedford/specifications/authoritative-spec-index.json');
+      authoritativeIndex = await response.json();
     } catch (error) {
       console.error('Failed to load authoritative specification index:', error);
       authoritativeIndex = [];
@@ -26,8 +23,8 @@ function normalizeSectionNumber(sectionNumber) {
 }
 
 // Resolve section from authoritative index
-function resolveSection(sectionNumber) {
-  const index = loadAuthoritativeIndex();
+async function resolveSection(sectionNumber) {
+  const index = await loadAuthoritativeIndex();
   const normalized = normalizeSectionNumber(sectionNumber);
   
   // Try exact match first
@@ -44,12 +41,12 @@ function resolveSection(sectionNumber) {
 // THE SINGLE function to open a specification section
 // Parameters: sectionNumber (e.g., "09 91 00")
 // Returns: { ok: boolean, section: object|null, error: string }
-export function openSpecificationSection(sectionNumber) {
+export async function openSpecificationSection(sectionNumber) {
   if (!sectionNumber) {
     return { ok: false, section: null, error: 'Section number is required' };
   }
   
-  const section = resolveSection(sectionNumber);
+  const section = await resolveSection(sectionNumber);
   
   if (!section) {
     return { 
@@ -76,7 +73,7 @@ export function openSpecificationSection(sectionNumber) {
 // Integration with existing PDF viewer
 // This function should be called from the UI to open a specification section
 export async function openSpecificationDocument(sectionNumber, engine) {
-  const result = openSpecificationSection(sectionNumber);
+  const result = await openSpecificationSection(sectionNumber);
   
   if (!result.ok) {
     alert(result.error);
