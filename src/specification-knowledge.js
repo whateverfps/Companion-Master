@@ -259,7 +259,7 @@ export async function loadBedfordDrawingSpecMappings({
             drawingDocumentId,
             drawingPageId: link.drawingPageId,
             objectId: link.objectId || null,
-            specificationDocumentId: drawingDocumentId,
+            specificationDocumentId: section.documentId,
             sectionNumber: link.sectionNumber,
             status: link.status,
             origin: link.origin,
