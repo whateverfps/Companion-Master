@@ -3398,17 +3398,6 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const searchResults = analysis ? searchDrawingSheets({ query: drawingFilter, discipline: drawingDiscipline, sheetType: drawingType, analysis }) : [];
   const shownSheets = searchResults.map(item => item.sheet);
   const navigationSheetIds = drawingMatchingSheetIds.length ? drawingMatchingSheetIds : searchResults.map(item => item.sheetId);
-  (async () => {
-    const specificationDocument = allDocuments.find(isSpecificationDocument);
-    if (specificationDocument && objectBase.projectId === 'bedford') {
-      await loadBedfordDrawingSpecMappings({
-        drawingSpecificationLinks,
-        specificationIndex,
-        projectId: objectBase.projectId,
-        drawingDocumentId: selected.id
-      });
-    }
-  })();
   const navigationIndex = navigationSheetIds.indexOf(sheet?.sheetId);
   const observations = sheet ? (analysis?.observations || []).filter(item => item.sheetId === sheet.sheetId) : [];
   const activeProjectObjectId = analysis?.projectId || state().activeProject;
@@ -3423,6 +3412,17 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     }
   }
   const objectBase = { projectId: analysis?.projectId || state().activeProject, documentId: selected.id, pageId: sheet?.pageId || '' };
+  (async () => {
+    const specificationDocument = allDocuments.find(isSpecificationDocument);
+    if (specificationDocument && objectBase.projectId === 'bedford') {
+      await loadBedfordDrawingSpecMappings({
+        drawingSpecificationLinks,
+        specificationIndex,
+        projectId: objectBase.projectId,
+        drawingDocumentId: selected.id
+      });
+    }
+  })();
   const roomObjects = observations.filter(item => item.kind === 'room-number-text').map(item => drawingObjectDecisions.apply(createRoomObject({ ...objectBase, objectId: item.observationId, observationId: item.observationId, roomNumber: item.value, sourceText: item.value, region: item.region, confidence: item.confidence, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : item.verification?.status === 'Rejected' ? 'rejected' : 'candidate' })));
   const exactRooms = roomObjects.filter(item => item.accepted && item.verificationState !== 'rejected');
   const observationGroups = groupDrawingObservations(observations.filter(item => item.kind !== 'room-number-text' || exactRooms.some(room => room.objectId === item.observationId)));
