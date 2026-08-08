@@ -3392,6 +3392,7 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const effectiveObservation = resolvedTarget?.observation || observation || null;
   const effectivePlanObject = resolvedTarget?.planObject || planObject || null;
   const effectiveRegion = resolvedTarget?.region || highlightedRegion || null;
+  const currentSheet = analysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber)) || analysis?.sheets?.find(item => item.sheetId === drawingTarget?.sheetId) || sheet;
   const status = drawingStatusCopy(selected, source, persistedAnalysis);
   const disciplines = [...new Set((analysis?.sheets || []).map(item => item.discipline).filter(Boolean))].sort();
   const sheetTypes = [...new Set((analysis?.sheets || []).flatMap(item => item.sheetTypes || []).filter(Boolean))].sort();
@@ -3412,15 +3413,25 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     }
   }
   const objectBase = { projectId: analysis?.projectId || state().activeProject, documentId: selected.id, pageId: sheet?.pageId || '' };
+  console.log('[TRACE Stage 1] currentSheet', {
+    sheetNumber: currentSheet?.sheetNumber,
+    pageNumber: currentSheet?.pageNumber,
+    pageId: currentSheet?.pageId
+  });
+  console.log('[TRACE Stage 2] objectBase', objectBase);
+  console.log('[TRACE Stage 3] drawingSpecificationLinks.forProject() count', drawingSpecificationLinks.forProject().length);
   (async () => {
     const specificationDocument = allDocuments.find(isSpecificationDocument);
+    console.log('[TRACE Stage 4] specificationDocument', specificationDocument?.id);
     if (specificationDocument && objectBase.projectId === 'bedford') {
-      await loadBedfordDrawingSpecMappings({
+      const result = await loadBedfordDrawingSpecMappings({
         drawingSpecificationLinks,
         specificationIndex,
         projectId: objectBase.projectId,
         drawingDocumentId: selected.id
       });
+      console.log('[TRACE Stage 5] loadBedfordDrawingSpecMappings result', result);
+      console.log('[TRACE Stage 6] drawingSpecificationLinks.forProject() count after load', drawingSpecificationLinks.forProject().length);
     }
   })();
   const roomObjects = observations.filter(item => item.kind === 'room-number-text').map(item => drawingObjectDecisions.apply(createRoomObject({ ...objectBase, objectId: item.observationId, observationId: item.observationId, roomNumber: item.value, sourceText: item.value, region: item.region, confidence: item.confidence, verificationState: item.verification?.status === 'Confirmed' ? 'confirmed' : item.verification?.status === 'Rejected' ? 'rejected' : 'candidate' })));
@@ -3512,8 +3523,11 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       drawingTraceSlowOperation('specification matching', objectCandidatesStartedAt, { iterationCount: objectCandidateCount, scope: 'object', objectId: drawingObject.objectId, candidateCount: objectCandidates.length });
     }
   } } catch (error) { logger.warning('Construction intelligence provider failure', { provider: 'specification-vocabulary', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }); }
-  const currentSheet = analysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber)) || analysis?.sheets?.find(item => item.sheetId === drawingTarget?.sheetId) || sheet;
   const sheetSpecificationLinks = currentSheet ? drawingSpecificationLinks.forPage(currentSheet.pageId) : [];
+  console.log('[TRACE Stage 7] drawingSpecificationLinks.forPage(currentSheet.pageId)', {
+    pageId: currentSheet?.pageId,
+    numberOfLinks: sheetSpecificationLinks.length
+  });
   const pageSpecificationLinks = sheetSpecificationLinks.filter(item => !item.objectId);
   const selectedSpecificationLinks = currentSheet && selectedDrawingObjectIds.length > 1 ? selectedDrawingObjectIds.flatMap(objectId=>sheetSpecificationLinks.filter(item => item.objectId === objectId || !item.objectId)) : selectedDrawingObject ? sheetSpecificationLinks.filter(item => item.objectId === selectedDrawingObject.objectId || !item.objectId) : pageSpecificationLinks;
   if (currentSheet) logger.debug('Drawing requirement evidence resolution', { pageId: currentSheet.pageId, selectedObjectId: selectedDrawingObject?.objectId || null, vocabularyMatches: vocabularyCandidateCount, relationshipWrites: relationshipWriteCount, rejectedOrSuppressedCandidates: sheetSpecificationLinks.filter(item => item.status === 'rejected').length });
