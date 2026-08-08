@@ -3483,7 +3483,6 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       ...observations.filter(item => observationIds.has(item.observationId)).map(item => ({ text: item.value, source: item.kind, region: item.region, observationId: item.observationId }))
     ].filter(item => item.text);
   };
-  const specificationDocument = allDocuments.find(isSpecificationDocument);
   let vocabularyCandidateCount = 0; let relationshipWriteCount = 0;
   try { if (sheet && specificationDocument) {
     const existingLinkIds = new Set(drawingSpecificationLinks.forPage(sheet.pageId).map(item => item.linkId));
