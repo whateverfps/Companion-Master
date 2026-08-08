@@ -1884,9 +1884,17 @@ const titles = {
 };
 
 function show(name) {
+  console.log('=== VIEW SWITCH ===');
+  console.log('  Previous view:', view);
+  console.log('  New view:', name);
+  console.log('  specificationDrawingReturnTarget:', Boolean(specificationDrawingReturnTarget));
+  
   const preserveDrawingForSpecification = Boolean(specificationDrawingReturnTarget) && name === 'knowledge';
   if (name !== 'drawings' && !preserveDrawingForSpecification) releaseDrawingSource();
-  if (name !== 'knowledge') void specificationSourceViewer.close('workspace-changed');
+  if (name !== 'knowledge') {
+    console.log('  Closing specificationSourceViewer');
+    void specificationSourceViewer.close('workspace-changed');
+  }
   if (name !== 'knowledge') specificationDrawingReturnTarget = null;
   view = name;
   if (experience === 'professional-workspace') lastProfessionalView = name;
@@ -3591,8 +3599,15 @@ function drawingRecoveryMarkup(record = {}) {
 }
 
 async function renderDrawingWorkspace(shell = 'professional') {
+  console.log('=== DRAWING WORKSPACE RENDER ===');
+  console.log('  shell:', shell);
+  console.log('  current view:', view);
+  console.log('  specificationDrawingReturnTarget:', Boolean(specificationDrawingReturnTarget));
+  console.log('  caller:', new Error().stack?.split('\n')[2]?.trim());
+  
   assertDrawingRendererOwnership('invoke workspace render');
   const providers = await loadDrawingWorkspaceProviders({ loadDocuments: () => engine.documents(), loadSections: documents => engine.specificationSections(documents.filter(isSpecificationDocument).map(item => item.id).filter(id => !hydratedDrawingSpecificationDocuments.has(id)), BEDFORD_PROJECT_SPECIFICATION_VOCABULARY.map(item => item.sectionNumber)), onFailure: failure => logger.warning('Drawing workspace provider unavailable', failure) });
+  console.log('=== END DRAWING WORKSPACE RENDER ===');
   return renderDrawingWorkspaceWithProviders(shell, providers);
 }
 
