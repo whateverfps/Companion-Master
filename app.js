@@ -403,7 +403,7 @@ const drawingActionRouter=createDrawingActionRouter({handlers:{
   'fit-page':()=>document.querySelector('[data-drawing-fit="page"]')?.click(),'fit-width':()=>document.querySelector('[data-drawing-fit="width"]')?.click(),'rotate-clockwise':()=>document.querySelector('[data-drawing-rotate]')?.click(),'reset-view':()=>document.querySelector('[data-drawing-reset-view]')?.click(),
   'open-drawing-page':target=>{drawingTarget=createDrawingTarget({...drawingTarget,documentId:target.documentId,pageNumber:target.pageNumber,sheetNumber:target.sheetNumber});return renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional');},
   'open-specification-section':target=>{specificationDrawingReturnTarget=captureDrawingSupportReturnState();return openProfessionalDestination({view:'knowledge',documentId:target.documentId,sectionNumber:target.sectionNumber});},
-  'open-specification-explorer':target=>{const sheet=analysis?.sheets?.find(item=>item.sheetId===drawingTarget?.sheetId)||sheet;openSpecificationExplorer(sheet);return true;},
+  'open-specification-explorer':target=>{const currentSheetNumber=drawingTarget?.sheetNumber||activeDrawingViewerAnalysis?.sheets?.find(item=>item.pageId===drawingTarget?.pageId)?.sheetNumber;if(!currentSheetNumber){alert('No active sheet');return true;}const currentSheet=activeDrawingViewerAnalysis?.sheets?.find(item=>item.sheetNumber===currentSheetNumber)||{sheetNumber:currentSheetNumber,sheetTitle:'Unknown',discipline:'Unknown'};openSpecificationExplorer(currentSheet);return true;},
   'open-specification-source-page':target=>{specificationDrawingReturnTarget=captureDrawingSupportReturnState();specificationSourceTarget={...target,projectId:state().activeProject,returnTarget:'drawings'};show('specification-source');return true;},
   'return-to-drawing':()=>restoreDrawingSupportReturnState(),
   'open-coverage-review':()=>{drawingCoverageReviewMode=true;return renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional');},
@@ -7588,59 +7588,28 @@ function inspectionPrefill() {
 }
 
 async function openSpecificationExplorer(sheet = {}) {
-  if (!sheet) {
+  if (!sheet || !sheet.sheetNumber) {
     alert('Specification Explorer not available - no active sheet');
     return;
   }
 
-  const pageId = sheet.pageId || '';
-  
-  // First check if we have already-resolved specifications for this page
-  const storedResult = pageRequirementState.get(pageId);
-  
-  let sections = [];
-  let source = '';
-  
-  if (storedResult && (storedResult.confirmedSpecifications?.length > 0 || storedResult.suggestedSpecifications?.length > 0)) {
-    // Use already-resolved specifications
-    sections = [
-      ...(storedResult.confirmedSpecifications || []).map(s => ({
-        sectionNumber: s.sectionNumber,
-        sectionTitle: s.sectionTitle,
-        documentId: s.documentId,
-        confidence: 1.0,
-        matchReason: 'Confirmed requirement',
-        status: 'confirmed'
-      })),
-      ...(storedResult.suggestedSpecifications || []).map(s => ({
-        sectionNumber: s.sectionNumber,
-        sectionTitle: s.sectionTitle,
-        documentId: s.documentId,
-        confidence: 0.8,
-        matchReason: 'Suggested requirement',
-        status: 'suggested'
-      }))
-    ];
-    source = 'Already-resolved requirements';
-  } else if (specificationIndex) {
-    // Fallback: search specification index
-    const projectId = state().activeProject;
-    const searchResult = searchSpecificationsForSheet({ specificationIndex, sheet, projectId });
-    
-    if (searchResult.ok) {
-      sections = searchResult.sections;
-      source = searchResult.query;
-    } else {
-      alert(`Specification Explorer: ${searchResult.reason}`);
-      return;
+  // Load the Building 61 spec links mapping
+  let specLinks = {};
+  try {
+    const response = await fetch('project-data/bedford/relationships/building-61-spec-links.json');
+    if (response.ok) {
+      const data = await response.json();
+      specLinks = data.results || {};
     }
-  } else {
-    alert('Specification Explorer not available - no specification index');
-    return;
+  } catch (error) {
+    console.warn('Failed to load spec links mapping:', error);
   }
 
-  if (sections.length === 0) {
-    alert('No specification sections found for this sheet.');
+  // Look up specs for the current sheet
+  const sheetSpecs = specLinks[sheet.sheetNumber];
+  
+  if (!sheetSpecs || !sheetSpecs.links || sheetSpecs.links.length === 0) {
+    alert(`No specification mappings found for sheet ${sheet.sheetNumber}`);
     return;
   }
 
@@ -7651,31 +7620,27 @@ async function openSpecificationExplorer(sheet = {}) {
     <header>
       <div>
         <span>SPECIFICATION EXPLORER</span>
-        <strong>${esc(sheet.sheetNumber || `Page ${sheet.pageNumber}`)}</strong>
+        <strong>${esc(sheet.sheetNumber)}</strong>
       </div>
       <button class="subtle" data-spec-explorer-close aria-label="Close">×</button>
     </header>
     <div class="mc-specification-explorer-content">
       <div class="mc-specification-explorer-info">
-        <p><strong>Sheet:</strong> ${esc(sheet.sheetNumber || `Page ${sheet.pageNumber}`)}</p>
+        <p><strong>Sheet:</strong> ${esc(sheet.sheetNumber)}</p>
         <p><strong>Title:</strong> ${esc(sheet.sheetTitle || 'Unknown')}</p>
         <p><strong>Discipline:</strong> ${esc(sheet.discipline || 'Unknown')}</p>
-        <p><strong>Type:</strong> ${esc(sheet.primarySheetType || sheet.sheetTypes?.[0] || 'Unknown')}</p>
-        <p><strong>Source:</strong> ${esc(source)}</p>
-        <p><strong>Found:</strong> ${sections.length} specification sections</p>
+        <p><strong>Found:</strong> ${sheetSpecs.links.length} specification sections</p>
       </div>
       <div class="mc-specification-explorer-results">
         <h3>Governing Specifications</h3>
         <ol>
-          ${sections.map(section => `
-            <li data-spec-section="${esc(section.sectionNumber)}" data-spec-document="${esc(section.documentId)}">
+          ${sheetSpecs.links.map(link => `
+            <li data-spec-section="${esc(link.sectionNumber)}" data-spec-document="${esc(link.specificationDocumentId)}">
               <article>
-                <span class="mc-spec-section-number">${esc(section.sectionNumber)}</span>
+                <span class="mc-spec-section-number">${esc(link.sectionNumber)}</span>
                 <div>
-                  <strong>${esc(section.sectionTitle)}</strong>
-                  <small>${esc(section.matchReason || 'General specification')}</small>
-                  <small>Confidence: ${Math.round(section.confidence * 100)}%</small>
-                  ${section.status ? `<small>Status: ${esc(section.status)}</small>` : ''}
+                  <strong>${esc(link.sectionTitle)}</strong>
+                  <small>${esc(link.status || 'Unknown status')}</small>
                 </div>
                 <button data-spec-open>View Source</button>
               </article>
@@ -7702,19 +7667,26 @@ async function openSpecificationExplorer(sheet = {}) {
       const sectionNumber = li.dataset.specSection;
       const documentId = li.dataset.specDocument;
 
-      // Preserve current drawing session before navigation
-      specificationDrawingReturnTarget = captureDrawingSupportReturnState();
-
       // Close modal
       modal.close();
       modal.remove();
 
-      // Open specification section
-      openProfessionalDestination({
-        view: 'knowledge',
-        documentId: documentId,
-        sectionNumber: sectionNumber
-      });
+      // Open specification source viewer
+      const section = specificationIndex.get(documentId, sectionNumber);
+      if (section) {
+        specificationSourceTarget = {
+          documentId: section.documentId,
+          projectId: section.projectId,
+          pageNumber: section.startPdfPage,
+          sectionNumber: section.sectionNumber,
+          sectionTitle: section.sectionTitle,
+          articleReference: '',
+          returnTarget: 'drawings'
+        };
+        show('specification-source');
+      } else {
+        alert(`Specification section ${sectionNumber} not found in index`);
+      }
     });
   });
 
