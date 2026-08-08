@@ -514,10 +514,42 @@ function scheduleDrawingHydration({ generationId, sheetId, projectId, shell, wor
       if (resolvedRequirements) {
         replaceTrackedResource('requirement-model', resolvedRequirements, { pageId: currentSheet?.pageId || '', status: resolvedRequirements.status });
         const panelModel = buildIntelligencePanel(resolvedRequirements);
+        console.info('[panel-trace]', 'scheduleDrawingHydration panelModel BEFORE markup', {
+          file: 'src/app.js',
+          function: 'scheduleDrawingHydration finish',
+          line: 516,
+          inputSheetNumber: panelModel.sheet?.sheetNumber,
+          inputPageNumber: panelModel.sheet?.pageNumber,
+          inputPageId: panelModel.sheet?.pageId,
+          inputBuilding: panelModel.sheet?.building,
+          inputDiscipline: panelModel.sheet?.discipline,
+          inputStatus: panelModel.status
+        });
         replaceTrackedResource('inspector-model', panelModel, { pageId: currentSheet?.pageId || '', mode: panelModel.mode, phase: 'updated' });
         if (panel !== activePlansInspectorPanel) activePlansInspectorPanel = panel;
         panel.dataset.panelSignature = constructionIntelligencePanelSignature(panelModel);
-        panel.innerHTML = constructionIntelligencePanelMarkup(panelModel);
+        const markupBefore = constructionIntelligencePanelMarkup(panelModel);
+        console.info('[panel-trace]', 'scheduleDrawingHydration BEFORE innerHTML', {
+          file: 'src/app.js',
+          function: 'scheduleDrawingHydration finish',
+          line: 520,
+          inputSheetNumber: panelModel.sheet?.sheetNumber,
+          inputPageNumber: panelModel.sheet?.pageNumber,
+          inputPageId: panelModel.sheet?.pageId,
+          inputBuilding: panelModel.sheet?.building,
+          inputDiscipline: panelModel.sheet?.discipline,
+          inputStatus: panelModel.status,
+          markupLength: markupBefore.length
+        });
+        panel.innerHTML = markupBefore;
+        console.info('[panel-trace]', 'scheduleDrawingHydration AFTER innerHTML', {
+          file: 'src/app.js',
+          function: 'scheduleDrawingHydration finish',
+          line: 520,
+          panelInnerHtmlLength: panel.innerHTML.length,
+          panelContainsUnavailable: panel.innerHTML.includes('Drawing source unavailable') || false,
+          panelContainsSheetNumber: panel.innerHTML.includes('61IN101') || false
+        });
       }
       if (renderAfterPaint) markHydrated();
     };
@@ -3555,6 +3587,18 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   });
   const inspectorModelStartedAt = drawingPerfNow();
   const constructionIntelligencePanel = buildIntelligencePanel(pendingRequirements);
+  console.info('[panel-trace]', 'buildConstructionIntelligencePanelModel OUTPUT', {
+    file: 'src/app.js',
+    function: 'renderDrawingWorkspaceWithProviders',
+    line: 3581,
+    sheetNumber: constructionIntelligencePanel.sheet?.sheetNumber,
+    pageNumber: constructionIntelligencePanel.sheet?.pageNumber,
+    pageId: constructionIntelligencePanel.sheet?.pageId,
+    building: constructionIntelligencePanel.sheet?.building,
+    discipline: constructionIntelligencePanel.sheet?.discipline,
+    sheetTitle: constructionIntelligencePanel.sheet?.sheetTitle,
+    status: constructionIntelligencePanel.status
+  });
   replaceTrackedResource('inspector-model', constructionIntelligencePanel, { pageId: getCurrentSheet()?.pageId || '', mode: constructionIntelligencePanel.mode, phase: 'initial' });
   drawingTraceSlowOperation('inspector model creation', inspectorModelStartedAt, { pageId: getCurrentSheet()?.pageId || '', mode: constructionIntelligencePanel.mode });
   const plansInspectorContext = shell === 'mission-control'
@@ -3579,10 +3623,35 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       <main class="mc-drawing-viewer"><details class="mc-construction-orientation"><summary>Work and selection context</summary><div><strong>${esc(activeWorkPackage?.workSummary?.[0]?.label || sheet?.sheetTitle || 'Select construction evidence')}</strong><span>${sheet?.building ? `Building ${esc(sheet.building)} · ` : ''}${esc(activeWorkPackage?.discipline || sheet?.discipline || 'Unknown')} · ${esc(selectionExplanation)}</span></div></details>${coverageReviewMarkup}
         ${!source ? `<div class="mc-drawing-unavailable"><strong>Original drawing unavailable — reattach PDF to view sheet.</strong><p>Reattach the exact source PDF to inspect the drawing. Indexed project text remains available.</p><label class="mc-drawing-reattach"><input id="mcDrawingReattach" type="file" accept="application/pdf,.pdf">Reattach Original PDF</label></div>` : !sheet ? `<div class="mc-drawing-unavailable"><strong>Drawing page unavailable.</strong><p>The retained PDF does not expose a viewable page.</p></div>` : `<header id="${focusTarget === 'mc-drawing-selected-evidence' ? 'mc-drawing-selected-evidence' : 'mc-drawing-sheet-title'}" class="mc-drawing-sheet-title" tabindex="-1" aria-live="polite" aria-label="${esc(announcementText)}"><div><span>${esc(sheet.sheetNumber || `Page ${sheet.pageNumber}`)}</span><h3>${esc(sheet.sheetTitle || `Page ${sheet.pageNumber}`)}</h3><p>${esc(selectionExplanation)}</p></div><dl><div><dt>Discipline</dt><dd>${esc(sheet.discipline)}</dd></div><div><dt>Type</dt><dd>${esc(sheet.primarySheetType || sheet.sheetTypes[0] || 'Unknown')}</dd></div><div><dt>Position</dt><dd>${analysis.viewerFallback ? 'Page' : 'Sheet'} ${sheet.pageNumber} of ${analysis.sheets.length}</dd></div><div><dt>Identity</dt><dd>${esc(sheet.identityStatus)}</dd></div></dl></header><div class="mc-drawing-toolbar"><div role="group" aria-label="Drawing navigation"><button data-drawing-previous ${navigationIndex <= 0 ? 'disabled' : ''}>Previous</button><button data-drawing-next ${navigationIndex < 0 || navigationIndex >= navigationSheetIds.length - 1 ? 'disabled' : ''}>Next</button><button data-drawing-layout="toggle-finder">${drawingWorkspacePanels.finderHidden ? 'Show' : 'Hide'} Sheet Finder</button></div><div role="group" aria-label="Drawing view controls"><button data-drawing-fit="page">Fit Page</button><button data-drawing-fit="width">Fit Width</button><button data-drawing-zoom="out">Zoom Out</button><button data-drawing-zoom="in">Zoom In</button><button data-drawing-rotate>Rotate</button><button data-drawing-reset-view>Reset View</button><button data-drawing-layout="${drawingWorkspacePanels.expanded ? 'restore' : 'expand'}">${drawingWorkspacePanels.expanded ? 'Restore Workspace' : 'Expand Drawing'}</button></div><div role="group" aria-label="Construction context actions">${analysis.viewerFallback ? '' : '<button data-drawing-ask>Ask Chief</button><button data-drawing-current-work>Add to Current Work</button><button data-drawing-inspection>Create Inspection</button>'}<button data-drawing-edit-metadata>Edit Page Metadata</button><button data-coverage-review-open>Review Drawing Coverage</button><button class="subtle" data-drawing-source>Open Source Details</button><button data-drawing-layout="toggle-evidence">${drawingWorkspacePanels.evidenceHidden ? 'Show' : 'Hide'} Construction Evidence</button></div><output aria-label="Current drawing view">${Number.isFinite(drawingZoom) ? Math.round(drawingZoom * 100) : 'Fit'}% · ${drawingRotation}°</output></div>${analysis.viewerFallback && !analysis.metadataAvailable ? '' : `<fieldset class="mc-drawing-overlay-controls"><legend>Drawing overlays</legend>${Object.entries({ rooms: 'Room Labels', confirmed: 'Confirmed Objects', candidates: 'Candidate Objects', equipment: 'Equipment Tags', keyedNotes: 'Keyed Notes', callouts: 'Callouts', scheduleLinks: 'Schedule Links', warnings: 'Warnings' }).map(([key,label]) => `<label><input type="checkbox" data-drawing-overlay="${key}" ${viewport.overlays?.[key] === false ? '' : 'checked'}>${label}</label>`).join('')}</fieldset>`}<div id="mcDrawingStage" class="mc-drawing-stage ${drawingCoverageRegionItemId?'is-drawing-review-region':''}"><canvas id="mcDrawingCanvas" aria-label="${esc(sheet.sheetNumber || `PDF page ${sheet.pageNumber}`)} ${esc(sheet.sheetTitle || 'drawing')}"></canvas><div class="mc-drawing-overlay-layer" aria-label="Drawing evidence overlays"></div></div>${drawingRotation || sheet.rotation ? '<p class="mc-drawing-note">Location highlights are synchronized with the rotated drawing view.</p>' : ''}`}
       </main>
-      <aside id="${shell === 'mission-control' ? 'missionPlansSheetInspector' : 'drawingSheetInspector'}" class="mc-drawing-evidence" aria-label="Construction Intelligence">${constructionIntelligencePanelMarkup(constructionIntelligencePanel)}</aside>${chiefDrawingDockMarkup(chiefCards)}
+      <aside id="${shell === 'mission-control' ? 'missionPlansSheetInspector' : 'drawingSheetInspector'}" class="mc-drawing-evidence" aria-label="Construction Intelligence">${(() => {
+        const markup = constructionIntelligencePanelMarkup(constructionIntelligencePanel);
+        console.info('[panel-trace]', 'constructionIntelligencePanelMarkup INPUT', {
+          file: 'src/app.js',
+          function: 'renderDrawingWorkspaceWithProviders',
+          line: 3594,
+          inputSheetNumber: constructionIntelligencePanel.sheet?.sheetNumber,
+          inputPageNumber: constructionIntelligencePanel.sheet?.pageNumber,
+          inputPageId: constructionIntelligencePanel.sheet?.pageId,
+          inputBuilding: constructionIntelligencePanel.sheet?.building,
+          inputDiscipline: constructionIntelligencePanel.sheet?.discipline,
+          inputStatus: constructionIntelligencePanel.status,
+          markupLength: markup.length
+        });
+        return markup;
+      })()}</aside>${chiefDrawingDockMarkup(chiefCards)}
     </div>${drawingLifecycleUnavailable.length ? `<section class="mc-drawing-recovery-list" aria-label="Unavailable drawing lifecycle records"><h2>Drawing records requiring attention</h2>${drawingLifecycleUnavailable.map(drawingRecoveryMarkup).join('')}</section>` : ''}`;
   drawingWorkspaceRenderCount += 1;
   drawingTraceSlowOperation('workspace render', workspaceRenderStartedAt, { renderCount: drawingWorkspaceRenderCount, pageId: getCurrentSheet()?.pageId || '', documentId: selected.id, leftPanel: Boolean(host.querySelector('.mc-drawing-index')) });
+  const panelNode = host.querySelector('.mc-drawing-evidence');
+  console.info('[panel-trace]', 'DOM after render', {
+    file: 'src/app.js',
+    function: 'renderDrawingWorkspaceWithProviders',
+    line: 3613,
+    panelInnerHtmlLength: panelNode?.innerHTML?.length || 0,
+    panelContainsUnavailable: panelNode?.innerHTML?.includes('Drawing source unavailable') || false,
+    panelContainsSheetNumber: panelNode?.innerHTML?.includes('61IN101') || false,
+    panelNodeExists: !!panelNode
+  });
   const placeholderCanvas = host.querySelector('#mcDrawingCanvas');
   const drawingStageForObjectTools = host.querySelector('#mcDrawingStage');
   if (drawingStageForObjectTools && activeDrawingObjects.length) {
@@ -3681,7 +3750,25 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
         const panelStartedAt = globalThis.performance?.now?.() ?? Date.now(); const scrollTop = panel.scrollTop; const panelModel = buildIntelligencePanel(activeRequirements); const panelSignature = constructionIntelligencePanelSignature(panelModel); const panelNodeCountBefore = panel.querySelectorAll('*').length; const rightPanelCardCountBefore = panel.querySelectorAll('.mc-ci-group, .mc-ci-specifications li, .mc-ci-record-list li, .mc-ci-work-phase li').length;
         const panelUpdated = panel.dataset.panelSignature !== panelSignature;
         replaceTrackedResource('inspector-model', panelModel, { pageId: currentSheetForRefresh?.pageId || '', mode: panelModel.mode, phase: panelUpdated ? 'updated' : 'cached' });
-        if (panelUpdated) { const rightPanelStartedAt = drawingPerfNow(); panel.innerHTML = constructionIntelligencePanelMarkup(panelModel); panel.dataset.panelSignature = panelSignature; drawingInspectorRenderCount += 1; drawingTraceSlowOperation('right panel update', rightPanelStartedAt, { renderCount: drawingInspectorRenderCount, pageId: currentSheetForRefresh?.pageId || '', mode: panelModel.mode }); }
+        if (panelUpdated) { const rightPanelStartedAt = drawingPerfNow(); const markupBefore = constructionIntelligencePanelMarkup(panelModel); console.info('[panel-trace]', 'async panel refresh BEFORE innerHTML', {
+          file: 'src/app.js',
+          function: 'renderDrawingWorkspaceWithProviders async panel refresh',
+          line: 3696,
+          inputSheetNumber: panelModel.sheet?.sheetNumber,
+          inputPageNumber: panelModel.sheet?.pageNumber,
+          inputPageId: panelModel.sheet?.pageId,
+          inputBuilding: panelModel.sheet?.building,
+          inputDiscipline: panelModel.sheet?.discipline,
+          inputStatus: panelModel.status,
+          markupLength: markupBefore.length
+        }); panel.innerHTML = markupBefore; panel.dataset.panelSignature = panelSignature; drawingInspectorRenderCount += 1; drawingTraceSlowOperation('right panel update', rightPanelStartedAt, { renderCount: drawingInspectorRenderCount, pageId: currentSheetForRefresh?.pageId || '', mode: panelModel.mode }); console.info('[panel-trace]', 'async panel refresh AFTER innerHTML', {
+          file: 'src/app.js',
+          function: 'renderDrawingWorkspaceWithProviders async panel refresh',
+          line: 3696,
+          panelInnerHtmlLength: panel.innerHTML.length,
+          panelContainsUnavailable: panel.innerHTML.includes('Drawing source unavailable') || false,
+          panelContainsSheetNumber: panel.innerHTML.includes('61IN101') || false
+        }); }
         panel.scrollTop = scrollTop;
         const panelNodeCountAfter = panel.querySelectorAll('*').length;
         const rightPanelCardCountAfter = panel.querySelectorAll('.mc-ci-group, .mc-ci-specifications li, .mc-ci-record-list li, .mc-ci-work-phase li').length;
