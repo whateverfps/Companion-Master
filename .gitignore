@@ -16,3 +16,5 @@ project-data/bedford/*/*
 !project-data/bedford/drawing-catalogs/*.json
 !project-data/bedford/relationships/
 !project-data/bedford/relationships/*.json
+!project-data/bedford/specifications/
+!project-data/bedford/specifications/authoritative-spec-index.json
