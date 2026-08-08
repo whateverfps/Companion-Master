@@ -3397,6 +3397,39 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const searchResults = analysis ? searchDrawingSheets({ query: drawingFilter, discipline: drawingDiscipline, sheetType: drawingType, analysis }) : [];
   const shownSheets = searchResults.map(item => item.sheet);
   const navigationSheetIds = drawingMatchingSheetIds.length ? drawingMatchingSheetIds : searchResults.map(item => item.sheetId);
+  (async () => {
+    try {
+      const response = await fetch('/verification/building-61-spec-links.json');
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data?.results) {
+        const specificationDocument = allDocuments.find(isSpecificationDocument);
+        for (const [sheetNumber, sheetData] of Object.entries(data.results)) {
+          if (sheetData?.links) {
+            for (const link of sheetData.links) {
+              drawingSpecificationLinks.link({
+                projectId: link.projectId,
+                drawingDocumentId: link.drawingDocumentId,
+                drawingPageId: link.drawingPageId,
+                objectId: link.objectId || null,
+                specificationDocumentId: specificationDocument?.id || link.specificationDocumentId,
+                sectionNumber: link.sectionNumber,
+                status: link.status,
+                origin: link.origin,
+                confidence: link.confidence,
+                evidenceSource: link.evidenceSource,
+                evidenceText: link.evidenceText,
+                reason: link.reason,
+                applicabilityScope: link.objectId ? 'object-specific' : 'page-wide'
+              });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      logger.warning('Failed to load building specification links', { error: error?.message || String(error) });
+    }
+  })();
   const navigationIndex = navigationSheetIds.indexOf(sheet?.sheetId);
   const observations = sheet ? (analysis?.observations || []).filter(item => item.sheetId === sheet.sheetId) : [];
   const activeProjectObjectId = analysis?.projectId || state().activeProject;
