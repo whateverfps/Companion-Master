@@ -7373,10 +7373,6 @@ async function openSpecificationExplorer(sheet = {}) {
       const sectionNumber = li.dataset.specSection;
       const documentId = li.dataset.specDocument;
 
-      // Close modal
-      modal.close();
-      modal.remove();
-
       // Normalize section number for comparison (remove spaces/dashes)
       const normalizedSectionNumber = String(sectionNumber || '').replace(/\D/g, '');
       
@@ -7387,20 +7383,27 @@ async function openSpecificationExplorer(sheet = {}) {
         section.normalizedSectionNumber === normalizedSectionNumber
       );
 
-      if (matchedSection) {
-        specificationSourceTarget = {
-          documentId: matchedSection.documentId,
-          projectId: matchedSection.projectId,
-          pageNumber: matchedSection.startPdfPage,
-          sectionNumber: matchedSection.sectionNumber,
-          sectionTitle: matchedSection.sectionTitle,
-          articleReference: '',
-          returnTarget: 'drawings'
-        };
-        show('specification-source');
-      } else {
+      if (!matchedSection) {
         alert(`Specification section ${sectionNumber} not found in index`);
+        return; // Leave modal open on error
       }
+
+      // Use the existing navigation code from open-specification-source-page action
+      specificationDrawingReturnTarget = captureDrawingSupportReturnState();
+      specificationSourceTarget = {
+        documentId: matchedSection.documentId,
+        projectId: matchedSection.projectId || state().activeProject,
+        pageNumber: matchedSection.startPdfPage,
+        sectionNumber: matchedSection.sectionNumber,
+        sectionTitle: matchedSection.sectionTitle,
+        articleReference: '',
+        returnTarget: 'drawings'
+      };
+      show('specification-source');
+      
+      // Close modal after navigation is initiated
+      modal.close();
+      modal.remove();
     });
   });
 
