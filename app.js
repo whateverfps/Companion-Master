@@ -1884,15 +1884,9 @@ const titles = {
 };
 
 function show(name) {
-  console.log('=== VIEW SWITCH ===');
-  console.log('  Previous view:', view);
-  console.log('  New view:', name);
-  console.log('  specificationDrawingReturnTarget:', Boolean(specificationDrawingReturnTarget));
-  
   const preserveDrawingForSpecification = Boolean(specificationDrawingReturnTarget) && name === 'knowledge';
   if (name !== 'drawings' && !preserveDrawingForSpecification) releaseDrawingSource();
   if (name !== 'knowledge') {
-    console.log('  Closing specificationSourceViewer');
     void specificationSourceViewer.close('workspace-changed');
   }
   if (name !== 'knowledge') specificationDrawingReturnTarget = null;
@@ -3599,15 +3593,8 @@ function drawingRecoveryMarkup(record = {}) {
 }
 
 async function renderDrawingWorkspace(shell = 'professional') {
-  console.log('=== DRAWING WORKSPACE RENDER ===');
-  console.log('  shell:', shell);
-  console.log('  current view:', view);
-  console.log('  specificationDrawingReturnTarget:', Boolean(specificationDrawingReturnTarget));
-  console.log('  caller:', new Error().stack?.split('\n')[2]?.trim());
-  
   assertDrawingRendererOwnership('invoke workspace render');
   const providers = await loadDrawingWorkspaceProviders({ loadDocuments: () => engine.documents(), loadSections: documents => engine.specificationSections(documents.filter(isSpecificationDocument).map(item => item.id).filter(id => !hydratedDrawingSpecificationDocuments.has(id)), BEDFORD_PROJECT_SPECIFICATION_VOCABULARY.map(item => item.sectionNumber)), onFailure: failure => logger.warning('Drawing workspace provider unavailable', failure) });
-  console.log('=== END DRAWING WORKSPACE RENDER ===');
   return renderDrawingWorkspaceWithProviders(shell, providers);
 }
 
@@ -4837,10 +4824,40 @@ app.addEventListener('click', async event => {
     if (!result) return;
     const { source, section } = result;
     specificationDrawingReturnTarget = captureDrawingSupportReturnState();
+    
+    // Create canvas
+    const specContainer = document.createElement('div');
+    specContainer.className = 'mc-specification-viewer-container';
+    specContainer.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: white; z-index: 10000; display: flex; flex-direction: column;';
+    
+    const specHeader = document.createElement('div');
+    specHeader.style.cssText = 'padding: 16px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center;';
+    specHeader.innerHTML = `
+      <h2 style="margin: 0;">${esc(section.sectionTitle)}</h2>
+      <span style="color: #666;">Section ${esc(section.sectionNumber)} · Page ${esc(section.startPdfPage)}</span>
+      <button style="padding: 8px 16px; cursor: pointer;">Close</button>
+    `;
+    
+    const specCanvasContainer = document.createElement('div');
+    specCanvasContainer.style.cssText = 'flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 20px;';
+    
+    const specCanvas = document.createElement('canvas');
+    specCanvas.style.cssText = 'max-width: 100%; box-shadow: 0 2px 8px rgba(0,0,0,0.1);';
+    
+    specCanvasContainer.appendChild(specCanvas);
+    specContainer.appendChild(specHeader);
+    specContainer.appendChild(specCanvasContainer);
+    document.body.appendChild(specContainer);
+    
+    specHeader.querySelector('button').addEventListener('click', () => {
+      specContainer.remove();
+    });
+    
     await specificationSourceViewer.open({
       document: { id: section.documentId, name: 'Bedford Specifications' },
       sourceBlob: source.sourceBlob,
-      pageNumber: section.startPdfPage
+      pageNumber: section.startPdfPage,
+      canvas: specCanvas
     });
     return;
   }
@@ -4850,10 +4867,40 @@ app.addEventListener('click', async event => {
     if (!result) return;
     const { source, section } = result;
     specificationDrawingReturnTarget = captureDrawingSupportReturnState();
+    
+    // Create canvas
+    const specContainer = document.createElement('div');
+    specContainer.className = 'mc-specification-viewer-container';
+    specContainer.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: white; z-index: 10000; display: flex; flex-direction: column;';
+    
+    const specHeader = document.createElement('div');
+    specHeader.style.cssText = 'padding: 16px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center;';
+    specHeader.innerHTML = `
+      <h2 style="margin: 0;">${esc(section.sectionTitle)}</h2>
+      <span style="color: #666;">Section ${esc(section.sectionNumber)} · Page ${esc(section.startPdfPage)}</span>
+      <button style="padding: 8px 16px; cursor: pointer;">Close</button>
+    `;
+    
+    const specCanvasContainer = document.createElement('div');
+    specCanvasContainer.style.cssText = 'flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 20px;';
+    
+    const specCanvas = document.createElement('canvas');
+    specCanvas.style.cssText = 'max-width: 100%; box-shadow: 0 2px 8px rgba(0,0,0,0.1);';
+    
+    specCanvasContainer.appendChild(specCanvas);
+    specContainer.appendChild(specHeader);
+    specContainer.appendChild(specCanvasContainer);
+    document.body.appendChild(specContainer);
+    
+    specHeader.querySelector('button').addEventListener('click', () => {
+      specContainer.remove();
+    });
+    
     await specificationSourceViewer.open({
       document: { id: section.documentId, name: 'Bedford Specifications' },
       sourceBlob: source.sourceBlob,
-      pageNumber: section.startPdfPage
+      pageNumber: section.startPdfPage,
+      canvas: specCanvas
     });
     return;
   }
@@ -7680,68 +7727,64 @@ async function openSpecificationExplorer(sheet = {}) {
       const li = button.closest('li[data-spec-section]');
       const sectionNumber = li.dataset.specSection;
 
-      console.log('=== SPECIFICATION VIEW SOURCE DEBUG ===');
-      console.log('STEP 1: View Source clicked');
-      console.log('Section:', sectionNumber);
-
       // Use the authoritative specification resolver
-      console.log('STEP 2: Calling openSpecificationDocument()');
       const result = await openSpecificationDocument(sectionNumber, engine);
       
       if (!result) {
-        console.log('ERROR: openSpecificationDocument returned null');
-        console.log('=== END DEBUG ===');
         return; // Error already shown by openSpecificationDocument
       }
 
       const { source, section } = result;
       
-      console.log('STEP 3: Resolved section');
-      console.log('  sectionNumber:', section.sectionNumber);
-      console.log('  documentId:', section.documentId);
-      console.log('  startPdfPage:', section.startPdfPage);
-      console.log('  endPdfPage:', section.endPdfPage);
-      
-      console.log('STEP 4: Calling engine.sourceFile()');
-      console.log('  documentId:', section.documentId);
-      
-      console.log('STEP 5: Source returned?');
-      console.log('  YES:', Boolean(source));
-      console.log('  blob size:', source?.sourceBlob?.size);
-      console.log('  mime type:', source?.sourceBlob?.type);
-      
-      if (!source || !source.sourceBlob) {
-        console.log('ERROR: Source file not available');
-        console.log('=== END DEBUG ===');
-        alert('Specification source file not available');
-        return;
-      }
-      
       // Close modal BEFORE calling show() to prevent dialog blocking view switch
       modal.close();
       modal.remove();
       
-      console.log('STEP 6: Opening existing PDF viewer');
-      console.log('  documentId:', section.documentId);
-      console.log('  pageNumber:', section.startPdfPage);
-      
       try {
+        // Create a canvas for the specification viewer
+        const specContainer = document.createElement('div');
+        specContainer.className = 'mc-specification-viewer-container';
+        specContainer.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: white; z-index: 10000; display: flex; flex-direction: column;';
+        
+        const specHeader = document.createElement('div');
+        specHeader.style.cssText = 'padding: 16px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center;';
+        specHeader.innerHTML = `
+          <h2 style="margin: 0;">${esc(section.sectionTitle)}</h2>
+          <span style="color: #666;">Section ${esc(section.sectionNumber)} · Page ${esc(section.startPdfPage)}</span>
+          <button style="padding: 8px 16px; cursor: pointer;">Close</button>
+        `;
+        
+        const specCanvasContainer = document.createElement('div');
+        specCanvasContainer.style.cssText = 'flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 20px;';
+        
+        const specCanvas = document.createElement('canvas');
+        specCanvas.style.cssText = 'max-width: 100%; box-shadow: 0 2px 8px rgba(0,0,0,0.1);';
+        
+        specCanvasContainer.appendChild(specCanvas);
+        specContainer.appendChild(specHeader);
+        specContainer.appendChild(specCanvasContainer);
+        document.body.appendChild(specContainer);
+        
+        // Handle close button
+        specHeader.querySelector('button').addEventListener('click', () => {
+          specContainer.remove();
+        });
+        
         // Open the specification PDF using the existing PDF viewer
         // The PDF viewer doesn't care whether it's a drawing or specification
         // It just opens (document, page)
-        await specificationSourceViewer.open({
+        const result = await specificationSourceViewer.open({
           document: { id: section.documentId, name: 'Bedford Specifications' },
           sourceBlob: source.sourceBlob,
-          pageNumber: section.startPdfPage
+          pageNumber: section.startPdfPage,
+          canvas: specCanvas
         });
         
-        console.log('STEP 7: PDF Viewer loaded');
-        console.log('  Current page:', section.startPdfPage);
-        console.log('=== END DEBUG ===');
+        if (!result.ok) {
+          alert('Failed to open specification PDF: ' + result.status);
+          specContainer.remove();
+        }
       } catch (error) {
-        console.log('ERROR: PDF Viewer failed to open');
-        console.log('  Error:', error);
-        console.log('=== END DEBUG ===');
         alert('Failed to open specification PDF: ' + error.message);
       }
     });
@@ -10398,10 +10441,40 @@ function renderDocumentMetadata(document, allSections = []) {
     if (!result) return;
     const { source, section } = result;
     specificationDrawingReturnTarget = captureDrawingSupportReturnState();
+    
+    // Create canvas
+    const specContainer = document.createElement('div');
+    specContainer.className = 'mc-specification-viewer-container';
+    specContainer.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: white; z-index: 10000; display: flex; flex-direction: column;';
+    
+    const specHeader = document.createElement('div');
+    specHeader.style.cssText = 'padding: 16px; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center;';
+    specHeader.innerHTML = `
+      <h2 style="margin: 0;">${esc(section.sectionTitle)}</h2>
+      <span style="color: #666;">Section ${esc(section.sectionNumber)} · Page ${esc(exactPage)}</span>
+      <button style="padding: 8px 16px; cursor: pointer;">Close</button>
+    `;
+    
+    const specCanvasContainer = document.createElement('div');
+    specCanvasContainer.style.cssText = 'flex: 1; overflow: auto; display: flex; justify-content: center; align-items: flex-start; padding: 20px;';
+    
+    const specCanvas = document.createElement('canvas');
+    specCanvas.style.cssText = 'max-width: 100%; box-shadow: 0 2px 8px rgba(0,0,0,0.1);';
+    
+    specCanvasContainer.appendChild(specCanvas);
+    specContainer.appendChild(specHeader);
+    specContainer.appendChild(specCanvasContainer);
+    document.body.appendChild(specContainer);
+    
+    specHeader.querySelector('button').addEventListener('click', () => {
+      specContainer.remove();
+    });
+    
     await specificationSourceViewer.open({
       document: { id: section.documentId, name: 'Bedford Specifications' },
       sourceBlob: source.sourceBlob,
-      pageNumber: exactPage
+      pageNumber: exactPage,
+      canvas: specCanvas
     });
   });
 
