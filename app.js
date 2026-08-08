@@ -114,6 +114,7 @@ import {
 } from './data-model.js';
 import { openPdfBlob, readPdfPageGraphics, renderPdfPage } from './pdf-source.js';
 import { createSpecificationSourceViewer } from './specification-source-viewer.js';
+import { openSpecificationDocument } from './src/authoritative-spec-resolver.js';
 import { extractLegendCandidates, matchLegendOccurrences } from './drawing-legends.js';
 import { applyObservationVerification, drawingAnalysisRequiresUpgrade, drawingWarningPresentation, DRAWING_ANALYSIS_VERSION, groupDrawingObservations, observationKindLabel, reanalyzeDrawingAnalysis, upgradeDrawingAnalysis } from './drawing-intelligence.js';
 import { assertDrawingPageConsistency, calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingWheelZoom, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
@@ -7662,43 +7663,31 @@ async function openSpecificationExplorer(sheet = {}) {
 
   // Handle section click
   modal.querySelectorAll('[data-spec-open]').forEach(button => {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', async () => {
       const li = button.closest('li[data-spec-section]');
       const sectionNumber = li.dataset.specSection;
-      const documentId = li.dataset.specDocument;
 
-      // Normalize section number for comparison (remove spaces/dashes)
-      const normalizedSectionNumber = String(sectionNumber || '').replace(/\D/g, '');
+      // Use the authoritative specification resolver
+      const result = await openSpecificationDocument(sectionNumber, engine);
       
-      // Find the actual indexed section by normalized section number
-      // The mapping's documentId may be canonical, so search across all documents
-      const allSections = specificationIndex.sections({ projectId: state().activeProject });
-      const matchedSection = allSections.find(section => 
-        section.normalizedSectionNumber === normalizedSectionNumber
-      );
-
-      if (!matchedSection) {
-        alert(`Specification section ${sectionNumber} not found in index`);
-        return; // Leave modal open on error
+      if (!result) {
+        return; // Error already shown by openSpecificationDocument
       }
 
-      // Use the existing navigation code from open-specification-source-page action
-      specificationDrawingReturnTarget = captureDrawingSupportReturnState();
-      specificationSourceTarget = {
-        documentId: matchedSection.documentId,
-        projectId: matchedSection.projectId || state().activeProject,
-        pageNumber: matchedSection.startPdfPage,
-        sectionNumber: matchedSection.sectionNumber,
-        sectionTitle: matchedSection.sectionTitle,
-        articleReference: '',
-        returnTarget: 'drawings'
-      };
+      const { source, section } = result;
       
       // Close modal BEFORE calling show() to prevent dialog blocking view switch
       modal.close();
       modal.remove();
       
-      show('specification-source');
+      // Open the specification PDF using the existing PDF viewer
+      // The PDF viewer doesn't care whether it's a drawing or specification
+      // It just opens (document, page)
+      await specificationSourceViewer.open({
+        document: { id: section.documentId, name: 'Bedford Specifications' },
+        sourceBlob: source.sourceBlob,
+        pageNumber: section.startPdfPage
+      });
     });
   });
 
@@ -7710,6 +7699,72 @@ async function openSpecificationExplorer(sheet = {}) {
     }
   });
 }
+
+// Temporary specification test panel for PHASE 2 validation
+function showSpecificationTestPanel() {
+  const modal = document.createElement('dialog');
+  modal.className = 'mc-specification-test-modal';
+  modal.innerHTML = `
+    <div class="mc-specification-test-panel">
+      <header>
+        <h3>Specification Test Panel</h3>
+        <button data-close>Close</button>
+      </header>
+      <div class="mc-specification-test-list">
+        <h4>Test Sections</h4>
+        <ol>
+          <li><strong>06 10 00</strong> <span>ROUGH CARPENTRY</span> <button data-test-section="06 10 00">OPEN</button></li>
+          <li><strong>06 20 00</strong> <span>FINISH CARPENTRY</span> <button data-test-section="06 20 00">OPEN</button></li>
+          <li><strong>09 30 13</strong> <span>CERAMIC/PORCELAIN TILING</span> <button data-test-section="09 30 13">OPEN</button></li>
+          <li><strong>09 91 00</strong> <span>PAINTING</span> <button data-test-section="09 91 00">OPEN</button></li>
+          <li><strong>10 14 00</strong> <span>SIGNAGE</span> <button data-test-section="10 14 00">OPEN</button></li>
+          <li><strong>26 05 11</strong> <span>REQUIREMENTS FOR ELECTRICAL INSTALLATIONS</span> <button data-test-section="26 05 11">OPEN</button></li>
+          <li><strong>27 05 00</strong> <span>COMMON WORK RESULTS FOR COMMUNICATIONS</span> <button data-test-section="27 05 00">OPEN</button></li>
+          <li><strong>23 10 00</strong> <span>NOT IN BEDFORD SPEC (SHOULD FAIL)</span> <button data-test-section="23 10 00">OPEN</button></li>
+        </ol>
+      </div>
+    </div>
+  `;
+
+  modal.querySelector('[data-close]').addEventListener('click', () => {
+    modal.close();
+    modal.remove();
+  });
+
+  modal.querySelectorAll('[data-test-section]').forEach(button => {
+    button.addEventListener('click', async () => {
+      const sectionNumber = button.dataset.testSection;
+      const result = await openSpecificationDocument(sectionNumber, engine);
+      
+      if (!result) {
+        return; // Error already shown
+      }
+
+      const { source, section } = result;
+      
+      modal.close();
+      modal.remove();
+      
+      // Open using existing PDF viewer
+      await specificationSourceViewer.open({
+        document: { id: section.documentId, name: 'Bedford Specifications' },
+        sourceBlob: source.sourceBlob,
+        pageNumber: section.startPdfPage
+      });
+    });
+  });
+
+  document.body.appendChild(modal);
+  modal.showModal();
+}
+
+// Add keyboard shortcut for test panel (Ctrl+Shift+T)
+document.addEventListener('keydown', (event) => {
+  if (event.ctrlKey && event.shiftKey && event.key === 'T') {
+    event.preventDefault();
+    showSpecificationTestPanel();
+  }
+});
 
 async function openInspectionForm(record = null, requestedPrefill = null) {
   const prefill = record || requestedPrefill || inspectionPrefill();

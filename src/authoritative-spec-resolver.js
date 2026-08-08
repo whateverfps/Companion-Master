@@ -73,8 +73,36 @@ export function openSpecificationSection(sectionNumber) {
   };
 }
 
+// Integration with existing PDF viewer
+// This function should be called from the UI to open a specification section
+export async function openSpecificationDocument(sectionNumber, engine) {
+  const result = openSpecificationSection(sectionNumber);
+  
+  if (!result.ok) {
+    alert(result.error);
+    return;
+  }
+  
+  const { section } = result;
+  
+  // Get the source file for the specification document
+  const source = await engine.sourceFile(section.documentId);
+  
+  if (!source) {
+    alert(`Specification document ${section.documentId} not found in project.`);
+    return;
+  }
+  
+  // The caller should now:
+  // 1. openPdfBlob(source.sourceBlob)
+  // 2. navigate to section.startPdfPage
+  
+  return { source, section };
+}
+
 // For direct browser console testing
 if (typeof globalThis !== 'undefined') {
   globalThis.openSpecificationSection = openSpecificationSection;
   globalThis.resolveSection = resolveSection;
+  globalThis.openSpecificationDocument = openSpecificationDocument;
 }
