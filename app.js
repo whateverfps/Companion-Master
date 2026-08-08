@@ -114,7 +114,7 @@ import {
 } from './data-model.js';
 import { openPdfBlob, readPdfPageGraphics, renderPdfPage } from './pdf-source.js';
 import { createSpecificationSourceViewer } from './specification-source-viewer.js';
-import { openSpecificationDocument } from './src/authoritative-spec-resolver.js';
+import { openSpecificationDocument } from './authoritative-spec-resolver.js';
 import { extractLegendCandidates, matchLegendOccurrences } from './drawing-legends.js';
 import { applyObservationVerification, drawingAnalysisRequiresUpgrade, drawingWarningPresentation, DRAWING_ANALYSIS_VERSION, groupDrawingObservations, observationKindLabel, reanalyzeDrawingAnalysis, upgradeDrawingAnalysis } from './drawing-intelligence.js';
 import { assertDrawingPageConsistency, calculateDrawingFit, createDrawingRenderIdentity, createDrawingTarget, createPdfPageViewerAnalysis, defaultDrawingViewport, drawingAnnouncementText, drawingFocusTarget, drawingMatchingSetTarget, drawingRenderDecision, drawingResultKeyTarget, drawingReturnAction, drawingWheelZoom, drawingWorkspaceLayout, reconcileDrawingMatchingSheetIds, reconcileDrawingSelection, resolveDrawingTarget } from './drawing-navigation.js';
