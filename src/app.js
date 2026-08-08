@@ -3499,7 +3499,8 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       for (const candidate of objectCandidates) { objectCandidateCount += 1; const link = drawingSpecificationLinks.link({ ...candidate, drawingDocumentId: selected.id, drawingPageId: sheet.pageId, objectId: drawingObject.objectId }); if (link && !existingLinkIds.has(link.linkId)) { relationshipWriteCount += 1; existingLinkIds.add(link.linkId); } }
       drawingTraceSlowOperation('specification matching', objectCandidatesStartedAt, { iterationCount: objectCandidateCount, scope: 'object', objectId: drawingObject.objectId, candidateCount: objectCandidates.length });
     }
-  } } catch (error) { logger.warning('Construction intelligence provider failure', { provider: 'specification-vocabulary', code: 'construction-intelligence-provider-failure', pageId: currentSheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }); }
+  } } catch (error) { logger.warning('Construction intelligence provider failure', { provider: 'specification-vocabulary', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }); }
+  const currentSheet = drawingTarget?.sheetId ? (analysis?.sheets?.find(item => item.sheetId === drawingTarget.sheetId) || analysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget.pageNumber))) : sheet;
   const sheetSpecificationLinks = currentSheet ? drawingSpecificationLinks.forPage(currentSheet.pageId) : [];
   console.log('[STAGE 1]', 'drawingSpecificationLinks.forPage(currentSheet.pageId)', {
     pageId: currentSheet?.pageId,
@@ -3546,7 +3547,6 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     let section = null; try { section = specificationIndex.get(item.specificationDocumentId, item.sectionNumber); } catch { section = null; }
     return { ...item, startPdfPage: section?.startPdfPage || null };
   };
-  const currentSheet = drawingTarget?.sheetId ? (analysis?.sheets?.find(item => item.sheetId === drawingTarget.sheetId) || analysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget.pageNumber))) : sheet;
   const buildIntelligencePanel = requirements => buildConstructionIntelligencePanelModel({
     document: selected, sheet: currentSheet, trade: activeTrade, selectedObject: selectedDrawingObject, pageObjects: activeDrawingObjects,
     pageStatus: analysis.viewerFallback && !analysis.metadataAvailable ? 'Manual PDF page viewing remains available.' : currentSheet?.identityStatus,
