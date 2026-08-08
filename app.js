@@ -7693,11 +7693,12 @@ async function openSpecificationExplorer(sheet = {}) {
         articleReference: '',
         returnTarget: 'drawings'
       };
-      show('specification-source');
       
-      // Close modal after navigation is initiated
+      // Close modal BEFORE calling show() to prevent dialog blocking view switch
       modal.close();
       modal.remove();
+      
+      show('specification-source');
     });
   });
 
