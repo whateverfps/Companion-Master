@@ -405,7 +405,6 @@ const drawingActionRouter=createDrawingActionRouter({handlers:{
   'open-drawing-page':target=>{drawingTarget=createDrawingTarget({...drawingTarget,documentId:target.documentId,pageNumber:target.pageNumber,sheetNumber:target.sheetNumber});return renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional');},
   'open-specification-section':target=>{specificationDrawingReturnTarget=captureDrawingSupportReturnState();return openProfessionalDestination({view:'knowledge',documentId:target.documentId,sectionNumber:target.sectionNumber});},
   'open-specification-explorer':target=>{const currentSheetNumber=drawingTarget?.sheetNumber||activeDrawingViewerAnalysis?.sheets?.find(item=>item.pageId===drawingTarget?.pageId)?.sheetNumber;if(!currentSheetNumber){alert('No active sheet');return true;}const currentSheet=activeDrawingViewerAnalysis?.sheets?.find(item=>item.sheetNumber===currentSheetNumber)||{sheetNumber:currentSheetNumber,sheetTitle:'Unknown',discipline:'Unknown'};openSpecificationExplorer(currentSheet);return true;},
-  'open-specification-source-page':target=>{specificationDrawingReturnTarget=captureDrawingSupportReturnState();specificationSourceTarget={...target,projectId:state().activeProject,returnTarget:'drawings'};show('specification-source');return true;},
   'return-to-drawing':()=>restoreDrawingSupportReturnState(),
   'open-coverage-review':()=>{drawingCoverageReviewMode=true;return renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional');},
   'close-coverage-review':()=>{drawingCoverageReviewMode=false;return renderDrawingWorkspace(experience==='mission-control'?'mission-control':'professional');}
@@ -637,7 +636,6 @@ let activeChiefLocationPresentation = null;
 let loadedProjectObjectRegistryId = '';
 const drawingIntelligenceHydration = new Map();
 let specificationDrawingReturnTarget = null;
-let specificationSourceTarget = null;
 let pendingDrawingPanelScroll = null;
 let constructionIntelligenceExpanded = new Set(loadConstructionIntelligencePanelState().expanded);
 
@@ -1847,10 +1845,6 @@ const titles = {
     'Source Inspector',
     'Review exactly what Mission Companion indexed.'
   ],
-  'specification-source': [
-    'Specification Source Evidence',
-    'Review one exact source page without changing the active drawing.'
-  ],
   evidence: [
     'Evidence Explorer',
     'Inspect the retrieval results and citations behind the latest answer.'
@@ -1890,10 +1884,10 @@ const titles = {
 };
 
 function show(name) {
-  const preserveDrawingForSpecification = Boolean(specificationDrawingReturnTarget) && ['knowledge', 'specification-source'].includes(name);
+  const preserveDrawingForSpecification = Boolean(specificationDrawingReturnTarget) && name === 'knowledge';
   if (name !== 'drawings' && !preserveDrawingForSpecification) releaseDrawingSource();
-  if (name !== 'specification-source') void specificationSourceViewer.close('workspace-changed');
-  if (!['knowledge', 'specification-source'].includes(name)) specificationDrawingReturnTarget = null;
+  if (name !== 'knowledge') void specificationSourceViewer.close('workspace-changed');
+  if (name !== 'knowledge') specificationDrawingReturnTarget = null;
   view = name;
   if (experience === 'professional-workspace') lastProfessionalView = name;
 
@@ -1931,7 +1925,6 @@ function show(name) {
     );
     renderSources();
   }
-  if (name === 'specification-source') void renderSpecificationSourceEvidence();
 
   if (name === 'evidence') {
     renderEvidenceExplorer();
@@ -2012,10 +2005,6 @@ async function switchExperience(nextExperience, { destination = '', focus = true
   if (!force && !$('#modal').hidden) {
     alert('Finish or cancel the open form before switching experiences.');
     return false;
-  }
-  if (next === 'mission-control' && view === 'specification-source') {
-    await specificationSourceViewer.close('workspace-changed');
-    specificationSourceTarget = null;
   }
   experience = next;
   const missionControl = next === 'mission-control';
@@ -4828,20 +4817,29 @@ app.addEventListener('click', async event => {
   }
   if (button.hasAttribute('data-requirement-return')) { $('#mcDrawingStage')?.focus({ preventScroll: true }); return; }
   if (button.dataset.objectSpecSource) {
-    const section = specificationIndex.get(button.dataset.objectSpecSource, button.dataset.objectSpecSection);
-    const pageNumber = Number(button.dataset.objectSpecPage) || section?.startPdfPage || 0;
-    if (!section || !pageNumber) return;
+    const sectionNumber = button.dataset.objectSpecSource;
+    const result = await openSpecificationDocument(sectionNumber, engine);
+    if (!result) return;
+    const { source, section } = result;
     specificationDrawingReturnTarget = captureDrawingSupportReturnState();
-    specificationSourceTarget = { documentId: section.documentId, projectId: section.projectId, pageNumber, sectionNumber: section.sectionNumber, sectionTitle: section.sectionTitle, articleReference: '', returnTarget: 'drawings' };
-    show('specification-source');
+    await specificationSourceViewer.open({
+      document: { id: section.documentId, name: 'Bedford Specifications' },
+      sourceBlob: source.sourceBlob,
+      pageNumber: section.startPdfPage
+    });
     return;
   }
   if (button.dataset.requirementOpen) {
-    const section = specificationIndex.get(button.dataset.requirementOpen, button.dataset.requirementSection);
-    if (section) {
-      specificationDrawingReturnTarget = captureDrawingSupportReturnState();
-      await openProfessionalDestination({ view: 'knowledge', destination: 'knowledge', projectId: section.projectId, documentId: section.documentId, sectionId: section.specificationSectionId, pageNumber: section.startPdfPage, origin: 'drawing-requirement' });
-    }
+    const sectionNumber = button.dataset.requirementOpen;
+    const result = await openSpecificationDocument(sectionNumber, engine);
+    if (!result) return;
+    const { source, section } = result;
+    specificationDrawingReturnTarget = captureDrawingSupportReturnState();
+    await specificationSourceViewer.open({
+      document: { id: section.documentId, name: 'Bedford Specifications' },
+      sourceBlob: source.sourceBlob,
+      pageNumber: section.startPdfPage
+    });
     return;
   }
   if (button.dataset.requirementOpenDrawing) {
@@ -7667,27 +7665,70 @@ async function openSpecificationExplorer(sheet = {}) {
       const li = button.closest('li[data-spec-section]');
       const sectionNumber = li.dataset.specSection;
 
+      console.log('=== SPECIFICATION VIEW SOURCE DEBUG ===');
+      console.log('STEP 1: View Source clicked');
+      console.log('Section:', sectionNumber);
+
       // Use the authoritative specification resolver
+      console.log('STEP 2: Calling openSpecificationDocument()');
       const result = await openSpecificationDocument(sectionNumber, engine);
       
       if (!result) {
+        console.log('ERROR: openSpecificationDocument returned null');
+        console.log('=== END DEBUG ===');
         return; // Error already shown by openSpecificationDocument
       }
 
       const { source, section } = result;
       
+      console.log('STEP 3: Resolved section');
+      console.log('  sectionNumber:', section.sectionNumber);
+      console.log('  documentId:', section.documentId);
+      console.log('  startPdfPage:', section.startPdfPage);
+      console.log('  endPdfPage:', section.endPdfPage);
+      
+      console.log('STEP 4: Calling engine.sourceFile()');
+      console.log('  documentId:', section.documentId);
+      
+      console.log('STEP 5: Source returned?');
+      console.log('  YES:', Boolean(source));
+      console.log('  blob size:', source?.sourceBlob?.size);
+      console.log('  mime type:', source?.sourceBlob?.type);
+      
+      if (!source || !source.sourceBlob) {
+        console.log('ERROR: Source file not available');
+        console.log('=== END DEBUG ===');
+        alert('Specification source file not available');
+        return;
+      }
+      
       // Close modal BEFORE calling show() to prevent dialog blocking view switch
       modal.close();
       modal.remove();
       
-      // Open the specification PDF using the existing PDF viewer
-      // The PDF viewer doesn't care whether it's a drawing or specification
-      // It just opens (document, page)
-      await specificationSourceViewer.open({
-        document: { id: section.documentId, name: 'Bedford Specifications' },
-        sourceBlob: source.sourceBlob,
-        pageNumber: section.startPdfPage
-      });
+      console.log('STEP 6: Opening existing PDF viewer');
+      console.log('  documentId:', section.documentId);
+      console.log('  pageNumber:', section.startPdfPage);
+      
+      try {
+        // Open the specification PDF using the existing PDF viewer
+        // The PDF viewer doesn't care whether it's a drawing or specification
+        // It just opens (document, page)
+        await specificationSourceViewer.open({
+          document: { id: section.documentId, name: 'Bedford Specifications' },
+          sourceBlob: source.sourceBlob,
+          pageNumber: section.startPdfPage
+        });
+        
+        console.log('STEP 7: PDF Viewer loaded');
+        console.log('  Current page:', section.startPdfPage);
+        console.log('=== END DEBUG ===');
+      } catch (error) {
+        console.log('ERROR: PDF Viewer failed to open');
+        console.log('  Error:', error);
+        console.log('=== END DEBUG ===');
+        alert('Failed to open specification PDF: ' + error.message);
+      }
     });
   });
 
@@ -7699,72 +7740,6 @@ async function openSpecificationExplorer(sheet = {}) {
     }
   });
 }
-
-// Temporary specification test panel for PHASE 2 validation
-function showSpecificationTestPanel() {
-  const modal = document.createElement('dialog');
-  modal.className = 'mc-specification-test-modal';
-  modal.innerHTML = `
-    <div class="mc-specification-test-panel">
-      <header>
-        <h3>Specification Test Panel</h3>
-        <button data-close>Close</button>
-      </header>
-      <div class="mc-specification-test-list">
-        <h4>Test Sections</h4>
-        <ol>
-          <li><strong>06 10 00</strong> <span>ROUGH CARPENTRY</span> <button data-test-section="06 10 00">OPEN</button></li>
-          <li><strong>06 20 00</strong> <span>FINISH CARPENTRY</span> <button data-test-section="06 20 00">OPEN</button></li>
-          <li><strong>09 30 13</strong> <span>CERAMIC/PORCELAIN TILING</span> <button data-test-section="09 30 13">OPEN</button></li>
-          <li><strong>09 91 00</strong> <span>PAINTING</span> <button data-test-section="09 91 00">OPEN</button></li>
-          <li><strong>10 14 00</strong> <span>SIGNAGE</span> <button data-test-section="10 14 00">OPEN</button></li>
-          <li><strong>26 05 11</strong> <span>REQUIREMENTS FOR ELECTRICAL INSTALLATIONS</span> <button data-test-section="26 05 11">OPEN</button></li>
-          <li><strong>27 05 00</strong> <span>COMMON WORK RESULTS FOR COMMUNICATIONS</span> <button data-test-section="27 05 00">OPEN</button></li>
-          <li><strong>23 10 00</strong> <span>NOT IN BEDFORD SPEC (SHOULD FAIL)</span> <button data-test-section="23 10 00">OPEN</button></li>
-        </ol>
-      </div>
-    </div>
-  `;
-
-  modal.querySelector('[data-close]').addEventListener('click', () => {
-    modal.close();
-    modal.remove();
-  });
-
-  modal.querySelectorAll('[data-test-section]').forEach(button => {
-    button.addEventListener('click', async () => {
-      const sectionNumber = button.dataset.testSection;
-      const result = await openSpecificationDocument(sectionNumber, engine);
-      
-      if (!result) {
-        return; // Error already shown
-      }
-
-      const { source, section } = result;
-      
-      modal.close();
-      modal.remove();
-      
-      // Open using existing PDF viewer
-      await specificationSourceViewer.open({
-        document: { id: section.documentId, name: 'Bedford Specifications' },
-        sourceBlob: source.sourceBlob,
-        pageNumber: section.startPdfPage
-      });
-    });
-  });
-
-  document.body.appendChild(modal);
-  modal.showModal();
-}
-
-// Add keyboard shortcut for test panel (Ctrl+Shift+T)
-document.addEventListener('keydown', (event) => {
-  if (event.ctrlKey && event.shiftKey && event.key === 'T') {
-    event.preventDefault();
-    showSpecificationTestPanel();
-  }
-});
 
 async function openInspectionForm(record = null, requestedPrefill = null) {
   const prefill = record || requestedPrefill || inspectionPrefill();
@@ -10400,19 +10375,19 @@ function renderDocumentMetadata(document, allSections = []) {
   $('[data-object-workflow]')?.addEventListener('click', () =>
     void seedWorkflowFromDocument(document.id, objectTargetSection?.id || '', 'knowledge')
   );
-  $('[data-specification-view-source-page]')?.addEventListener('click', event => {
+  $('[data-specification-view-source-page]')?.addEventListener('click', async event => {
     const exactPage = Number(event.currentTarget.dataset.specificationViewSourcePage) || 0;
     if (!exactPage || !specificationResolution?.available || !isSpecificationDocument(document)) return;
-    specificationSourceTarget = {
-      documentId: document.id,
-      projectId: document.projectId || state().activeProject,
-      pageNumber: exactPage,
-      sectionNumber: specificationResolution.sectionNumber,
-      sectionTitle: specificationResolution.sectionTitle,
-      articleReference: specificationResolution.target?.articleReference || '',
-      returnTarget: specificationDrawingReturnTarget ? 'drawings' : 'knowledge'
-    };
-    show('specification-source');
+    const sectionNumber = specificationResolution.sectionNumber;
+    const result = await openSpecificationDocument(sectionNumber, engine);
+    if (!result) return;
+    const { source, section } = result;
+    specificationDrawingReturnTarget = captureDrawingSupportReturnState();
+    await specificationSourceViewer.open({
+      document: { id: section.documentId, name: 'Bedford Specifications' },
+      sourceBlob: source.sourceBlob,
+      pageNumber: exactPage
+    });
   });
 
   if (objectTargetSection) {
@@ -10447,48 +10422,7 @@ function formatBytes(bytes = 0) {
 async function renderSpecificationSourceEvidence() {
   const host = $('#specificationSourceEvidence');
   if (!host) return;
-  const target = specificationSourceTarget;
-  if (!target?.documentId || !Number(target.pageNumber)) {
-    host.innerHTML = '<div class="empty">No exact specification source page was requested.</div>';
-    return;
-  }
-  const requestId = ++specificationSourceRequestId;
-  host.innerHTML = `<header class="source-title"><span>SPECIFICATION SOURCE EVIDENCE</span><h2>${esc(target.sectionNumber)} — ${esc(target.sectionTitle)}</h2><p>Exact source page ${fmt(target.pageNumber)} · one-page evidence view</p></header><div><button type="button" data-specification-source-return>${target.returnTarget === 'drawings' ? 'Return to Drawing' : 'Return to Specification'}</button></div><div class="mc-specification-source-stage" aria-busy="true"><div class="empty">Loading source page ${fmt(target.pageNumber)}…</div><canvas id="specificationSourceCanvas" aria-label="Specification ${esc(target.sectionNumber)} source page ${fmt(target.pageNumber)}"></canvas></div>`;
-  const stageStarted = globalThis.performance?.now?.() ?? Date.now();
-  const stageMetric = (operation, extra = {}) => logger.debug('Specification source performance', { operation, durationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - stageStarted), documentId: target.documentId, pageNumber: Number(target.pageNumber) || 0, sectionNumber: target.sectionNumber, ...extra });
-  const canvas = $('#specificationSourceCanvas');
-  const returnButton = $('[data-specification-source-return]');
-  returnButton?.addEventListener('click', async () => {
-    specificationSourceRequestId += 1;
-    await specificationSourceViewer.close('return');
-    specificationSourceTarget = null;
-    if (specificationDrawingReturnTarget?.target) {
-      restoreDrawingSupportReturnState();
-    } else show('knowledge');
-  });
-  stageMetric('shell-visible');
-  const documents = await engine.documents();
-  if (requestId !== specificationSourceRequestId) return;
-  stageMetric('documents-loaded');
-  const documentRecord = documents.find(item => item.id === target.documentId);
-  if (!isSpecificationDocument(documentRecord)) {
-    host.innerHTML = '<div class="empty">The requested source is not an authoritative specification document.</div>';
-    return;
-  }
-  stageMetric('document-lookup');
-  const source = await engine.sourceFile(documentRecord.id);
-  if (requestId !== specificationSourceRequestId) return;
-  stageMetric('retained-source-loaded');
-  if (!source?.sourceBlob) {
-    host.innerHTML = '<div class="empty">The retained specification source PDF is unavailable. Indexed section content remains available.</div>';
-    return;
-  }
-  const openStarted = globalThis.performance?.now?.() ?? Date.now();
-  stageMetric('lookup-complete');
-  const result = await specificationSourceViewer.open({ document: documentRecord, sourceBlob: source.sourceBlob, pageNumber: target.pageNumber, sectionNumber: target.sectionNumber, sectionTitle: target.sectionTitle, articleReference: target.articleReference, returnTarget: specificationDrawingReturnTarget, canvas });
-  if (requestId !== specificationSourceRequestId) return;
-  stageMetric('page-rendered', { cacheHit: Boolean(result.cacheHit), openDurationMs: Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - openStarted) });
-  if (!result.ok) host.insertAdjacentHTML('beforeend', `<p role="status">Source page unavailable: ${esc(result.status)}</p>`);
+  host.innerHTML = '<div class="empty">Specification source evidence viewer removed. Use authoritative resolver instead.</div>';
 }
 
 async function renderSources() {
