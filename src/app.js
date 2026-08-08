@@ -471,11 +471,10 @@ function cancelDrawingBackgroundPipeline() {
   }
 }
 
-function scheduleDrawingHydration({ generationId, sheetId, projectId, shell, workspaceRenderRequest, selected, sheet, analysis, source, documentId, requestToken, effectiveObservation, effectiveRegion, overlayRecords, preservedBrowserScroll, preservedViewport, preservedCanvas, preservedStage, preservedIntelligenceScroll, viewState, sheetLegends, sheetSchedules, sheetKeyedNotes, sheetOccurrences, pageSpecificationLinks, selectedSpecificationLinks, requirementInput, activeRequirements, rightPanelSignature, inspectorContext = null, renderAfterPaint = true } = {}) {
+function scheduleDrawingHydration({ generationId, sheetId, projectId, shell, workspaceRenderRequest, selected, sheet, analysis, source, documentId, requestToken, effectiveObservation, effectiveRegion, overlayRecords, preservedBrowserScroll, preservedViewport, preservedCanvas, preservedStage, preservedIntelligenceScroll, viewState, sheetLegends, sheetSchedules, sheetKeyedNotes, sheetOccurrences, pageSpecificationLinks, selectedSpecificationLinks, requirementInput, activeRequirements, rightPanelSignature, inspectorContext = null, renderAfterPaint = true, currentSheet: providedCurrentSheet = null } = {}) {
   const generation = drawingBackgroundPipelineGeneration;
   const plansSpecOnly = shouldHydratePlansSpecifications({ drawingSafeMode, workspaceMode: shell });
-  // FIX: Use the current active sheet from the active drawing target, not the closure-captured parameter
-  const currentSheet = drawingTarget?.sheetId ? (analysis?.sheets?.find(item => item.sheetId === drawingTarget.sheetId) || analysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget.pageNumber))) : sheet;
+  const currentSheet = providedCurrentSheet || sheet;
   const plansContext = inspectorContext || (shell === 'mission-control' ? getActivePlansSheetContext({ analysis, sheet: currentSheet, generationId, shell, panel: activePlansInspectorPanel }) : null);
   if (drawingBackgroundPipelineTimer) clearTimeout(drawingBackgroundPipelineTimer);
   drawingBackgroundPipelineTimer = setTimeout(() => {
@@ -800,7 +799,8 @@ async function selectPlansSheet({ analysis, sheet, observation = null, shell = '
       activeRequirements: { status: 'loading', requirements: [], confirmedSpecifications: [], suggestedSpecifications: [], projectWideRequirements: [], fieldRequirements: {}, warnings: [], providerFailures: [] },
       rightPanelSignature: '',
       inspectorContext: snapshot,
-      renderAfterPaint: true
+      renderAfterPaint: true,
+      currentSheet: sheet
     });
   }
   return painted;
@@ -3656,7 +3656,8 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
     activeRequirements: { status: 'loading', requirements: [], confirmedSpecifications: [], suggestedSpecifications: [], projectWideRequirements: [], fieldRequirements: {}, warnings: providerWarnings, providerFailures: workspaceProviderFailures },
     rightPanelSignature: '',
     inspectorContext,
-    renderAfterPaint: true
+    renderAfterPaint: true,
+    currentSheet
   });
   return;
   const requirementsPageKey = drawingTarget?.pageId || sheet?.pageId || '';
