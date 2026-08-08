@@ -3500,22 +3500,8 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
       drawingTraceSlowOperation('specification matching', objectCandidatesStartedAt, { iterationCount: objectCandidateCount, scope: 'object', objectId: drawingObject.objectId, candidateCount: objectCandidates.length });
     }
   } } catch (error) { logger.warning('Construction intelligence provider failure', { provider: 'specification-vocabulary', code: 'construction-intelligence-provider-failure', pageId: sheet?.pageId || '', message: error?.message || String(error), contained: true, timestamp: new Date().toISOString() }); }
-  const currentSheet = drawingTarget?.sheetId ? (analysis?.sheets?.find(item => item.sheetId === drawingTarget.sheetId) || analysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget.pageNumber))) : sheet;
-  console.log('[STEP 1]', 'currentSheet identity', {
-    sheetNumber: currentSheet?.sheetNumber,
-    pageNumber: currentSheet?.pageNumber,
-    pageId: currentSheet?.pageId,
-    documentId: currentSheet?.documentId,
-    drawingId: currentSheet?.drawingId
-  });
+  const currentSheet = analysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget?.pageNumber)) || analysis?.sheets?.find(item => item.sheetId === drawingTarget?.sheetId) || sheet;
   const sheetSpecificationLinks = currentSheet ? drawingSpecificationLinks.forPage(currentSheet.pageId) : [];
-  console.log('[STEP 1]', 'drawingSpecificationLinks.forPage result', {
-    lookupPageId: currentSheet?.pageId,
-    numberOfLinks: sheetSpecificationLinks.length,
-    links: sheetSpecificationLinks
-  });
-  console.log('[STEP 1]', 'all relationship records in store', drawingSpecificationLinks.forProject());
-  console.log('[STEP 1]', 'unique drawingPageId values in store', [...new Set(drawingSpecificationLinks.forProject().map(item => item.drawingPageId))]);
   const pageSpecificationLinks = sheetSpecificationLinks.filter(item => !item.objectId);
   const selectedSpecificationLinks = currentSheet && selectedDrawingObjectIds.length > 1 ? selectedDrawingObjectIds.flatMap(objectId=>sheetSpecificationLinks.filter(item => item.objectId === objectId || !item.objectId)) : selectedDrawingObject ? sheetSpecificationLinks.filter(item => item.objectId === selectedDrawingObject.objectId || !item.objectId) : pageSpecificationLinks;
   if (currentSheet) logger.debug('Drawing requirement evidence resolution', { pageId: currentSheet.pageId, selectedObjectId: selectedDrawingObject?.objectId || null, vocabularyMatches: vocabularyCandidateCount, relationshipWrites: relationshipWriteCount, rejectedOrSuppressedCandidates: sheetSpecificationLinks.filter(item => item.status === 'rejected').length });
