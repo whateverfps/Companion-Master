@@ -7671,15 +7671,23 @@ async function openSpecificationExplorer(sheet = {}) {
       modal.close();
       modal.remove();
 
-      // Open specification source viewer
-      const section = specificationIndex.get(documentId, sectionNumber);
-      if (section) {
+      // Normalize section number for comparison (remove spaces/dashes)
+      const normalizedSectionNumber = String(sectionNumber || '').replace(/\D/g, '');
+      
+      // Find the actual indexed section by normalized section number
+      // The mapping's documentId may be canonical, so search across all documents
+      const allSections = specificationIndex.sections({ projectId: state().activeProject });
+      const matchedSection = allSections.find(section => 
+        section.normalizedSectionNumber === normalizedSectionNumber
+      );
+
+      if (matchedSection) {
         specificationSourceTarget = {
-          documentId: section.documentId,
-          projectId: section.projectId,
-          pageNumber: section.startPdfPage,
-          sectionNumber: section.sectionNumber,
-          sectionTitle: section.sectionTitle,
+          documentId: matchedSection.documentId,
+          projectId: matchedSection.projectId,
+          pageNumber: matchedSection.startPdfPage,
+          sectionNumber: matchedSection.sectionNumber,
+          sectionTitle: matchedSection.sectionTitle,
           articleReference: '',
           returnTarget: 'drawings'
         };
