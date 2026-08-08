@@ -131,6 +131,13 @@ function normalizedRegionSummary(region) {
 }
 
 export function buildConstructionIntelligencePanelModel(input = {}) {
+  console.log('[model-entry-trace]', 'buildConstructionIntelligencePanelModel ENTRY', {
+    inputSheet: input.sheet,
+    inputSheetId: input.sheet?.sheetId,
+    inputSheetNumber: input.sheet?.sheetNumber,
+    inputPageId: input.sheet?.pageId,
+    inputPageNumber: input.sheet?.pageNumber
+  });
   const sheet = input.sheet || {};
   const object = input.selectedObject || null;
   const specLinksDiagnostic = input.specLinksDiagnostic || null;
