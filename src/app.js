@@ -475,20 +475,6 @@ function scheduleDrawingHydration({ generationId, sheetId, projectId, shell, wor
   const plansSpecOnly = shouldHydratePlansSpecifications({ drawingSafeMode, workspaceMode: shell });
   // FIX: Use the current active sheet from the active drawing target, not the closure-captured parameter
   const currentSheet = drawingTarget?.sheetId ? (analysis?.sheets?.find(item => item.sheetId === drawingTarget.sheetId) || analysis?.sheets?.find(item => Number(item.pageNumber) === Number(drawingTarget.pageNumber))) : sheet;
-  const enrichSpecification = item => {
-    let section = null; try { section = specificationIndex.get(item.specificationDocumentId, item.sectionNumber); } catch { section = null; }
-    return { ...item, startPdfPage: section?.startPdfPage || null };
-  };
-  const buildIntelligencePanel = requirements => buildConstructionIntelligencePanelModel({
-    document: selected, sheet: currentSheet, trade: activeTrade, selectedObject: selectedDrawingObject, pageObjects: activeDrawingObjects,
-    pageStatus: analysis.viewerFallback && !analysis.metadataAvailable ? 'Manual PDF page viewing remains available.' : currentSheet?.identityStatus,
-    pageNotes: pageContext?.drawingNotes || [], schedules: sheetSchedules, legends: sheetLegends, keyedNotes: sheetKeyedNotes, references: analysis?.references || [], relatedDetails: observations.filter(item => /detail|callout/i.test(item.kind)), unresolvedEvidence: sheetSpecificationLinks.filter(item => item.status !== 'confirmed'), relationshipGroups: activeRelationshipContext.groups,
-    requirements: { ...requirements, confirmedSpecifications: (requirements.confirmedSpecifications || []).map(enrichSpecification), suggestedSpecifications: (requirements.suggestedSpecifications || []).map(enrichSpecification) }, specificationLinks: sheetSpecificationLinks.map(enrichSpecification),
-    objectHistory: selectedDrawingObject ? containedConstructionIntelligence('object-history', [], () => projectObjectRegistry.getObjectHistory(selectedDrawingObject.objectId), { pageId: currentSheet?.pageId || '', objectId: selectedDrawingObject.objectId }) : [], viewportContext: activeViewportContext,
-    sourceEntityId: activeRelationshipContext.sourceEntityId, hasPossibleDuplicates: selectedDrawingObject ? containedConstructionIntelligence('object-duplicates', [], () => projectObjectRegistry.possibleDuplicates(selectedDrawingObject.objectId), { pageId: currentSheet?.pageId || '', objectId: selectedDrawingObject.objectId }).length > 0 : false,
-    canLinkSpecification: Boolean(selectedDrawingObject && specificationDocument), graphSummary: activeRelationshipContext.graphSummary || null,
-    multiSelection: sharedDrawingObjectContext(activeDrawingObjects.filter(item=>selectedDrawingObjectIds.includes(item.objectId)), { specificationLinks:selectedSpecificationLinks })
-  });
   const plansContext = inspectorContext || (shell === 'mission-control' ? getActivePlansSheetContext({ analysis, sheet: currentSheet, generationId, shell, panel: activePlansInspectorPanel }) : null);
   if (drawingBackgroundPipelineTimer) clearTimeout(drawingBackgroundPipelineTimer);
   drawingBackgroundPipelineTimer = setTimeout(() => {
