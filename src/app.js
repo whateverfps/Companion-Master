@@ -131,6 +131,7 @@ import { createDrawingOverlay, overlayStyle, visibleDrawingOverlays } from './dr
 import { collectPageSpecificationEvidence } from './drawing-specification-evidence.js';
 import { createSpecificationIndex } from './specification-index.js';
 import { createDrawingSpecificationLinkService } from './drawing-spec-links.js';
+import { loadBedfordDrawingSpecMappings } from './specification-knowledge.js';
 import { adaptDrawingSpecificationLinks, createProjectRelationshipEngine, relationshipContextGroups } from './project-relationship-engine.js';
 import { createDrawingViewportContextService, normalizedViewportBounds } from './drawing-viewport-context.js';
 import { createDrawingTradeContext, DRAWING_TRADE_CHANNELS } from './drawing-trade-context.js';
@@ -480,13 +481,13 @@ function scheduleDrawingHydration({ generationId, sheetId, projectId, shell, wor
   drawingBackgroundPipelineTimer = setTimeout(() => {
     drawingBackgroundPipelineTimer = 0;
     if (generation !== drawingBackgroundPipelineGeneration) return;
-    if (generationId !== drawingBackgroundPipelineGeneration) return;
     if (workspaceRenderRequest !== drawingWorkspaceRenderRequest) return;
     const expectedSheetId = plansContext?.sheetId || sheetId || sheet?.sheetId || '';
     const expectedGenerationId = plansContext?.generationId || generationId || activePlansInspectorGeneration;
     const expectedDocumentId = plansContext?.documentId || documentId || selected?.id || '';
     if (sheet?.sheetId && expectedSheetId && sheet.sheetId !== expectedSheetId) return;
     if (projectId && analysis?.projectId && analysis.projectId !== projectId) return;
+    if (generationId && expectedGenerationId && generationId !== expectedGenerationId) return;
     if (plansContext && !plansInspectorOwnershipValid({ panel: plansContext.panel || activePlansInspectorPanel, sheetId: expectedSheetId, generationId: expectedGenerationId, shell })) return;
     const stage = $('#mcDrawingStage');
     if (!stage || !stage.isConnected) return;
@@ -3398,36 +3399,14 @@ async function renderDrawingWorkspaceWithProviders(shell = 'professional', { doc
   const shownSheets = searchResults.map(item => item.sheet);
   const navigationSheetIds = drawingMatchingSheetIds.length ? drawingMatchingSheetIds : searchResults.map(item => item.sheetId);
   (async () => {
-    try {
-      const response = await fetch('/verification/building-61-spec-links.json');
-      if (!response.ok) return;
-      const data = await response.json();
-      if (data?.results) {
-        const specificationDocument = allDocuments.find(isSpecificationDocument);
-        for (const [sheetNumber, sheetData] of Object.entries(data.results)) {
-          if (sheetData?.links) {
-            for (const link of sheetData.links) {
-              drawingSpecificationLinks.link({
-                projectId: link.projectId,
-                drawingDocumentId: link.drawingDocumentId,
-                drawingPageId: link.drawingPageId,
-                objectId: link.objectId || null,
-                specificationDocumentId: specificationDocument?.id || link.specificationDocumentId,
-                sectionNumber: link.sectionNumber,
-                status: link.status,
-                origin: link.origin,
-                confidence: link.confidence,
-                evidenceSource: link.evidenceSource,
-                evidenceText: link.evidenceText,
-                reason: link.reason,
-                applicabilityScope: link.objectId ? 'object-specific' : 'page-wide'
-              });
-            }
-          }
-        }
-      }
-    } catch (error) {
-      logger.warning('Failed to load building specification links', { error: error?.message || String(error) });
+    const specificationDocument = allDocuments.find(isSpecificationDocument);
+    if (specificationDocument && objectBase.projectId === 'bedford') {
+      await loadBedfordDrawingSpecMappings({
+        drawingSpecificationLinks,
+        specificationIndex,
+        projectId: objectBase.projectId,
+        drawingDocumentId: selected.id
+      });
     }
   })();
   const navigationIndex = navigationSheetIds.indexOf(sheet?.sheetId);

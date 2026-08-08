@@ -227,6 +227,67 @@ export function createSpecificationExplorer({ specificationIndex, relationshipGr
 }
 
 /**
+ * Load pre-built drawing-spec mappings from project data
+ */
+export async function loadBedfordDrawingSpecMappings({ 
+  drawingSpecificationLinks, 
+  specificationIndex, 
+  projectId, 
+  drawingDocumentId 
+} = {}) {
+  try {
+    const response = await fetch('/project-data/bedford/relationships/building-61-spec-links.json');
+    if (!response.ok) {
+      return { loaded: 0, reason: 'Mapping file not found' };
+    }
+    
+    const data = await response.json();
+    if (!data?.results) {
+      return { loaded: 0, reason: 'Invalid mapping data format' };
+    }
+    
+    let loaded = 0;
+    
+    for (const [sheetNumber, sheetData] of Object.entries(data.results)) {
+      if (sheetData?.links) {
+        for (const link of sheetData.links) {
+          const section = specificationIndex.get(drawingDocumentId, link.sectionNumber);
+          if (!section) continue;
+          
+          const result = drawingSpecificationLinks.link({
+            projectId,
+            drawingDocumentId,
+            drawingPageId: link.drawingPageId,
+            objectId: link.objectId || null,
+            specificationDocumentId: drawingDocumentId,
+            sectionNumber: link.sectionNumber,
+            status: link.status,
+            origin: link.origin,
+            confidence: link.confidence,
+            evidenceSource: link.evidenceSource,
+            evidenceText: link.evidenceText,
+            reason: link.reason,
+            applicabilityScope: link.objectId ? 'object-specific' : 'page-wide'
+          });
+          
+          if (result) {
+            loaded++;
+          }
+        }
+      }
+    }
+    
+    return { 
+      loaded, 
+      reason: `Loaded ${loaded} pre-built specification mappings from project data`,
+      source: 'project-mappings'
+    };
+  } catch (error) {
+    return { loaded: 0, reason: `Failed to load mappings: ${error?.message || String(error)}` };
+  }
+}
+
+/**
  * Populate drawing-spec-links from Bedford specification index
  * Priority: Explicit references > Object recognition > Drawing metadata > Discipline suggestions
  */
